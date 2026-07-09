@@ -1,0 +1,61 @@
+{
+  "subject": {
+    "selector": "div#hero.card.featured",
+    "nodeId": "hero",
+    "attributes": [
+      {
+        "name": "id",
+        "value": "hero",
+        "metadata": {}
+      },
+      {
+        "name": "class",
+        "value": "card featured",
+        "metadata": {}
+      }
+    ],
+    "metadata": {
+      "kind": "dom-node"
+    }
+  },
+  "facts": [
+    {
+      "type": "css-rule",
+      "selector": ".card",
+      "property": "border-radius",
+      "value": "8px",
+      "metadata": {
+        "stylesheet": "src/styles/card.css"
+      }
+    },
+    {
+      "type": "css-rule",
+      "selector": ".featured",
+      "property": "box-shadow",
+      "value": "0 12px 32px rgba(0, 0, 0, 0.18)",
+      "metadata": {
+        "stylesheet": "src/styles/features.css"
+      }
+    },
+    {
+      "type": "css-rule",
+      "selector": ".card",
+      "property": "display",
+      "value": "flex",
+      "metadata": {
+        "status": "external",
+        "sourceUrl": "https://cdn.jsdelivr.net/npm/bootstrap/dist/css/bootstrap.css"
+      }
+    }
+  ],
+  "context": {
+    "url": "http://localhost:3000/",
+    "route": "/",
+    "metadata": {
+      "viewport": "desktop"
+    }
+  },
+  "metadata": {
+    "fixture": "inspect-card"
+  }
+}
