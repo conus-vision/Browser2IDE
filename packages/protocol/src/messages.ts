@@ -81,6 +81,8 @@ export const InspectContextSchema = z
 export const HelloMessageSchema = baseMessageSchema
   .extend({
     type: z.literal("hello"),
+    sessionId: z.string().min(1),
+    authToken: z.string().min(1),
     source: ClientSourceSchema,
     capabilities: z.array(ProtocolCapabilitySchema),
   })

@@ -59,6 +59,8 @@ describe("Browser2IDE protocol schemas", () => {
         protocolVersion: 1,
         type: "hello",
         messageId: "msg-hello",
+        sessionId: "session-1",
+        authToken: "token-1",
         source,
         capabilities: ["inspect", "references"],
         metadata: {
@@ -247,6 +249,19 @@ describe("Browser2IDE protocol schemas", () => {
       parseMessage({
         protocolVersion: 1,
         messageId: "msg-missing-type",
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects hello messages without session auth", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 1,
+        type: "hello",
+        messageId: "msg-hello-no-auth",
+        source,
+        capabilities: ["inspect"],
         metadata: {},
       }),
     ).toThrow();
