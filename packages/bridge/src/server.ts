@@ -39,6 +39,7 @@ export function createBridgeServer(
   const defaultSessionId = options.sessionId ?? "default";
   const registry = options.registry ?? new ClientRegistry();
   const pairingStore = options.pairingStore ?? new PairingStore();
+  const activeSockets = new Set<WebSocket>();
   let server: WebSocketServer | undefined;
   let heartbeat: Heartbeat | undefined;
 
@@ -50,18 +51,35 @@ export function createBridgeServer(
         return;
       }
 
-      server = new WebSocketServer({ host, port });
-      server.on("connection", (socket) => handleConnection(socket, registry, pairingStore));
-      heartbeat = startHeartbeat(registry);
-
-      await new Promise<void>((resolve, reject) => {
-        server?.once("listening", resolve);
-        server?.once("error", reject);
+      const nextServer = new WebSocketServer({ host, port });
+      nextServer.on("connection", (socket) => {
+        activeSockets.add(socket);
+        socket.once("close", () => activeSockets.delete(socket));
+        handleConnection(socket, registry, pairingStore);
       });
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          nextServer.once("listening", resolve);
+          nextServer.once("error", reject);
+        });
+      } catch (error) {
+        nextServer.removeAllListeners();
+        nextServer.close();
+        throw error;
+      }
+
+      server = nextServer;
+      heartbeat = startHeartbeat(registry);
     },
     async stop() {
       heartbeat?.stop();
       heartbeat = undefined;
+
+      for (const socket of activeSockets) {
+        socket.close();
+        socket.terminate();
+      }
 
       await new Promise<void>((resolve, reject) => {
         if (!server) {
@@ -69,13 +87,14 @@ export function createBridgeServer(
           return;
         }
 
-        server.close((error) => {
+        const closingServer = server;
+        server = undefined;
+        closingServer.close((error) => {
           if (error) {
             reject(error);
             return;
           }
 
-          server = undefined;
           resolve();
         });
       });

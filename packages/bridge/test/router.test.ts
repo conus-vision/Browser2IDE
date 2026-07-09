@@ -110,4 +110,17 @@ describe("bridge router and registry", () => {
 
     expect(browser.sent).toEqual([referencesMessage]);
   });
+
+  it("does not route references from browser or simulator clients", () => {
+    const registry = new ClientRegistry();
+    const browserSender = registry.add(client("browser", "session-1"));
+    const simulatorSender = registry.add(client("simulator", "session-1"));
+    const browserRecipient = client("browser", "session-1");
+    registry.add(browserRecipient);
+
+    routeMessage(registry, browserSender, referencesMessage);
+    routeMessage(registry, simulatorSender, referencesMessage);
+
+    expect(browserRecipient.sent).toEqual([]);
+  });
 });

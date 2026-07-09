@@ -19,7 +19,9 @@ export function routeMessage(
       }
       return;
     case "references":
-      sendToRoles(registry, sender.sessionId, ["browser"], message);
+      if (sender.source.role === "ide") {
+        sendToRoles(registry, sender.sessionId, ["browser"], message);
+      }
       return;
     case "command":
       if (sender.source.role === "ide") {
