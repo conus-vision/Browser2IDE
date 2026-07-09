@@ -86,6 +86,11 @@ export function createBridgeServer(
       }
     },
     async stop() {
+      const pendingStart = startPromise;
+      if (pendingStart) {
+        await pendingStart.catch(() => undefined);
+      }
+
       heartbeat?.stop();
       heartbeat = undefined;
 

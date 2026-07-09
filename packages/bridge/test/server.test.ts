@@ -1,4 +1,4 @@
-import { createServer, type AddressInfo } from "node:net";
+import { createServer } from "node:net";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { createBridgeServer } from "../src/server.js";
@@ -49,20 +49,27 @@ describe("bridge server lifecycle", () => {
   });
 
   it("serializes concurrent starts so stop closes the single listener", async () => {
-    const existingServers = new Set(listeningServerHandles());
     const bridge = createBridgeServer({ port: 0 });
 
     await Promise.all([bridge.start(), bridge.start()]);
-    expect(bridge.getUrl()).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/);
+    const url = bridge.getUrl();
+    expect(url).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/);
 
     await bridge.stop();
-    const leakedServers = listeningServerHandles().filter(
-      (handle) => !existingServers.has(handle),
-    );
-    const leakedCount = leakedServers.length;
-    await Promise.all(leakedServers.map((handle) => closeServerHandle(handle)));
+    expect(await canConnect(url)).toBe(false);
+  });
 
-    expect(leakedCount).toBe(0);
+  it("stops a listener that finishes starting after stop is requested", async () => {
+    const bridge = createBridgeServer({ port: 0 });
+
+    const starting = bridge.start();
+    await bridge.stop();
+    await starting;
+    const url = bridge.getUrl();
+    const connected = await canConnect(url);
+    await bridge.stop();
+
+    expect(connected).toBe(false);
   });
 });
 
@@ -83,40 +90,18 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-interface ServerHandle {
-  address(): AddressInfo | string | null;
-  close(callback?: (error?: Error) => void): void;
-}
+async function canConnect(url: string): Promise<boolean> {
+  let socket: WebSocket | undefined;
 
-function listeningServerHandles(): ServerHandle[] {
-  const getActiveHandles = (
-    process as unknown as { _getActiveHandles?: () => unknown[] }
-  )._getActiveHandles;
-
-  return (getActiveHandles?.() ?? []).filter(isListeningServerHandle);
-}
-
-function isListeningServerHandle(handle: unknown): handle is ServerHandle {
-  if (!handle || typeof handle !== "object") {
+  try {
+    socket = await connect(url);
+    return true;
+  } catch {
     return false;
+  } finally {
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      socket.close();
+      await once(socket, "close");
+    }
   }
-
-  const candidate = handle as Partial<ServerHandle>;
-  if (typeof candidate.address !== "function" || typeof candidate.close !== "function") {
-    return false;
-  }
-
-  const address = candidate.address();
-  return Boolean(
-    address &&
-      typeof address !== "string" &&
-      typeof address.port === "number" &&
-      address.port > 0,
-  );
-}
-
-function closeServerHandle(handle: ServerHandle): Promise<void> {
-  return new Promise((resolve, reject) => {
-    handle.close((error) => (error ? reject(error) : resolve()));
-  });
 }
