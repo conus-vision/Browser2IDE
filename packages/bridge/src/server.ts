@@ -42,6 +42,7 @@ export function createBridgeServer(
   const activeSockets = new Set<WebSocket>();
   let server: WebSocketServer | undefined;
   let heartbeat: Heartbeat | undefined;
+  let startPromise: Promise<void> | undefined;
 
   return {
     registry,
@@ -51,26 +52,38 @@ export function createBridgeServer(
         return;
       }
 
-      const nextServer = new WebSocketServer({ host, port });
-      nextServer.on("connection", (socket) => {
-        activeSockets.add(socket);
-        socket.once("close", () => activeSockets.delete(socket));
-        handleConnection(socket, registry, pairingStore);
-      });
-
-      try {
-        await new Promise<void>((resolve, reject) => {
-          nextServer.once("listening", resolve);
-          nextServer.once("error", reject);
-        });
-      } catch (error) {
-        nextServer.removeAllListeners();
-        nextServer.close();
-        throw error;
+      if (startPromise) {
+        return startPromise;
       }
 
-      server = nextServer;
-      heartbeat = startHeartbeat(registry);
+      startPromise = (async () => {
+        const nextServer = new WebSocketServer({ host, port });
+        nextServer.on("connection", (socket) => {
+          activeSockets.add(socket);
+          socket.once("close", () => activeSockets.delete(socket));
+          handleConnection(socket, registry, pairingStore);
+        });
+
+        try {
+          await new Promise<void>((resolve, reject) => {
+            nextServer.once("listening", resolve);
+            nextServer.once("error", reject);
+          });
+        } catch (error) {
+          nextServer.removeAllListeners();
+          nextServer.close();
+          throw error;
+        }
+
+        server = nextServer;
+        heartbeat = startHeartbeat(registry);
+      })();
+
+      try {
+        await startPromise;
+      } finally {
+        startPromise = undefined;
+      }
     },
     async stop() {
       heartbeat?.stop();
