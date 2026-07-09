@@ -1,7 +1,9 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import type { ClientRole } from "@browser2ide/protocol";
 
 export interface AuthorizedToken {
   readonly sessionId: string;
+  readonly role: ClientRole;
   readonly value: string;
   readonly expiresAt: Date;
 }
@@ -23,10 +25,15 @@ export function tokensEqual(left: string, right: string): boolean {
 
 export function createAuthorizedToken(
   sessionId: string,
-  now = new Date(),
+  roleOrNow: ClientRole | Date = "browser",
+  maybeNow = new Date(),
 ): AuthorizedToken {
+  const role = roleOrNow instanceof Date ? "browser" : roleOrNow;
+  const now = roleOrNow instanceof Date ? roleOrNow : maybeNow;
+
   return {
     sessionId,
+    role,
     value: randomBytes(TOKEN_BYTES).toString("hex"),
     expiresAt: new Date(now.getTime() + TOKEN_TTL_MS),
   };

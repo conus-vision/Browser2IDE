@@ -1,0 +1,77 @@
+{
+  "name": "browser2ide-vscode",
+  "displayName": "Browser2IDE",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "browser2ide.start",
+        "title": "Browser2IDE: Start"
+      },
+      {
+        "command": "browser2ide.stop",
+        "title": "Browser2IDE: Stop"
+      },
+      {
+        "command": "browser2ide.showPairingCode",
+        "title": "Browser2IDE: Show Pairing Code"
+      },
+      {
+        "command": "browser2ide.resetPairing",
+        "title": "Browser2IDE: Reset Pairing"
+      },
+      {
+        "command": "browser2ide.openDiagnostics",
+        "title": "Browser2IDE: Open Diagnostics"
+      }
+    ],
+    "configuration": {
+      "title": "Browser2IDE",
+      "properties": {
+        "browser2ide.bridgeUrl": {
+          "type": "string",
+          "default": "ws://127.0.0.1:48735"
+        },
+        "browser2ide.bridgePort": {
+          "type": "number",
+          "default": 48735
+        },
+        "browser2ide.sessionId": {
+          "type": "string",
+          "default": "default"
+        },
+        "browser2ide.openAllReferences": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node ./esbuild.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@browser2ide/bridge": "workspace:*",
+    "@browser2ide/protocol": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.12",
+    "esbuild": "^0.21.5",
+    "vitest": "^2.1.0"
+  }
+}

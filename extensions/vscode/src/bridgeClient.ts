@@ -1,0 +1,197 @@
+import { randomUUID } from "node:crypto";
+import WebSocket from "ws";
+import {
+  Browser2IdeMessageSchema,
+  CommandMessageSchema,
+  type CommandMessage,
+  type InspectMessage,
+} from "@browser2ide/protocol";
+
+export type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+
+export interface SocketLike {
+  onopen?: ((event: any) => void) | null;
+  onmessage?: ((event: any) => void) | null;
+  onclose?: ((event: any) => void) | null;
+  onerror?: ((event: any) => void) | null;
+  send(payload: string): void;
+  close(): void;
+}
+
+export interface BridgeClientOptions {
+  readonly url: string;
+  readonly sessionId: string;
+  readonly authToken: string;
+  readonly socketFactory?: (url: string) => SocketLike;
+  readonly setTimeout?: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
+  readonly clearTimeout?: (timer: ReturnType<typeof setTimeout>) => void;
+}
+
+export class BridgeClient {
+  private readonly socketFactory: (url: string) => SocketLike;
+  private readonly scheduleTimer: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
+  private readonly cancelTimer: (timer: ReturnType<typeof setTimeout>) => void;
+  private readonly inspectListeners = new Set<(message: InspectMessage) => void>();
+  private readonly stateListeners = new Set<(state: ConnectionState) => void>();
+  private socket: SocketLike | undefined;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectAttempts = 0;
+  private reconnectEnabled = false;
+  private state: ConnectionState = "disconnected";
+
+  constructor(private readonly options: BridgeClientOptions) {
+    this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
+    this.scheduleTimer = options.setTimeout ?? setTimeout;
+    this.cancelTimer = options.clearTimeout ?? clearTimeout;
+  }
+
+  connect(): void {
+    this.reconnectEnabled = true;
+    if (!this.socket && !this.reconnectTimer) {
+      this.openSocket();
+    }
+  }
+
+  disconnect(): void {
+    this.reconnectEnabled = false;
+    if (this.reconnectTimer) {
+      this.cancelTimer(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+
+    const socket = this.socket;
+    this.socket = undefined;
+    if (socket) {
+      this.detachSocket(socket);
+    }
+    socket?.close();
+    this.setState("disconnected");
+  }
+
+  dispose(): void {
+    this.disconnect();
+    this.inspectListeners.clear();
+    this.stateListeners.clear();
+  }
+
+  onInspect(listener: (message: InspectMessage) => void): () => void {
+    this.inspectListeners.add(listener);
+    return () => this.inspectListeners.delete(listener);
+  }
+
+  onConnectionStateChanged(listener: (state: ConnectionState) => void): () => void {
+    this.stateListeners.add(listener);
+    return () => this.stateListeners.delete(listener);
+  }
+
+  sendCommand(command: CommandMessage): void {
+    if (!this.socket || this.state !== "connected") {
+      return;
+    }
+
+    this.socket.send(JSON.stringify(CommandMessageSchema.parse(command)));
+  }
+
+  private openSocket(): void {
+    this.setState("connecting");
+    const socket = this.socketFactory(this.options.url);
+    this.socket = socket;
+    socket.onopen = () => {
+      if (this.socket !== socket) {
+        return;
+      }
+      this.reconnectAttempts = 0;
+      this.setState("connected");
+      socket.send(
+        JSON.stringify({
+          protocolVersion: 1,
+          type: "hello",
+          messageId: randomUUID(),
+          sessionId: this.options.sessionId,
+          authToken: this.options.authToken,
+          source: { role: "ide", id: `vscode-${randomUUID()}`, metadata: {} },
+          capabilities: ["references"],
+          metadata: {},
+        }),
+      );
+    };
+    socket.onmessage = (event) => this.handleMessage(socket, event.data);
+    socket.onerror = () => this.setState("error");
+    socket.onclose = () => this.handleClose(socket);
+  }
+
+  private handleMessage(socket: SocketLike, data: unknown): void {
+    const payload = typeof data === "string" ? data : data instanceof Buffer ? data.toString() : String(data);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(payload);
+    } catch {
+      this.setState("error");
+      return;
+    }
+
+    const parsed = Browser2IdeMessageSchema.safeParse(raw);
+    if (!parsed.success) {
+      this.setState("error");
+      return;
+    }
+
+    if (parsed.data.type === "inspect") {
+      for (const listener of this.inspectListeners) {
+        listener(parsed.data);
+      }
+    }
+    if (parsed.data.type === "ping") {
+      socket.send(
+        JSON.stringify({
+          protocolVersion: 1,
+          type: "pong",
+          messageId: randomUUID(),
+          pingMessageId: parsed.data.messageId,
+          sentAt: new Date().toISOString(),
+          metadata: {},
+        }),
+      );
+    }
+  }
+
+  private handleClose(socket: SocketLike): void {
+    if (this.socket !== socket) {
+      return;
+    }
+
+    this.socket = undefined;
+    this.detachSocket(socket);
+    if (!this.reconnectEnabled) {
+      this.setState("disconnected");
+      return;
+    }
+
+    this.setState("error");
+    const delay = Math.min(1_000 * 2 ** this.reconnectAttempts, 5_000);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = this.scheduleTimer(() => {
+      this.reconnectTimer = undefined;
+      if (this.reconnectEnabled) {
+        this.openSocket();
+      }
+    }, delay);
+  }
+
+  private setState(state: ConnectionState): void {
+    if (this.state === state) {
+      return;
+    }
+    this.state = state;
+    for (const listener of this.stateListeners) {
+      listener(state);
+    }
+  }
+
+  private detachSocket(socket: SocketLike): void {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+  }
+}

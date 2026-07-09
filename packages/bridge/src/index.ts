@@ -1,9 +1,14 @@
-export { createBridgeServer, type BridgeServer } from "./server.js";
+export {
+  createBridgeServer,
+  type BridgeServer,
+  type BridgeServerOptions,
+} from "./server.js";
 export {
   PairingStore,
   type AcceptedPairing,
   type AuthorizedToken,
   type PairingCode,
+  type PairingStoreOptions,
 } from "./pairing.js";
 export {
   ClientRegistry,

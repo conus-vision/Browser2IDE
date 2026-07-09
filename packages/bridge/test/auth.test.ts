@@ -18,10 +18,11 @@ describe("bridge auth", () => {
   it("creates random 30-day session tokens", () => {
     const now = new Date("2026-07-09T12:00:00.000Z");
 
-    const first = createAuthorizedToken("session-1", now);
-    const second = createAuthorizedToken("session-1", now);
+    const first = createAuthorizedToken("session-1", "browser", now);
+    const second = createAuthorizedToken("session-1", "browser", now);
 
     expect(first.sessionId).toBe("session-1");
+    expect(first.role).toBe("browser");
     expect(first.value).toMatch(/^[a-f0-9]{64}$/);
     expect(second.value).not.toBe(first.value);
     expect(first.expiresAt.toISOString()).toBe("2026-08-08T12:00:00.000Z");
@@ -112,6 +113,51 @@ describe("bridge auth", () => {
         metadata: {},
       });
       await closed;
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("rejects hello when a token is presented by the wrong role", async () => {
+    const server = createBridgeServer({ port: 0, sessionId: "session-1" });
+    await server.start();
+
+    try {
+      const pairing = server.createPairingCode();
+      const pairingSocket = await connect(server.getUrl());
+      pairingSocket.send(
+        JSON.stringify({
+          protocolVersion: 1,
+          type: "pairRequest",
+          messageId: "pair-role-1",
+          pairingCode: pairing.code,
+          source: { role: "browser", id: "browser-source", metadata: {} },
+          metadata: {},
+        }),
+      );
+      const accepted = await nextJsonMessage(pairingSocket);
+      const helloSocket = await connect(server.getUrl());
+      const closed = once(helloSocket, "close");
+
+      helloSocket.send(
+        JSON.stringify({
+          protocolVersion: 1,
+          type: "hello",
+          messageId: "hello-wrong-role",
+          sessionId: "session-1",
+          authToken: accepted.authToken,
+          source: { role: "ide", id: "ide-source", metadata: {} },
+          capabilities: ["references"],
+          metadata: {},
+        }),
+      );
+
+      await expect(nextJsonMessage(helloSocket)).resolves.toMatchObject({
+        type: "error",
+        code: "UNAUTHORIZED",
+      });
+      await closed;
+      pairingSocket.close();
     } finally {
       await server.stop();
     }

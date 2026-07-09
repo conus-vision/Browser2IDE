@@ -149,7 +149,10 @@ function handleConnection(
     }
 
     if (message.type === "pairRequest") {
-      const accepted = pairingStore.acceptPairRequest(message.pairingCode);
+      const accepted = pairingStore.acceptPairRequest(
+        message.pairingCode,
+        message.source.role,
+      );
       if (!accepted) {
         sendSocketError(socket, "PAIRING_REJECTED", "Pairing code is invalid or expired");
         return;
@@ -175,7 +178,13 @@ function handleConnection(
         return;
       }
 
-      if (!pairingStore.validateToken(message.sessionId, message.authToken)) {
+      if (
+        !pairingStore.validateToken(
+          message.sessionId,
+          message.source.role,
+          message.authToken,
+        )
+      ) {
         sendSocketError(socket, "UNAUTHORIZED", "Invalid session token", true);
         socket.close();
         return;
