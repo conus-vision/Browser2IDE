@@ -65,7 +65,15 @@ export const InspectSubjectSchema = z
     nodeId: z.string().optional(),
     text: z.string().optional(),
     attributes: z.array(DomAttributeSchema).optional(),
-    facts: z.array(RuntimeFactSchema).optional(),
+    metadata: metadataSchema,
+  })
+  .strict();
+
+export const InspectContextSchema = z
+  .object({
+    url: z.string().min(1),
+    frameId: z.string().optional(),
+    route: z.string().optional(),
     metadata: metadataSchema,
   })
   .strict();
@@ -98,7 +106,11 @@ export const PairAcceptedMessageSchema = baseMessageSchema
 export const InspectMessageSchema = baseMessageSchema
   .extend({
     type: z.literal("inspect"),
+    sessionId: z.string().min(1),
+    source: ClientSourceSchema,
     subject: InspectSubjectSchema,
+    facts: z.array(RuntimeFactSchema),
+    context: InspectContextSchema,
   })
   .strict();
 
@@ -157,6 +169,7 @@ export const Browser2IdeMessageSchema = z.discriminatedUnion("type", [
 export type ClientRole = z.infer<typeof ClientRoleSchema>;
 export type ClientSource = z.infer<typeof ClientSourceSchema>;
 export type InspectSubject = z.infer<typeof InspectSubjectSchema>;
+export type InspectContext = z.infer<typeof InspectContextSchema>;
 export type RuntimeFact = z.infer<typeof RuntimeFactSchema>;
 export type CssRuleFact = z.infer<typeof CssRuleFactSchema>;
 export type DomAttributeFact = z.infer<typeof DomAttributeFactSchema>;

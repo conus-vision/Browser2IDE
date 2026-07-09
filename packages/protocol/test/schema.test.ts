@@ -34,6 +34,23 @@ const reference = {
   },
 };
 
+const runtimeFacts = [
+  {
+    type: "css-rule",
+    selector: ".primary",
+    property: "color",
+    value: "red",
+    source: sourceLocation,
+    metadata: {},
+  },
+  {
+    type: "dom-attribute",
+    name: "aria-label",
+    value: "Submit form",
+    metadata: {},
+  },
+];
+
 describe("Browser2IDE protocol schemas", () => {
   it.each([
     [
@@ -78,6 +95,8 @@ describe("Browser2IDE protocol schemas", () => {
         protocolVersion: 1,
         type: "inspect",
         messageId: "msg-inspect",
+        sessionId: "session-1",
+        source,
         subject: {
           selector: "#root > button",
           nodeId: "node-1",
@@ -89,23 +108,16 @@ describe("Browser2IDE protocol schemas", () => {
               metadata: {},
             },
           ],
-          facts: [
-            {
-              type: "css-rule",
-              selector: ".primary",
-              property: "color",
-              value: "red",
-              source: sourceLocation,
-              metadata: {},
-            },
-            {
-              type: "dom-attribute",
-              name: "aria-label",
-              value: "Submit form",
-              metadata: {},
-            },
-          ],
           metadata: {},
+        },
+        facts: runtimeFacts,
+        context: {
+          url: "http://localhost:3000/form",
+          frameId: "main",
+          route: "/form",
+          metadata: {
+            viewport: "desktop",
+          },
         },
         metadata: {},
       },
@@ -175,6 +187,29 @@ describe("Browser2IDE protocol schemas", () => {
     ],
   ])("parses a valid %s message", (_name, message) => {
     expect(parseMessage(message)).toEqual(message);
+  });
+
+  it("rejects inspect messages with facts nested inside the subject", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 1,
+        type: "inspect",
+        messageId: "msg-inspect-nested-facts",
+        sessionId: "session-1",
+        source,
+        subject: {
+          selector: "#root > button",
+          facts: runtimeFacts,
+          metadata: {},
+        },
+        facts: runtimeFacts,
+        context: {
+          url: "http://localhost:3000/form",
+          metadata: {},
+        },
+        metadata: {},
+      }),
+    ).toThrow();
   });
 
   it("rejects unsupported protocol versions", () => {
