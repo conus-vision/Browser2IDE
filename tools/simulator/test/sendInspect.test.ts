@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { createBridgeServer } from "@browser2ide/bridge";
+import {
+  createAuthorizedToken,
+  createBridgeServer,
+  PairingStore,
+} from "@browser2ide/bridge";
 import {
   Browser2IdeMessageSchema,
   type Browser2IdeMessage,
@@ -128,7 +132,12 @@ describe("sendInspect", () => {
   });
 
   it("uses an existing token when auth-token mode is selected", async () => {
-    const bridge = createBridgeServer({ port: 0, sessionId: "session-1" });
+    const simulatorToken = createAuthorizedToken("session-1", "simulator");
+    const bridge = createBridgeServer({
+      port: 0,
+      sessionId: "session-1",
+      pairingStore: new PairingStore({ authorizedTokens: [simulatorToken] }),
+    });
     await bridge.start();
 
     let ideSocket: WebSocket | undefined;
@@ -142,8 +151,8 @@ describe("sendInspect", () => {
 
       await sendInspect({
         url: bridge.getUrl(),
-        authToken: ideAccepted.authToken,
-        sessionId: ideAccepted.sessionId,
+        authToken: simulatorToken.value,
+        sessionId: simulatorToken.sessionId,
         fixture: "inspect-card",
         sourceId: "simulator-auth",
       });
