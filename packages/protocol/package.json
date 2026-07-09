@@ -13,8 +13,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "test:public": "node test/public-export.mjs",
+    "test": "vitest run && pnpm run build && node test/public-export.mjs",
+    "test:public": "pnpm run build && node test/public-export.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
