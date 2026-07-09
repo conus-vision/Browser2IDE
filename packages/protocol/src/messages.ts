@@ -122,13 +122,40 @@ export const ReferencesMessageSchema = baseMessageSchema
   })
   .strict();
 
-export const CommandMessageSchema = baseMessageSchema
-  .extend({
-    type: z.literal("command"),
-    command: z.string().min(1),
-    arguments: metadataSchema.optional(),
+const OpenSourceArgumentsSchema = z
+  .object({
+    source: SourceLocationSchema,
+    metadata: metadataSchema,
   })
   .strict();
+
+const HighlightElementArgumentsSchema = z
+  .object({
+    selector: z.string().min(1),
+    metadata: metadataSchema,
+  })
+  .strict();
+
+export const OpenSourceCommandMessageSchema = baseMessageSchema
+  .extend({
+    type: z.literal("command"),
+    command: z.literal("openSource"),
+    arguments: OpenSourceArgumentsSchema,
+  })
+  .strict();
+
+export const HighlightElementCommandMessageSchema = baseMessageSchema
+  .extend({
+    type: z.literal("command"),
+    command: z.literal("highlightElement"),
+    arguments: HighlightElementArgumentsSchema,
+  })
+  .strict();
+
+export const CommandMessageSchema = z.discriminatedUnion("command", [
+  OpenSourceCommandMessageSchema,
+  HighlightElementCommandMessageSchema,
+]);
 
 export const ErrorMessageSchema = baseMessageSchema
   .extend({
@@ -154,7 +181,7 @@ export const PongMessageSchema = baseMessageSchema
   })
   .strict();
 
-export const Browser2IdeMessageSchema = z.discriminatedUnion("type", [
+export const Browser2IdeMessageSchema = z.union([
   HelloMessageSchema,
   PairRequestMessageSchema,
   PairAcceptedMessageSchema,
@@ -178,6 +205,12 @@ export type PairRequestMessage = z.infer<typeof PairRequestMessageSchema>;
 export type PairAcceptedMessage = z.infer<typeof PairAcceptedMessageSchema>;
 export type InspectMessage = z.infer<typeof InspectMessageSchema>;
 export type ReferencesMessage = z.infer<typeof ReferencesMessageSchema>;
+export type OpenSourceCommandMessage = z.infer<
+  typeof OpenSourceCommandMessageSchema
+>;
+export type HighlightElementCommandMessage = z.infer<
+  typeof HighlightElementCommandMessageSchema
+>;
 export type CommandMessage = z.infer<typeof CommandMessageSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 export type PingMessage = z.infer<typeof PingMessageSchema>;

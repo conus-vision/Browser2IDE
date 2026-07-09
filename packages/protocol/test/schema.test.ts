@@ -137,15 +137,33 @@ describe("Browser2IDE protocol schemas", () => {
       },
     ],
     [
-      "command",
+      "openSource command",
       {
         protocolVersion: 1,
         type: "command",
-        messageId: "msg-command",
+        messageId: "msg-open-source-command",
         command: "openSource",
         arguments: {
-          uri: "file:///workspace/src/App.tsx",
-          line: 12,
+          source: sourceLocation,
+          metadata: {
+            origin: "inspect-panel",
+          },
+        },
+        metadata: {},
+      },
+    ],
+    [
+      "highlightElement command",
+      {
+        protocolVersion: 1,
+        type: "command",
+        messageId: "msg-highlight-element-command",
+        command: "highlightElement",
+        arguments: {
+          selector: "#root > button",
+          metadata: {
+            durationMs: 500,
+          },
         },
         metadata: {},
       },
@@ -253,6 +271,92 @@ describe("Browser2IDE protocol schemas", () => {
             },
           },
         ],
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects source locations with reversed ranges", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 1,
+        type: "references",
+        messageId: "msg-reversed-location",
+        subject: {
+          selector: "#root",
+          metadata: {},
+        },
+        references: [
+          {
+            ...reference,
+            source: {
+              ...sourceLocation,
+              endLine: 11,
+              endColumn: 8,
+            },
+          },
+        ],
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects source locations with only one end position", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 1,
+        type: "references",
+        messageId: "msg-missing-end-pair",
+        subject: {
+          selector: "#root",
+          metadata: {},
+        },
+        references: [
+          {
+            ...reference,
+            source: {
+              uri: sourceLocation.uri,
+              line: sourceLocation.line,
+              column: sourceLocation.column,
+              endLine: sourceLocation.endLine,
+              metadata: {},
+            },
+          },
+        ],
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects unsupported command names", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 1,
+        type: "command",
+        messageId: "msg-unknown-command",
+        command: "unknownCommand",
+        arguments: {
+          metadata: {},
+        },
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects openSource commands with invalid source positions", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 1,
+        type: "command",
+        messageId: "msg-invalid-open-source",
+        command: "openSource",
+        arguments: {
+          source: {
+            ...sourceLocation,
+            line: 0,
+          },
+          metadata: {},
+        },
         metadata: {},
       }),
     ).toThrow();
