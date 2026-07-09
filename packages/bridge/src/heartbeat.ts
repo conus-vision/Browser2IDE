@@ -14,7 +14,7 @@ export function startHeartbeat(
 ): Heartbeat {
   const interval = setInterval(() => {
     for (const client of registry.all()) {
-      if (client.missedPongs >= 1) {
+      if (client.missedPongs >= 2) {
         client.connection.terminate();
         registry.remove(client.id);
         continue;

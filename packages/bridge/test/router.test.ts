@@ -27,6 +27,12 @@ const inspectMessage = {
   metadata: {},
 } as const;
 
+const simulatorInspectMessage = {
+  ...inspectMessage,
+  messageId: "inspect-simulator-1",
+  source: { role: "simulator", id: "simulator-source", metadata: {} },
+} as const;
+
 const referencesMessage = {
   protocolVersion: 1,
   type: "references",
@@ -71,6 +77,12 @@ describe("bridge router and registry", () => {
     routeMessage(registry, browser, inspectMessage);
 
     expect(ideSame.sent).toEqual([inspectMessage]);
+    expect(ideOther.sent).toEqual([]);
+
+    const simulator = registry.add(client("simulator", "session-1"));
+    routeMessage(registry, simulator, simulatorInspectMessage);
+
+    expect(ideSame.sent).toEqual([inspectMessage, simulatorInspectMessage]);
     expect(ideOther.sent).toEqual([]);
   });
 

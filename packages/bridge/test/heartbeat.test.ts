@@ -39,6 +39,11 @@ describe("bridge heartbeat", () => {
     expect(entry.missedPongs).toBe(1);
 
     vi.advanceTimersByTime(15_000);
+    expect(entry.connection.sent).toHaveLength(2);
+    expect(entry.missedPongs).toBe(2);
+    expect(entry.connection.terminated).toBe(false);
+
+    vi.advanceTimersByTime(15_000);
     expect(entry.connection.terminated).toBe(true);
 
     heartbeat.stop();
