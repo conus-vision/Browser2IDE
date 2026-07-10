@@ -8,7 +8,7 @@ import type {
   BridgeManagerState,
   BridgeSnapshot,
 } from "./bridgeManager.js";
-import type { ResolvedReference } from "./references/sourceTypes.js";
+import type { SourceResolution } from "./sourcePlugins/types.js";
 
 export interface OutputChannelLike {
   appendLine(value: string): void;
@@ -28,10 +28,10 @@ export interface DiagnosticsSnapshot {
   readonly pairingCode?: string;
   readonly pairingExpiresAt?: Date;
   readonly lastInspectAt?: Date;
+  readonly targetsReceived: number;
   readonly factsReceived: number;
-  readonly referencesResolved: number;
-  readonly unmappedSources: readonly string[];
-  readonly externalCssCount: number;
+  readonly matchesResolved: number;
+  readonly pluginDiagnostics: number;
   readonly lastProtocolError?: ProtocolErrorSummary;
 }
 
@@ -42,10 +42,10 @@ export interface DiagnosticsTrackerOptions {
 export class DiagnosticsTracker {
   private readonly now: () => Date;
   private lastInspectAt: Date | undefined;
+  private targetsReceived = 0;
   private factsReceived = 0;
-  private referencesResolved = 0;
-  private unmappedSources: string[] = [];
-  private externalCssCount = 0;
+  private matchesResolved = 0;
+  private pluginDiagnostics = 0;
   private lastProtocolError: ProtocolErrorSummary | undefined;
 
   public constructor(options: DiagnosticsTrackerOptions = {}) {
@@ -54,25 +54,18 @@ export class DiagnosticsTracker {
 
   public recordInspect(message: InspectMessage): void {
     this.lastInspectAt = this.now();
+    this.targetsReceived = message.targets.length;
     this.factsReceived = message.targets.reduce(
       (total, target) => total + target.facts.length,
       0,
     );
+    this.matchesResolved = 0;
+    this.pluginDiagnostics = 0;
   }
 
-  public recordReferences(references: readonly ResolvedReference[]): void {
-    this.referencesResolved = references.length;
-    this.unmappedSources = [
-      ...new Set(
-        references
-          .filter((reference) => reference.status === "unmapped")
-          .map((reference) => reference.source.uri),
-      ),
-    ];
-    this.externalCssCount = references.filter(
-      (reference) =>
-        reference.kind === "style-rule" && reference.status === "external",
-    ).length;
+  public recordResolution(resolution: SourceResolution): void {
+    this.matchesResolved = resolution.matches.length;
+    this.pluginDiagnostics = resolution.diagnostics.length;
   }
 
   public recordProtocolError(error: ErrorMessage): void {
@@ -91,10 +84,10 @@ export class DiagnosticsTracker {
       pairingCode: bridge.pairingCode,
       pairingExpiresAt: bridge.pairingExpiresAt,
       lastInspectAt: this.lastInspectAt,
+      targetsReceived: this.targetsReceived,
       factsReceived: this.factsReceived,
-      referencesResolved: this.referencesResolved,
-      unmappedSources: [...this.unmappedSources],
-      externalCssCount: this.externalCssCount,
+      matchesResolved: this.matchesResolved,
+      pluginDiagnostics: this.pluginDiagnostics,
       lastProtocolError: this.lastProtocolError,
     };
   }
@@ -111,10 +104,10 @@ export function writeBridgeDiagnostics(
     `pairing=${snapshot.pairingCode ?? "unavailable"} expires=${formatDate(snapshot.pairingExpiresAt)}`,
   );
   output.appendLine(
-    `lastInspect=${formatDate(snapshot.lastInspectAt)} facts=${snapshot.factsReceived}`,
+    `lastInspect=${formatDate(snapshot.lastInspectAt)} targets=${snapshot.targetsReceived} facts=${snapshot.factsReceived}`,
   );
   output.appendLine(
-    `references=${snapshot.referencesResolved} unmapped=${snapshot.unmappedSources.join(",") || "none"} externalCss=${snapshot.externalCssCount}`,
+    `sources matches=${snapshot.matchesResolved} pluginDiagnostics=${snapshot.pluginDiagnostics}`,
   );
   output.appendLine(
     `protocolError=${snapshot.lastProtocolError ? `${snapshot.lastProtocolError.code}: ${snapshot.lastProtocolError.message}` : "none"}`,

@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { Browser2IDEApi } from "@browser2ide/plugin-api";
 import { BridgeClient, type ConnectionState } from "./bridgeClient.js";
 import { BridgeManager } from "./bridgeManager.js";
 import { readBridgeConfiguration } from "./config.js";
@@ -7,13 +8,9 @@ import {
   writeBridgeDiagnostics,
 } from "./diagnostics.js";
 import { showPairingCode } from "./pairing.js";
-import { CssRuleResolver } from "./references/cssRuleResolver.js";
-import { SourceResolverRegistry } from "./references/sourceResolverRegistry.js";
-import type {
-  DecorationEditorLike,
-} from "./presenter/decorations.js";
 import {
   createPresenterRuntime,
+  type PresenterEditorLike,
   type PresenterRuntime,
   type PresenterRuntimeHost,
 } from "./presenter/runtime.js";
@@ -26,23 +23,20 @@ let output: vscode.OutputChannel | undefined;
 let presenterRuntime: PresenterRuntime | undefined;
 let diagnostics: DiagnosticsTracker | undefined;
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export async function activate(
+  context: vscode.ExtensionContext,
+): Promise<Browser2IDEApi> {
   output = vscode.window.createOutputChannel("Browser2IDE");
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
   statusBar.show();
   updateStatus("disconnected");
   diagnostics = new DiagnosticsTracker();
 
-  presenterRuntime = createPresenterRuntime({
-    resolver: new SourceResolverRegistry([new CssRuleResolver()]),
+  const runtime = createPresenterRuntime({
     host: createPresenterHost(),
+    diagnostics,
   });
-  const diagnosticsTreeSubscription =
-    presenterRuntime.tree.onDidChangeTreeData(() => {
-      if (presenterRuntime) {
-        diagnostics?.recordReferences(presenterRuntime.tree.getReferences());
-      }
-    });
+  presenterRuntime = runtime;
 
   const configuration = readBridgeConfiguration(
     vscode.workspace.getConfiguration("browser2ide"),
@@ -53,9 +47,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await manager?.start();
     const snapshot = manager?.snapshot();
     const token = manager?.getIdeToken();
-    if (!snapshot?.url || !token || client) {
-      return;
-    }
+    if (!snapshot?.url || !token || client) return;
 
     client = new BridgeClient({
       url: snapshot.url,
@@ -73,12 +65,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     client.onInspect((message) => {
       diagnostics?.recordInspect(message);
       output?.appendLine(`inspect ${message.messageId}`);
-      const openAll = vscode.workspace
-        .getConfiguration("browser2ide")
-        .get<boolean>("openAllReferences", true);
-      void presenterRuntime?.presenter
-        .present(message, openAll)
-        .catch(reportError);
+      runtime.select(message);
     });
     client.connect();
   };
@@ -86,8 +73,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     output,
     statusBar,
-    presenterRuntime,
-    diagnosticsTreeSubscription,
+    runtime,
     vscode.commands.registerCommand("browser2ide.start", async () => {
       try {
         await start();
@@ -96,7 +82,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand("browser2ide.stop", async () => {
-      presenterRuntime?.presenter.cancel();
+      runtime.clear();
       client?.dispose();
       client = undefined;
       await manager?.stop();
@@ -122,13 +108,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         writeClipboard: (value) => vscode.env.clipboard.writeText(value),
         showInputBox: (options) => vscode.window.showInputBox(options),
-        showErrorMessage: (message) =>
-          vscode.window.showErrorMessage(message),
+        showErrorMessage: (message) => vscode.window.showErrorMessage(message),
       });
     }),
     vscode.commands.registerCommand("browser2ide.resetPairing", async () => {
       await manager?.resetPairing();
-      void vscode.window.showInformationMessage("Browser2IDE pairing has been reset.");
+      void vscode.window.showInformationMessage(
+        "Browser2IDE pairing has been reset.",
+      );
     }),
     vscode.commands.registerCommand("browser2ide.openDiagnostics", () => {
       if (output && manager && diagnostics) {
@@ -146,6 +133,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   } catch (error) {
     reportError(error);
   }
+
+  return runtime.api;
 }
 
 export async function deactivate(): Promise<void> {
@@ -161,10 +150,7 @@ export async function deactivate(): Promise<void> {
 }
 
 function updateStatus(state: ConnectionState): void {
-  if (!statusBar) {
-    return;
-  }
-
+  if (!statusBar) return;
   statusBar.text = {
     disconnected: "Browser2IDE: Offline",
     connecting: "Browser2IDE: Connecting",
@@ -176,12 +162,36 @@ function updateStatus(state: ConnectionState): void {
 function reportError(error: unknown): void {
   clientState = "error";
   updateStatus(clientState);
-  output?.appendLine(error instanceof Error ? error.stack ?? error.message : String(error));
+  output?.appendLine(
+    error instanceof Error ? error.stack ?? error.message : String(error),
+  );
 }
 
 function createPresenterHost(): PresenterRuntimeHost {
   return {
+    get workspaceFolders() {
+      return (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+        uri: folder.uri,
+      }));
+    },
+    findFiles: (pattern, exclude) => vscode.workspace.findFiles(pattern, exclude),
+    parseUri: (value) => vscode.Uri.parse(value),
+    readFile: (uri) => vscode.workspace.fs.readFile(uri as vscode.Uri),
+    getActiveEditor: () => {
+      const editor = vscode.window.activeTextEditor;
+      return editor ? presenterEditor(editor) : undefined;
+    },
+    onDidChangeActiveEditor: (listener) =>
+      vscode.window.onDidChangeActiveTextEditor((editor) =>
+        listener(editor ? presenterEditor(editor) : undefined),
+      ),
+    onDidChangeTextDocument: (listener) =>
+      vscode.workspace.onDidChangeTextDocument((event) =>
+        listener(event.document),
+      ),
     createThemeIcon: (id) => new vscode.ThemeIcon(id),
+    createThemeColor: (id) => new vscode.ThemeColor(id),
+    overviewRulerLaneRight: vscode.OverviewRulerLane.Right,
     registerTreeDataProvider: (provider) =>
       vscode.window.registerTreeDataProvider(
         "browser2ide.applicableRules",
@@ -193,27 +203,27 @@ function createPresenterHost(): PresenterRuntimeHost {
       vscode.window.createTextEditorDecorationType(options),
     createRange: (startLine, startColumn, endLine, endColumn) =>
       new vscode.Range(startLine, startColumn, endLine, endColumn),
-    getVisibleEditors: () =>
-      vscode.window.visibleTextEditors.map(decorationEditor),
-    onDidChangeVisibleEditors: (listener) =>
-      vscode.window.onDidChangeVisibleTextEditors((editors) =>
-        listener(editors.map(decorationEditor)),
-      ),
-    openTextDocument: (uri) => vscode.workspace.openTextDocument(uri),
-    showTextDocument: (document, options) =>
-      vscode.window.showTextDocument(document as vscode.TextDocument, options),
     revealRange: (editor, range) =>
-      (editor as vscode.TextEditor).revealRange(
+      vscodeEditor(editor).revealRange(
         range as vscode.Range,
         vscode.TextEditorRevealType.InCenter,
       ),
+    selectRangeStart: (editor, start) => {
+      const position = new vscode.Position(start.line, start.character);
+      vscodeEditor(editor).selection = new vscode.Selection(position, position);
+    },
     reportError,
   };
 }
 
-function decorationEditor(editor: vscode.TextEditor): DecorationEditorLike {
+type VsCodePresenterEditor = PresenterEditorLike & {
+  readonly source: vscode.TextEditor;
+};
+
+function presenterEditor(editor: vscode.TextEditor): VsCodePresenterEditor {
   return {
-    document: { uri: editor.document.uri },
+    source: editor,
+    document: editor.document,
     setDecorations(decorationType, ranges) {
       editor.setDecorations(
         decorationType as vscode.TextEditorDecorationType,
@@ -221,4 +231,8 @@ function decorationEditor(editor: vscode.TextEditor): DecorationEditorLike {
       );
     },
   };
+}
+
+function vscodeEditor(editor: PresenterEditorLike): vscode.TextEditor {
+  return (editor as VsCodePresenterEditor).source;
 }

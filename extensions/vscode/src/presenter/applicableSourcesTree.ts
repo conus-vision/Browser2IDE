@@ -93,8 +93,20 @@ export class ApplicableSourcesTreeDataProvider {
     return this.matchesById.get(sourceMatchId);
   }
 
+  public getMatches(): readonly ResolvedSourceMatch[] {
+    return [...this.matchesById.values()];
+  }
+
   public getDocumentUri(): string | undefined {
     return this.documentUri;
+  }
+
+  public clear(): void {
+    if (this.disposed) return;
+    this.items = [];
+    this.matchesById.clear();
+    this.documentUri = undefined;
+    this.emitChange();
   }
 
   public dispose(): void {

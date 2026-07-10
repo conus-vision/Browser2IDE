@@ -50,7 +50,6 @@ describe("BridgeManager", () => {
         bridgeUrl: "ws://localhost:48735",
         bridgePort: 48_735,
         sessionId: "session-1",
-        openAllReferences: true,
       },
       secrets: new MemorySecrets(),
       createBridge: ({ host, port }) => {
@@ -104,7 +103,6 @@ describe("BridgeManager", () => {
         bridgeUrl: "ws://127.0.0.1:48735",
         bridgePort: 0,
         sessionId: "integration-session",
-        openAllReferences: true,
       },
       secrets: new MemorySecrets(),
     });
@@ -147,7 +145,6 @@ describe("BridgeManager", () => {
         bridgeUrl: "ws://127.0.0.1:48735",
         bridgePort: 48_735,
         sessionId: "session-1",
-        openAllReferences: true,
       },
       secrets: new MemorySecrets(),
       createBridge: ({ port }) => {
@@ -191,7 +188,6 @@ describe("BridgeManager", () => {
         bridgeUrl: "ws://127.0.0.1:48735",
         bridgePort: 48_735,
         sessionId: "session-1",
-        openAllReferences: true,
       },
       secrets,
       createBridge: (options) => {
@@ -232,7 +228,6 @@ describe("BridgeManager", () => {
         bridgeUrl: "ws://127.0.0.1:48735",
         bridgePort: 48_735,
         sessionId: "session-1",
-        openAllReferences: true,
       },
       secrets: new MemorySecrets(),
       createBridge: ({ port, pairingStore }) => {

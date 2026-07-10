@@ -24,6 +24,7 @@ describe("VS Code extension manifest", () => {
 
     expect(manifest.type).toBe("module");
     expect(manifest.main).toBe("./dist/extension.cjs");
+    expect((manifest as { publisher?: string }).publisher).toBe("browser2ide");
 
     expect(manifest.contributes.commands.map(({ command }) => command)).toEqual([
       "browser2ide.start",
@@ -37,8 +38,12 @@ describe("VS Code extension manifest", () => {
       "browser2ide.bridgeUrl": { default: "ws://127.0.0.1:48735" },
       "browser2ide.bridgePort": { default: 48_735 },
       "browser2ide.sessionId": { default: "default" },
-      "browser2ide.openAllReferences": { default: true },
     });
+    expect(Object.keys(manifest.contributes.configuration.properties)).toEqual([
+      "browser2ide.bridgeUrl",
+      "browser2ide.bridgePort",
+      "browser2ide.sessionId",
+    ]);
 
     expect(manifest.contributes.viewsContainers.activitybar).toContainEqual({
       id: "browser2ide",
