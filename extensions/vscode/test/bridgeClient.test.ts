@@ -63,13 +63,20 @@ describe("BridgeClient", () => {
     });
 
     sockets[0].message({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "inspect",
       messageId: "inspect-1",
       sessionId: "session-1",
       source: { role: "browser", id: "browser-1", metadata: {} },
-      subject: { selector: "#save", metadata: {} },
-      facts: [],
+      targets: [
+        {
+          role: "selected",
+          depth: 0,
+          subject: { selector: "#save", metadata: {} },
+          facts: [],
+          metadata: {},
+        },
+      ],
       context: { url: "http://localhost:3000", metadata: {} },
       metadata: {},
     });
@@ -117,7 +124,7 @@ describe("BridgeClient", () => {
     client.connect();
     socket.open();
     socket.message({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "error",
       messageId: "error-1",
       code: "bridge.noBrowserClient",

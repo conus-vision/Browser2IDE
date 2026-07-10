@@ -51,8 +51,15 @@ async function sendSelection(element: InspectableElement): Promise<void> {
   await browser.runtime.sendMessage({
     type: "elementSelected",
     payload: {
-      subject: createElementSnapshot(element, pageUrl),
-      facts: collection.facts,
+      targets: [
+        {
+          role: "selected",
+          depth: 0,
+          subject: createElementSnapshot(element, pageUrl),
+          facts: collection.facts,
+          metadata: {},
+        },
+      ],
       context: {
         url: pageUrl,
         route: `${location.pathname}${location.search}${location.hash}`,

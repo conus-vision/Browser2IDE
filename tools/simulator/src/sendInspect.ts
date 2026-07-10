@@ -6,6 +6,7 @@ import WebSocket, { type RawData } from "ws";
 import {
   Browser2IdeMessageSchema,
   InspectMessageSchema,
+  PROTOCOL_VERSION,
   type Browser2IdeMessage,
   type InspectMessage,
   type PairAcceptedMessage,
@@ -45,7 +46,7 @@ export function buildInspectMessage(
   }
 
   return InspectMessageSchema.parse({
-    protocolVersion: 1,
+    protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
     messageId: randomUUID(),
     sessionId: options.sessionId,
@@ -54,8 +55,7 @@ export function buildInspectMessage(
       id: options.sourceId,
       metadata: {},
     },
-    subject: fixture.subject,
-    facts: fixture.facts,
+    targets: fixture.targets,
     context: fixture.context,
     metadata: fixture.metadata ?? {},
   });
@@ -148,7 +148,7 @@ export async function sendInspect(
         };
 
     await sendProtocolMessage(socket, {
-      protocolVersion: 1,
+      protocolVersion: PROTOCOL_VERSION,
       type: "hello",
       messageId: randomUUID(),
       sessionId: credentials.sessionId,
@@ -177,7 +177,7 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
   const options = parseSendArgs(args);
   const inspect = await sendInspect(options);
   console.log(
-    `Sent inspect for ${inspect.subject.selector ?? "selected element"} in session ${inspect.sessionId}`,
+    `Sent inspect for ${inspect.targets[0]?.subject.selector ?? "selected element"} in session ${inspect.sessionId}`,
   );
 }
 
@@ -194,7 +194,7 @@ async function pair(
   );
 
   await sendProtocolMessage(socket, {
-    protocolVersion: 1,
+    protocolVersion: PROTOCOL_VERSION,
     type: "pairRequest",
     messageId: randomUUID(),
     pairingCode,

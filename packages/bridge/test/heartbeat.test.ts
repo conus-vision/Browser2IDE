@@ -32,7 +32,7 @@ describe("bridge heartbeat", () => {
     vi.advanceTimersByTime(15_000);
     expect(entry.connection.sent).toHaveLength(1);
     expect(entry.connection.sent[0]).toMatchObject({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "ping",
       metadata: {},
     });

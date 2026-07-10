@@ -16,13 +16,20 @@ function client(role: "browser" | "ide" | "simulator", sessionId: string) {
 }
 
 const inspectMessage = {
-  protocolVersion: 1,
+  protocolVersion: 2,
   type: "inspect",
   messageId: "inspect-1",
   sessionId: "session-1",
   source: { role: "browser", id: "browser-source", metadata: {} },
-  subject: { selector: "#submit", metadata: {} },
-  facts: [],
+  targets: [
+    {
+      role: "selected",
+      depth: 0,
+      subject: { selector: "#submit", metadata: {} },
+      facts: [],
+      metadata: {},
+    },
+  ],
   context: { url: "http://localhost:3000", metadata: {} },
   metadata: {},
 } as const;
@@ -34,7 +41,7 @@ const simulatorInspectMessage = {
 } as const;
 
 const referencesMessage = {
-  protocolVersion: 1,
+  protocolVersion: 2,
   type: "references",
   messageId: "references-1",
   subject: { selector: "#submit", metadata: {} },
@@ -43,7 +50,7 @@ const referencesMessage = {
 } as const;
 
 const commandMessage = {
-  protocolVersion: 1,
+  protocolVersion: 2,
   type: "command",
   messageId: "command-1",
   command: "highlightElement",

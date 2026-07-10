@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import {
   Browser2IdeMessageSchema,
   CommandMessageSchema,
+  PROTOCOL_VERSION,
   type CommandMessage,
   type ErrorMessage,
   type InspectMessage,
@@ -114,7 +115,7 @@ export class BridgeClient {
       this.setState("connected");
       socket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: PROTOCOL_VERSION,
           type: "hello",
           messageId: randomUUID(),
           sessionId: this.options.sessionId,
@@ -161,7 +162,7 @@ export class BridgeClient {
     if (parsed.data.type === "ping") {
       socket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: PROTOCOL_VERSION,
           type: "pong",
           messageId: randomUUID(),
           pingMessageId: parsed.data.messageId,
@@ -221,7 +222,7 @@ export class BridgeClient {
 
 function localProtocolError(message: string): ErrorMessage {
   return {
-    protocolVersion: 1,
+    protocolVersion: PROTOCOL_VERSION,
     type: "error",
     messageId: randomUUID(),
     code: "protocol.invalidMessage",

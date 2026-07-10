@@ -54,7 +54,10 @@ export class DiagnosticsTracker {
 
   public recordInspect(message: InspectMessage): void {
     this.lastInspectAt = this.now();
-    this.factsReceived = message.facts.length;
+    this.factsReceived = message.targets.reduce(
+      (total, target) => total + target.facts.length,
+      0,
+    );
   }
 
   public recordReferences(references: readonly ResolvedReference[]): void {

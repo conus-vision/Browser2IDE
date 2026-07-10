@@ -4,6 +4,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   Browser2IdeMessageSchema,
   PairAcceptedMessageSchema,
+  PROTOCOL_VERSION,
   type Browser2IdeMessage,
   type ProtocolErrorCode,
 } from "@browser2ide/protocol";
@@ -177,7 +178,7 @@ function handleConnection(
       const { accepted } = pairingAttempt;
 
       const response = PairAcceptedMessageSchema.parse({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         type: "pairAccepted",
         messageId: randomUUID(),
         sessionId: accepted.sessionId,
@@ -248,7 +249,7 @@ function sendSocketError(
   fatal = false,
 ): void {
   const error = Browser2IdeMessageSchema.parse({
-    protocolVersion: 1,
+    protocolVersion: PROTOCOL_VERSION,
     type: "error",
     messageId: randomUUID(),
     code,

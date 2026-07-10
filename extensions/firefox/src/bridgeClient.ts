@@ -1,5 +1,6 @@
 import {
   Browser2IdeMessageSchema,
+  PROTOCOL_VERSION,
   type InspectMessage,
   type ProtocolErrorCode,
 } from "@browser2ide/protocol";
@@ -49,7 +50,7 @@ export interface BrowserBridgeClientOptions {
 
 export type InspectPayload = Pick<
   InspectMessage,
-  "subject" | "facts" | "context" | "metadata"
+  "targets" | "context" | "metadata"
 >;
 
 type ConnectionIntent =
@@ -95,7 +96,7 @@ export class BrowserBridgeClient {
       return false;
     }
     this.send({
-      protocolVersion: 1,
+      protocolVersion: PROTOCOL_VERSION,
       type: "inspect",
       messageId: this.messageId(),
       sessionId: this.credentials.sessionId,
@@ -104,8 +105,7 @@ export class BrowserBridgeClient {
         id: this.options.sourceId,
         metadata: {},
       },
-      subject: payload.subject,
-      facts: payload.facts,
+      targets: payload.targets,
       context: payload.context,
       metadata: payload.metadata,
     });
@@ -127,7 +127,7 @@ export class BrowserBridgeClient {
       if (intent.kind === "pair") {
         this.setState("pairing");
         this.send({
-          protocolVersion: 1,
+          protocolVersion: PROTOCOL_VERSION,
           type: "pairRequest",
           messageId: this.messageId(),
           pairingCode: intent.pairingCode,
@@ -194,7 +194,7 @@ export class BrowserBridgeClient {
     }
     if (message.type === "ping") {
       this.send({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         type: "pong",
         messageId: this.messageId(),
         pingMessageId: message.messageId,
@@ -213,7 +213,7 @@ export class BrowserBridgeClient {
       return;
     }
     this.send({
-      protocolVersion: 1,
+      protocolVersion: PROTOCOL_VERSION,
       type: "hello",
       messageId: this.messageId(),
       sessionId: this.credentials.sessionId,

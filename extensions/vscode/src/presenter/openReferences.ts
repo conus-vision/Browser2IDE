@@ -131,7 +131,7 @@ export class InspectPresenter {
     try {
       references = await this.options.resolver.resolve({
         message,
-        facts: message.facts,
+        facts: message.targets.flatMap((target) => target.facts),
       });
     } catch (error) {
       if (!isCurrent()) {

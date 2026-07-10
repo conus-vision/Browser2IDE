@@ -5,10 +5,13 @@ import {
   SourceReferenceSchema,
 } from "./references.js";
 import { ProtocolCapabilitySchema } from "./capabilities.js";
+import { JsonObjectSchema } from "./json.js";
+
+export const PROTOCOL_VERSION = 2 as const;
 
 const baseMessageSchema = z
   .object({
-    protocolVersion: z.literal(1),
+    protocolVersion: z.literal(PROTOCOL_VERSION),
     messageId: z.string().min(1),
     metadata: metadataSchema,
   })
@@ -46,9 +49,22 @@ export const CssRuleFactSchema = z
   })
   .strict();
 
-export const RuntimeFactSchema = z.discriminatedUnion("type", [
+export const PluginRuntimeFactSchema = z
+  .object({
+    type: z
+      .string()
+      .max(128)
+      .regex(/^[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+$/),
+    source: SourceLocationSchema.optional(),
+    payload: JsonObjectSchema,
+    metadata: JsonObjectSchema,
+  })
+  .strict();
+
+export const RuntimeFactSchema = z.union([
   CssRuleFactSchema,
   DomAttributeFactSchema,
+  PluginRuntimeFactSchema,
 ]);
 
 const DomAttributeSchema = z
@@ -74,6 +90,16 @@ export const InspectContextSchema = z
     url: z.string().min(1),
     frameId: z.string().optional(),
     route: z.string().optional(),
+    metadata: metadataSchema,
+  })
+  .strict();
+
+export const InspectTargetSchema = z
+  .object({
+    role: z.enum(["selected", "parent"]),
+    depth: z.union([z.literal(0), z.literal(1)]),
+    subject: InspectSubjectSchema,
+    facts: z.array(RuntimeFactSchema),
     metadata: metadataSchema,
   })
   .strict();
@@ -110,11 +136,30 @@ export const InspectMessageSchema = baseMessageSchema
     type: z.literal("inspect"),
     sessionId: z.string().min(1),
     source: ClientSourceSchema,
-    subject: InspectSubjectSchema,
-    facts: z.array(RuntimeFactSchema),
+    targets: z.array(InspectTargetSchema).min(1).max(2),
     context: InspectContextSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((message, context) => {
+    const selected = message.targets.filter(
+      (target) => target.role === "selected",
+    );
+    const parents = message.targets.filter((target) => target.role === "parent");
+    if (selected.length !== 1 || selected[0]?.depth !== 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["targets"],
+        message: "inspect requires one selected target at depth 0",
+      });
+    }
+    if (parents.length > 1 || parents.some((target) => target.depth !== 1)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["targets"],
+        message: "inspect permits one parent target at depth 1",
+      });
+    }
+  });
 
 export const ReferencesMessageSchema = baseMessageSchema
   .extend({
@@ -211,7 +256,9 @@ export type ClientRole = z.infer<typeof ClientRoleSchema>;
 export type ClientSource = z.infer<typeof ClientSourceSchema>;
 export type InspectSubject = z.infer<typeof InspectSubjectSchema>;
 export type InspectContext = z.infer<typeof InspectContextSchema>;
+export type InspectTarget = z.infer<typeof InspectTargetSchema>;
 export type RuntimeFact = z.infer<typeof RuntimeFactSchema>;
+export type PluginRuntimeFact = z.infer<typeof PluginRuntimeFactSchema>;
 export type CssRuleFact = z.infer<typeof CssRuleFactSchema>;
 export type DomAttributeFact = z.infer<typeof DomAttributeFactSchema>;
 export type HelloMessage = z.infer<typeof HelloMessageSchema>;

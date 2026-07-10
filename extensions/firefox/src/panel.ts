@@ -230,7 +230,11 @@ function handleRuntimeMessage(message: unknown): void {
     const inaccessible = Array.isArray(payload.inaccessibleStylesheets)
       ? payload.inaccessibleStylesheets.length
       : 0;
-    diagnostics.recordSelection(payload.facts, inaccessible);
+    const selected = payload.targets.find(
+      (target) => target.role === "selected",
+    );
+    const facts = payload.targets.flatMap((target) => target.facts);
+    diagnostics.recordSelection(facts, inaccessible);
     if (inaccessible > 0) {
       diagnostics.recordError({
         code: "browser.stylesheetInaccessible",
@@ -238,10 +242,9 @@ function handleRuntimeMessage(message: unknown): void {
       });
     }
     renderDiagnostics();
-    selectedSummary.value = `${payload.subject.selector ?? "element"} | ${payload.facts.length} facts | ${inaccessible} inaccessible`;
+    selectedSummary.value = `${selected?.subject.selector ?? "element"} | ${facts.length} facts | ${inaccessible} inaccessible`;
     publisher.publish({
-      subject: payload.subject,
-      facts: payload.facts,
+      targets: payload.targets,
       context: payload.context,
       metadata: payload.metadata,
     });
@@ -267,8 +270,15 @@ function isInspectPayload(value: unknown): value is InspectPayload & {
     return false;
   }
   return (
-    isRecord(value.subject) &&
-    Array.isArray(value.facts) &&
+    Array.isArray(value.targets) &&
+    value.targets.every(
+      (target) =>
+        isRecord(target) &&
+        (target.role === "selected" || target.role === "parent") &&
+        isRecord(target.subject) &&
+        Array.isArray(target.facts) &&
+        isRecord(target.metadata),
+    ) &&
     isRecord(value.context) &&
     isRecord(value.metadata)
   );

@@ -88,24 +88,31 @@ describe("DiagnosticsTracker", () => {
 
 function inspectMessage(): InspectMessage {
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     type: "inspect",
     messageId: "inspect-1",
     sessionId: "session-1",
     source: { role: "browser", id: "browser-1", metadata: {} },
-    subject: { selector: ".card", metadata: {} },
-    facts: [
+    targets: [
       {
-        type: "css-rule",
-        selector: ".card",
-        property: "display",
-        value: "grid",
-        metadata: {},
-      },
-      {
-        type: "dom-attribute",
-        name: "role",
-        value: "region",
+        role: "selected",
+        depth: 0,
+        subject: { selector: ".card", metadata: {} },
+        facts: [
+          {
+            type: "css-rule",
+            selector: ".card",
+            property: "display",
+            value: "grid",
+            metadata: {},
+          },
+          {
+            type: "dom-attribute",
+            name: "role",
+            value: "region",
+            metadata: {},
+          },
+        ],
         metadata: {},
       },
     ],
@@ -116,7 +123,7 @@ function inspectMessage(): InspectMessage {
 
 function protocolError(): ErrorMessage {
   return {
-    protocolVersion: 1,
+    protocolVersion: 2,
     type: "error",
     messageId: "error-1",
     code: "bridge.noBrowserClient",

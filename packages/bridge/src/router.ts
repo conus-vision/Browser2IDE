@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   Browser2IdeMessageSchema,
+  PROTOCOL_VERSION,
   type Browser2IdeMessage,
   type ClientRole,
   type ErrorMessage,
@@ -62,7 +63,7 @@ export function sendError(
   fatal = false,
 ): void {
   sendMessage(client, {
-    protocolVersion: 1,
+    protocolVersion: PROTOCOL_VERSION,
     type: "error",
     messageId: randomUUID(),
     code,

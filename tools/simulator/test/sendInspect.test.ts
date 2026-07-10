@@ -27,19 +27,25 @@ describe("inspect-card fixture", () => {
 
     expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
     expect(message).toMatchObject({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "inspect",
       sessionId: "session-1",
       source: { role: "simulator", id: "simulator-test", metadata: {} },
-      subject: {
-        selector: "div#hero.card.featured",
-        metadata: { kind: "dom-node" },
-      },
+      targets: [
+        {
+          role: "selected",
+          depth: 0,
+          subject: {
+            selector: "div#hero.card.featured",
+            metadata: { kind: "dom-node" },
+          },
+        },
+      ],
       context: { url: "http://localhost:3000/", metadata: { viewport: "desktop" } },
     });
-    expect(message.subject.text).toBeUndefined();
+    expect(message.targets[0]?.subject.text).toBeUndefined();
 
-    expect(message.facts).toEqual(
+    expect(message.targets[0]?.facts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: "css-rule",
@@ -118,7 +124,7 @@ describe("sendInspect", () => {
         type: "inspect",
         sessionId: ideAccepted.sessionId,
         source: { role: "simulator", id: "simulator-integration" },
-        subject: { selector: "div#hero.card.featured" },
+        targets: [{ subject: { selector: "div#hero.card.featured" } }],
       });
     } finally {
       if (ideSocket && ideSocket.readyState !== WebSocket.CLOSED) {
@@ -182,7 +188,7 @@ async function pairAndHelloIde(
 ): Promise<PairAcceptedMessage> {
   socket.send(
     JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "pairRequest",
       messageId: randomUUID(),
       pairingCode,
@@ -198,7 +204,7 @@ async function pairAndHelloIde(
 
   socket.send(
     JSON.stringify({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "hello",
       messageId: randomUUID(),
       sessionId: accepted.sessionId,
@@ -236,7 +242,7 @@ async function nextProtocolMessage(
     if (message.type === "ping") {
       socket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "pong",
           messageId: randomUUID(),
           pingMessageId: message.messageId,

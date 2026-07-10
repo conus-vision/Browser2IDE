@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { Browser2IdeMessageSchema } from "@browser2ide/protocol";
+import {
+  Browser2IdeMessageSchema,
+  PROTOCOL_VERSION,
+} from "@browser2ide/protocol";
 import type { ClientRegistry } from "./clientRegistry.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -22,7 +25,7 @@ export function startHeartbeat(
 
       registry.markPingSent(client.id);
       const ping = Browser2IdeMessageSchema.parse({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         type: "ping",
         messageId: randomUUID(),
         sentAt: new Date().toISOString(),

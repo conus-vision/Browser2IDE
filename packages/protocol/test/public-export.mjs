@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import {
   Browser2IdeMessageSchema,
+  PROTOCOL_VERSION,
   parseMessage,
 } from "@browser2ide/protocol";
 
 const ping = {
-  protocolVersion: 1,
+  protocolVersion: PROTOCOL_VERSION,
   type: "ping",
   messageId: "msg-public-export-ping",
   sentAt: "2026-07-09T14:00:00.000Z",

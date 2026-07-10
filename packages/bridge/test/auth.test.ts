@@ -39,7 +39,7 @@ describe("bridge auth", () => {
 
       pairingSocket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "pairRequest",
           messageId: "pair-1",
           pairingCode: pairing.code,
@@ -50,7 +50,7 @@ describe("bridge auth", () => {
 
       const accepted = await nextJsonMessage(pairingSocket);
       expect(accepted).toMatchObject({
-        protocolVersion: 1,
+        protocolVersion: 2,
         type: "pairAccepted",
         sessionId: "session-1",
         metadata: {},
@@ -60,7 +60,7 @@ describe("bridge auth", () => {
       const helloSocket = await connect(server.getUrl());
       helloSocket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "hello",
           messageId: "hello-1",
           sessionId: accepted.sessionId,
@@ -94,7 +94,7 @@ describe("bridge auth", () => {
       const invalidSocket = await connect(server.getUrl());
       invalidSocket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "pairRequest",
           messageId: "pair-invalid",
           pairingCode: "000000-invalid",
@@ -112,7 +112,7 @@ describe("bridge auth", () => {
       const expiredSocket = await connect(server.getUrl());
       expiredSocket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "pairRequest",
           messageId: "pair-expired",
           pairingCode: pairing.code,
@@ -141,7 +141,7 @@ describe("bridge auth", () => {
       const closed = once(socket, "close");
       socket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "unknown",
           messageId: "invalid-1",
           metadata: {},
@@ -168,7 +168,7 @@ describe("bridge auth", () => {
 
       socket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "hello",
           messageId: "hello-invalid",
           sessionId: "session-1",
@@ -181,7 +181,7 @@ describe("bridge auth", () => {
 
       const error = await nextJsonMessage(socket);
       expect(error).toMatchObject({
-        protocolVersion: 1,
+        protocolVersion: 2,
         type: "error",
         code: "auth.invalidSessionToken",
         message: "Invalid session token",
@@ -202,7 +202,7 @@ describe("bridge auth", () => {
       const pairingSocket = await connect(server.getUrl());
       pairingSocket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "pairRequest",
           messageId: "pair-role-1",
           pairingCode: pairing.code,
@@ -216,7 +216,7 @@ describe("bridge auth", () => {
 
       helloSocket.send(
         JSON.stringify({
-          protocolVersion: 1,
+          protocolVersion: 2,
           type: "hello",
           messageId: "hello-wrong-role",
           sessionId: "session-1",

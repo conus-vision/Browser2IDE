@@ -272,13 +272,20 @@ function resolver(
 
 function resolveInput(facts: RuntimeFact[]): ResolveInput {
   const message: InspectMessage = {
-    protocolVersion: 1,
+    protocolVersion: 2,
     type: "inspect",
     messageId: "inspect-1",
     sessionId: "session-1",
     source: { role: "browser", id: "browser-1", metadata: {} },
-    subject: { selector: ".card", metadata: {} },
-    facts,
+    targets: [
+      {
+        role: "selected",
+        depth: 0,
+        subject: { selector: ".card", metadata: {} },
+        facts,
+        metadata: {},
+      },
+    ],
     context: { url: "http://localhost", metadata: {} },
     metadata: {},
   };

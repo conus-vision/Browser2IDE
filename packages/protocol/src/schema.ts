@@ -11,3 +11,4 @@ export { Browser2IdeMessageSchema };
 export * from "./messages.js";
 export * from "./references.js";
 export * from "./capabilities.js";
+export * from "./json.js";

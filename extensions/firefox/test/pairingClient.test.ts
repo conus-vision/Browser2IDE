@@ -56,7 +56,7 @@ describe("BrowserBridgeClient", () => {
     });
 
     socket.message({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "pairAccepted",
       messageId: "accepted-1",
       sessionId: "session-1",
@@ -98,11 +98,11 @@ describe("BrowserBridgeClient", () => {
     expect(inspect).toMatchObject({
       type: "inspect",
       sessionId: "session-1",
-      subject: { selector: ".card" },
+      targets: [{ subject: { selector: ".card" } }],
     });
 
     socket.message({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "ping",
       messageId: "ping-1",
       sentAt: "2026-07-10T10:00:00.000Z",
@@ -131,7 +131,7 @@ describe("BrowserBridgeClient", () => {
     client.connect({ sessionId: "session-1", authToken: "browser-token" });
     socket.open();
     socket.message({
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "error",
       messageId: "error-1",
       code: "bridge.noIdeClient",
@@ -161,7 +161,7 @@ describe("InspectPublisher", () => {
     const sent: string[] = [];
     let timerId = 0;
     const publisher = new InspectPublisher({
-      send: (payload) => sent.push(payload.subject.selector ?? ""),
+      send: (payload) => sent.push(payload.targets[0]?.subject.selector ?? ""),
       setTimeout(callback, delay) {
         timers.push(callback);
         delays.push(delay);
@@ -187,7 +187,7 @@ describe("InspectPublisher", () => {
   it("allows the same selection after a connection reset", () => {
     const sent: string[] = [];
     const publisher = new InspectPublisher({
-      send: (payload) => sent.push(payload.subject.selector ?? ""),
+      send: (payload) => sent.push(payload.targets[0]?.subject.selector ?? ""),
       setTimeout: () => 1,
       clearTimeout: () => undefined,
     });
@@ -202,8 +202,15 @@ describe("InspectPublisher", () => {
 
 function selection(selector: string) {
   return {
-    subject: { selector, metadata: {} },
-    facts: [],
+    targets: [
+      {
+        role: "selected" as const,
+        depth: 0 as const,
+        subject: { selector, metadata: {} },
+        facts: [],
+        metadata: {},
+      },
+    ],
     context: { url: "http://localhost:3000", metadata: {} },
     metadata: {},
   };
