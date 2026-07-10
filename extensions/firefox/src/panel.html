@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Browser2IDE</title>
+    <link rel="stylesheet" href="./panel.css" />
+  </head>
+  <body>
+    <header class="panel-header">
+      <div class="brand">
+        <img src="./browser2ide.svg" alt="" width="20" height="20" />
+        <h1>Browser2IDE</h1>
+      </div>
+      <output id="connection-status" class="status" data-state="disconnected">
+        Disconnected
+      </output>
+    </header>
+
+    <main>
+      <section class="connection" aria-label="Bridge connection">
+        <div class="settings-grid">
+          <label class="field field-wide">
+            <span>Bridge URL</span>
+            <input id="bridge-url" type="url" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>Session</span>
+            <input id="session-id" type="text" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>Pairing code</span>
+            <input
+              id="pairing-code"
+              type="text"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              maxlength="6"
+            />
+          </label>
+        </div>
+        <div class="commands">
+          <button id="pair-button" type="button" disabled>Pair</button>
+          <button id="connect-button" type="button" disabled>Connect</button>
+        </div>
+      </section>
+
+      <section class="inspect-toolbar" aria-label="Inspect mode">
+        <label class="toggle">
+          <input id="inspect-mode" type="checkbox" disabled />
+          <span>Inspect mode</span>
+        </label>
+      </section>
+
+      <section class="selection" aria-labelledby="selection-title">
+        <h2 id="selection-title">Last selected element</h2>
+        <output id="selected-summary">None</output>
+      </section>
+    </main>
+
+    <script src="./panel.js"></script>
+  </body>
+</html>

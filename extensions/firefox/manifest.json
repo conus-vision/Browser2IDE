@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Browser2IDE",
+  "description": "Bridge inspected browser elements to their project sources.",
+  "version": "0.1.0",
+  "devtools_page": "dist/devtools.html",
+  "background": {
+    "scripts": ["dist/background.js"]
+  },
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "ws://localhost/*",
+    "ws://127.0.0.1/*"
+  ],
+  "optional_host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "browser2ide@local",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["websiteContent", "websiteActivity"]
+      }
+    }
+  }
+}

@@ -18,6 +18,25 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@20.19.43)
 
+  extensions/firefox:
+    dependencies:
+      '@browser2ide/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      webextension-polyfill:
+        specifier: ^0.12.0
+        version: 0.12.0
+    devDependencies:
+      '@types/webextension-polyfill':
+        specifier: ^0.12.5
+        version: 0.12.5
+      esbuild:
+        specifier: ^0.21.5
+        version: 0.21.5
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@20.19.43)
+
   extensions/vscode:
     dependencies:
       '@browser2ide/bridge':
@@ -361,6 +380,9 @@ packages:
   '@types/vscode@1.125.0':
     resolution: {integrity: sha512-0icm/ZQAaism87P0ekHqi4/Ju9du+Tm0RUW+y7vqRsxY2cY0FNRX1nAnaW7nT6npPt2tfHiheZ55Zm9UhqonFA==}
 
+  '@types/webextension-polyfill@0.12.5':
+    resolution: {integrity: sha512-uKSAv6LgcVdINmxXMKBuVIcg/2m5JZugoZO8x20g7j2bXJkPIl/lVGQcDlbV+aXAiTyXT2RA5U5mI4IGCDMQeg==}
+
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
@@ -579,6 +601,9 @@ packages:
       jsdom:
         optional: true
 
+  webextension-polyfill@0.12.0:
+    resolution: {integrity: sha512-97TBmpoWJEE+3nFBQ4VocyCdLKfw54rFaJ6EVQYLBCXqCIpLSZkwGgASpv4oPt9gdKCJ80RJlcmNzNn008Ag6Q==}
+
   why-is-node-running@2.3.0:
     resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
     engines: {node: '>=8'}
@@ -754,6 +779,8 @@ snapshots:
       undici-types: 6.21.0
 
   '@types/vscode@1.125.0': {}
+
+  '@types/webextension-polyfill@0.12.5': {}
 
   '@types/ws@8.18.1':
     dependencies:
@@ -994,6 +1021,8 @@ snapshots:
       - sugarss
       - supports-color
       - terser
+
+  webextension-polyfill@0.12.0: {}
 
   why-is-node-running@2.3.0:
     dependencies:

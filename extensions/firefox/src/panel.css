@@ -1,0 +1,164 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: CanvasText;
+  background: Canvas;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.panel-header,
+.connection,
+.inspect-toolbar,
+.selection {
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+}
+
+.panel-header,
+.brand,
+.commands,
+.inspect-toolbar,
+.toggle {
+  display: flex;
+  align-items: center;
+}
+
+.panel-header {
+  min-height: 42px;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brand {
+  gap: 7px;
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.status {
+  color: color-mix(in srgb, CanvasText 68%, transparent);
+}
+
+.status[data-state="connected"] {
+  color: #2e8b57;
+}
+
+.status[data-state="error"] {
+  color: #c43b35;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(110px, 1fr);
+  gap: 8px;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: color-mix(in srgb, CanvasText 72%, transparent);
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+input[type="text"],
+input[type="url"] {
+  width: 100%;
+  min-height: 26px;
+  padding: 4px 7px;
+  border: 1px solid color-mix(in srgb, CanvasText 28%, transparent);
+  border-radius: 3px;
+  color: CanvasText;
+  background: Field;
+  font: inherit;
+}
+
+input:focus-visible,
+button:focus-visible {
+  outline: 2px solid Highlight;
+  outline-offset: 1px;
+}
+
+.commands {
+  gap: 6px;
+  margin-top: 9px;
+}
+
+button {
+  min-width: 72px;
+  min-height: 27px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, CanvasText 28%, transparent);
+  border-radius: 3px;
+  color: ButtonText;
+  background: ButtonFace;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, CanvasText 52%, transparent);
+}
+
+button:disabled,
+input:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.inspect-toolbar {
+  min-height: 38px;
+}
+
+.toggle {
+  gap: 7px;
+  width: max-content;
+  font-weight: 500;
+}
+
+.toggle input {
+  margin: 0;
+}
+
+.selection {
+  display: grid;
+  gap: 7px;
+  border-bottom: 0;
+}
+
+#selected-summary {
+  min-height: 38px;
+  padding: 7px 8px;
+  border-left: 2px solid color-mix(in srgb, CanvasText 28%, transparent);
+  overflow-wrap: anywhere;
+  color: color-mix(in srgb, CanvasText 78%, transparent);
+  background: color-mix(in srgb, CanvasText 5%, transparent);
+}
+
+@media (max-width: 420px) {
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .field-wide {
+    grid-column: auto;
+  }
+}

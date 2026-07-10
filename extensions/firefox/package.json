@@ -1,0 +1,21 @@
+{
+  "name": "browser2ide-firefox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter @browser2ide/protocol build && pnpm run typecheck && node ./esbuild.mjs",
+    "test": "pnpm --filter @browser2ide/protocol build && vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@browser2ide/protocol": "workspace:*",
+    "webextension-polyfill": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/webextension-polyfill": "^0.12.5",
+    "esbuild": "^0.21.5",
+    "vitest": "^2.1.0"
+  }
+}
