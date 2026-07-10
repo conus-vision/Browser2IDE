@@ -1,60 +1,62 @@
 import { describe, expect, it } from "vitest";
 import { registerPresenterCommands } from "../src/presenter/commands.js";
-import type { ResolvedReference } from "../src/references/sourceTypes.js";
+import type { ResolvedSourceMatch } from "../src/sourcePlugins/types.js";
 
 describe("presenter commands", () => {
-  it("opens the current tree reference and reports navigation errors", async () => {
+  it("reveals a current match in the active editor without opening documents", () => {
     const callbacks = new Map<string, (...arguments_: unknown[]) => unknown>();
-    const current = reference();
-    const opened: ResolvedReference[] = [];
+    const current = match();
+    const revealed: unknown[] = [];
+    const selected: unknown[] = [];
     const errors: unknown[] = [];
+    let activeUri = "file:///src/app.scss";
     let disposed = false;
-    const disposable = registerPresenterCommands(
+    const editor = { document: { uri: { toString: () => activeUri } } };
+    const registration = registerPresenterCommands(
       {
         registerCommand(command, callback) {
           callbacks.set(command, callback);
           return { dispose: () => (disposed = true) };
         },
+        getActiveEditor: () => editor,
+        createRange: (range) => range,
+        revealRange: (_editor, range) => revealed.push(range),
+        selectRangeStart: (_editor, start) => selected.push(start),
       },
-      { getReference: (id) => (id === "current" ? current : undefined) },
       {
-        async openReference(candidate) {
-          opened.push(candidate);
-          if (opened.length === 2) {
-            throw new Error("navigation failed");
-          }
-        },
+        getMatch: (id) => (id === "current" ? current : undefined),
+        getDocumentUri: () => "file:///src/app.scss",
       },
       (error) => errors.push(error),
     );
 
-    const callback = callbacks.get("browser2ide.openReference");
+    const callback = callbacks.get("browser2ide.revealSourceMatch");
     expect(callback).toBeTypeOf("function");
-    await callback?.("missing");
-    await callback?.("current");
-    await callback?.("current");
+    callback?.("missing");
+    callback?.("current");
+    expect(revealed).toEqual([current.range]);
+    expect(selected).toEqual([current.range.start]);
 
-    expect(opened).toEqual([current, current]);
+    activeUri = "file:///src/other.scss";
+    callback?.("current");
     expect(errors).toHaveLength(1);
-    disposable.dispose();
+    expect(revealed).toHaveLength(1);
+    registration.dispose();
     expect(disposed).toBe(true);
   });
 });
 
-function reference(): ResolvedReference {
+function match(): ResolvedSourceMatch {
   return {
+    pluginId: "browser2ide.scss",
+    targetRole: "selected",
+    range: {
+      start: { line: 1, character: 2 },
+      end: { line: 4, character: 1 },
+    },
+    label: ".card",
     kind: "style-rule",
     relation: "styles",
-    label: ".card",
-    source: {
-      uri: "file:///workspace/card.scss",
-      line: 1,
-      column: 1,
-      metadata: {},
-    },
     confidence: "sourcemap",
-    status: "matched",
-    metadata: {},
-    diagnostics: [],
   };
 }

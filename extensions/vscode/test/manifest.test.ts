@@ -15,6 +15,10 @@ describe("VS Code extension manifest", () => {
           activitybar: Array<{ id: string; title: string; icon: string }>;
         };
         views: Record<string, Array<{ id: string; name: string }>>;
+        colors: Array<{
+          id: string;
+          defaults: { dark: string; light: string; highContrast: string };
+        }>;
       };
     };
 
@@ -27,7 +31,7 @@ describe("VS Code extension manifest", () => {
       "browser2ide.showPairingCode",
       "browser2ide.resetPairing",
       "browser2ide.openDiagnostics",
-      "browser2ide.openReference",
+      "browser2ide.revealSourceMatch",
     ]);
     expect(manifest.contributes.configuration.properties).toMatchObject({
       "browser2ide.bridgeUrl": { default: "ws://127.0.0.1:48735" },
@@ -43,8 +47,14 @@ describe("VS Code extension manifest", () => {
     });
     expect(manifest.contributes.views.browser2ide).toContainEqual({
       id: "browser2ide.applicableRules",
-      name: "Applicable Rules",
+      name: "Applicable Sources",
     });
+    expect(manifest.contributes.colors.map(({ id }) => id)).toEqual([
+      "browser2ide.selectedRuleBackground",
+      "browser2ide.selectedRuleBorder",
+      "browser2ide.parentRuleBackground",
+      "browser2ide.parentRuleBorder",
+    ]);
     expect(
       existsSync(new URL("../resources/browser2ide.svg", import.meta.url)),
     ).toBe(true);
