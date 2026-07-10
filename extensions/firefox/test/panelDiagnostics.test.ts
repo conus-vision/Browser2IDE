@@ -9,7 +9,10 @@ describe("PanelDiagnostics", () => {
     diagnostics.setConnectionState("connected");
     diagnostics.setPaired(true);
     diagnostics.recordSelection(
-      [{ type: "css-rule" }, { type: "dom-attribute" }],
+      [
+        { facts: [{ type: "css-rule" }, { type: "dom-attribute" }] },
+        { facts: [{ type: "css-rule" }] },
+      ],
       2,
     );
     diagnostics.recordMessageSent(sentAt);
@@ -27,7 +30,7 @@ describe("PanelDiagnostics", () => {
         message: "No IDE client is connected",
       },
       inaccessibleStylesheetCount: 2,
-      matchedCssFactCount: 1,
+      matchedCssFactCount: 2,
     });
   });
 });

@@ -1,7 +1,9 @@
 import type { MatchableElement } from "./collectCssFacts.js";
 import type { ElementSnapshotSource } from "./elementSnapshot.js";
 
-export type InspectableElement = ElementSnapshotSource & MatchableElement;
+export type InspectableElement = ElementSnapshotSource & MatchableElement & {
+  readonly parentElement: InspectableElement | null;
+};
 
 export interface InspectClickEvent {
   readonly target: unknown;
@@ -76,6 +78,8 @@ function isInspectableElement(value: unknown): value is InspectableElement {
     typeof candidate.id === "string" &&
     candidate.classList !== undefined &&
     candidate.attributes !== undefined &&
-    typeof candidate.matches === "function"
+    typeof candidate.matches === "function" &&
+    (candidate.parentElement === null ||
+      typeof candidate.parentElement === "object")
   );
 }

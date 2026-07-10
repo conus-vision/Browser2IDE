@@ -1,9 +1,6 @@
 import browser from "webextension-polyfill";
-import {
-  collectCssFacts,
-  type CssDocumentSource,
-} from "./collectCssFacts.js";
-import { createElementSnapshot } from "./elementSnapshot.js";
+import type { CssDocumentSource } from "./collectCssFacts.js";
+import { createInspectPayload } from "./inspectPayload.js";
 import {
   InspectMode,
   type InspectDocument,
@@ -44,34 +41,16 @@ if (!globalState.__browser2ideContentScript) {
 
 async function sendSelection(element: InspectableElement): Promise<void> {
   const pageUrl = location.href;
-  const collection = collectCssFacts(element, {
-    pageUrl,
-    styleSheets: document.styleSheets,
-  } as unknown as CssDocumentSource);
   await browser.runtime.sendMessage({
     type: "elementSelected",
-    payload: {
-      targets: [
-        {
-          role: "selected",
-          depth: 0,
-          subject: createElementSnapshot(element, pageUrl),
-          facts: collection.facts,
-          metadata: {},
-        },
-      ],
-      context: {
-        url: pageUrl,
-        route: `${location.pathname}${location.search}${location.hash}`,
-        metadata: {
-          inaccessibleStylesheetCount:
-            collection.inaccessibleStylesheets.length,
-          browserErrors: collection.inaccessibleStylesheets,
-        },
-      },
-      metadata: {},
-      inaccessibleStylesheets: collection.inaccessibleStylesheets,
-    },
+    payload: createInspectPayload(
+      element,
+      {
+        pageUrl,
+        styleSheets: document.styleSheets,
+      } as unknown as CssDocumentSource,
+      location,
+    ),
   });
 }
 

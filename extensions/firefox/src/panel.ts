@@ -234,7 +234,7 @@ function handleRuntimeMessage(message: unknown): void {
       (target) => target.role === "selected",
     );
     const facts = payload.targets.flatMap((target) => target.facts);
-    diagnostics.recordSelection(facts, inaccessible);
+    diagnostics.recordSelection(payload.targets, inaccessible);
     if (inaccessible > 0) {
       diagnostics.recordError({
         code: "browser.stylesheetInaccessible",

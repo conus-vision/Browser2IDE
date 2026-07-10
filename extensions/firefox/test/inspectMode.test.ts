@@ -27,6 +27,7 @@ describe("InspectMode", () => {
       classList: [],
       attributes: [],
       matches: () => true,
+      parentElement: null,
     };
     const eventCalls: string[] = [];
 

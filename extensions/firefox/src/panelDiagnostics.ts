@@ -32,10 +32,12 @@ export class PanelDiagnostics {
   }
 
   public recordSelection(
-    facts: readonly { readonly type?: unknown }[],
+    targets: readonly {
+      readonly facts: readonly { readonly type?: unknown }[];
+    }[],
     inaccessibleStylesheetCount: number,
   ): void {
-    this.matchedCssFactCount = facts.filter(
+    this.matchedCssFactCount = targets.flatMap((target) => target.facts).filter(
       (fact) => fact.type === "css-rule",
     ).length;
     this.inaccessibleStylesheetCount = inaccessibleStylesheetCount;
