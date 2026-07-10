@@ -45,11 +45,13 @@ export class BridgeManager {
   private state: BridgeManagerState = "stopped";
   private startPromise: Promise<void> | undefined;
   private stopPromise: Promise<void> | undefined;
+  private tokenPersistence: Promise<void> = Promise.resolve();
   private stopRequested = false;
 
   constructor(private readonly options: BridgeManagerOptions) {
     this.createBridge = options.createBridge ?? createBridgeServer;
-    this.maxPortAttempts = options.maxPortAttempts ?? 10;
+    this.maxPortAttempts =
+      options.maxPortAttempts ?? Math.max(1, 65_536 - options.configuration.bridgePort);
   }
 
   start(): Promise<void> {
@@ -57,6 +59,11 @@ export class BridgeManager {
       return this.stopPromise.then(() => this.start());
     }
     if (this.state === "running") {
+      if (this.bridge) {
+        this.pairingState.set(
+          this.bridge.createPairingCode(this.options.configuration.sessionId),
+        );
+      }
       return Promise.resolve();
     }
     if (this.startPromise) {
@@ -83,8 +90,10 @@ export class BridgeManager {
   }
 
   async resetPairing(): Promise<void> {
-    await resetBrowserTokens(this.options.secrets, this.options.configuration.sessionId);
     this.bridge?.pairingStore.revokeTokens(this.options.configuration.sessionId, "browser");
+    await this.enqueueTokenOperation(() =>
+      resetBrowserTokens(this.options.secrets, this.options.configuration.sessionId),
+    );
   }
 
   snapshot(): BridgeSnapshot {
@@ -111,7 +120,7 @@ export class BridgeManager {
       authorizedTokens: [...browserTokens, ideToken],
       onTokenCreated: (token) => {
         if (token.role === "browser") {
-          void storeBrowserToken(secrets, token);
+          void this.enqueueTokenOperation(() => storeBrowserToken(secrets, token));
         }
       },
     });
@@ -135,12 +144,14 @@ export class BridgeManager {
   }
 
   private async startOnAvailablePort(pairingStore: PairingStore): Promise<ManagedBridge> {
-    const { bridgePort, sessionId } = this.options.configuration;
+    const { bridgePort, bridgeUrl, sessionId } = this.options.configuration;
+    const host = resolveLoopbackHost(bridgeUrl);
     let lastError: unknown;
 
     for (let attempt = 0; attempt < this.maxPortAttempts; attempt += 1) {
       try {
         const bridge = this.createBridge({
+          host,
           port: bridgePort + attempt,
           sessionId,
           pairingStore,
@@ -166,10 +177,38 @@ export class BridgeManager {
     this.ideToken = undefined;
     this.pairingState.clear();
     await bridge?.stop();
+    await this.tokenPersistence.catch(() => undefined);
     this.state = "stopped";
+  }
+
+  private enqueueTokenOperation(operation: () => Promise<void>): Promise<void> {
+    const queued = this.tokenPersistence.catch(() => undefined).then(operation);
+    void queued.catch(() => undefined);
+    this.tokenPersistence = queued;
+    return queued;
   }
 }
 
 function isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
   return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EADDRINUSE");
+}
+
+function resolveLoopbackHost(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invalid Browser2IDE bridge URL: ${value}`);
+  }
+
+  if (url.protocol !== "ws:") {
+    throw new Error("Browser2IDE managed bridge URL must use ws://");
+  }
+
+  const host = url.hostname === "[::1]" ? "::1" : url.hostname;
+  if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
+    throw new Error("Browser2IDE managed bridge must use a loopback host");
+  }
+
+  return host;
 }

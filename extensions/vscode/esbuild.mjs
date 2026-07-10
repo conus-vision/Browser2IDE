@@ -6,6 +6,6 @@ await build({
   platform: "node",
   format: "cjs",
   external: ["vscode"],
-  outfile: "dist/extension.js",
+  outfile: "dist/extension.cjs",
   sourcemap: true,
 });

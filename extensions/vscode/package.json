@@ -7,7 +7,7 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "main": "./dist/extension.js",
+  "main": "./dist/extension.cjs",
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -57,7 +57,7 @@
     }
   },
   "scripts": {
-    "build": "node ./esbuild.mjs",
+    "build": "pnpm run typecheck && node ./esbuild.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"

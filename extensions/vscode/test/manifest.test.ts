@@ -6,11 +6,16 @@ describe("VS Code extension manifest", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../package.json", import.meta.url), "utf8"),
     ) as {
+      type: string;
+      main: string;
       contributes: {
         commands: Array<{ command: string }>;
         configuration: { properties: Record<string, { default: unknown }> };
       };
     };
+
+    expect(manifest.type).toBe("module");
+    expect(manifest.main).toBe("./dist/extension.cjs");
 
     expect(manifest.contributes.commands.map(({ command }) => command)).toEqual([
       "browser2ide.start",
