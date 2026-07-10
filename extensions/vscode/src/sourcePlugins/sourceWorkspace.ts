@@ -37,6 +37,13 @@ export class VsCodeSourceWorkspace implements SourceWorkspace {
     sourceUrl: string,
     baseUrl: string,
   ): Promise<SourceUriResolution> {
+    const absolute = new URL(sourceUrl, baseUrl);
+    if (absolute.protocol === "file:") {
+      const canonical = this.host.parseUri(absolute.toString()).toString();
+      if (this.isWorkspaceUri(canonical)) {
+        return { uris: [canonical], status: "exact" };
+      }
+    }
     const pathname = decodedPathname(sourceUrl, baseUrl);
     const relativePath = pathname.replace(/^\/+/, "");
     if (!relativePath) return { uris: [], status: "not-found" };

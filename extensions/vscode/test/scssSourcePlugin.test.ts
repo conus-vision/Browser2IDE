@@ -1,0 +1,255 @@
+import { readFile } from "node:fs/promises";
+import { describe, expect, it } from "vitest";
+import { SourceMapGenerator } from "source-map";
+import type {
+  SelectionSnapshot,
+  SourceDocument,
+  SourceMatch,
+  SourceWorkspace,
+} from "@browser2ide/plugin-api";
+import type { CssRuleFact, InspectTarget } from "@browser2ide/protocol";
+import { ScssSourcePlugin } from "../src/sourcePlugins/scssSourcePlugin.js";
+
+describe("ScssSourcePlugin", () => {
+  it("maps selected and parent rules to complete blocks in layout.scss", async () => {
+    const fixture = await fixtureFiles();
+    const activeUri = "file:///workspace/examples/basic-css/src/layout.scss";
+    const result = await resolveScss(
+      activeUri,
+      fixture[activeUri]!,
+      fixture,
+      selection([
+        cssTarget("selected", ".layout > .card", "/dist/app.css"),
+        cssTarget("parent", ".layout", "/dist/app.css"),
+      ]),
+    );
+
+    expect(result.matches.map((match) => match.targetRole)).toEqual([
+      "parent",
+      "selected",
+    ]);
+    expect(snippets(fixture[activeUri]!, result.matches)).toEqual([
+      ".layout {\n  display: grid;\n  gap: 1.5rem;\n}",
+      ".layout > .card {\n  max-width: 32rem;\n}",
+    ]);
+    expect(
+      result.matches.every((match) => match.confidence === "sourcemap"),
+    ).toBe(true);
+  });
+
+  it("uses the mapped position for repeated and nested SCSS rules", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const mapUri = `${generatedUri}.map`;
+    const original = [
+      ".card {",
+      "  &.featured { color: red; }",
+      "}",
+      ".other {",
+      "  &.featured { color: blue; }",
+      "}",
+    ].join("\n");
+    const generated = [
+      ".card.featured { color: red; }",
+      ".other.featured { color: blue; }",
+      "/*# sourceMappingURL=app.css.map */",
+    ].join("\n");
+    const generator = new SourceMapGenerator({ file: "app.css" });
+    generator.addMapping({
+      generated: { line: 1, column: 0 },
+      original: { line: 2, column: 2 },
+      source: "../src/card.scss",
+    });
+    generator.addMapping({
+      generated: { line: 2, column: 0 },
+      original: { line: 5, column: 2 },
+      source: "../src/card.scss",
+    });
+    const result = await resolveScss(
+      activeUri,
+      original,
+      {
+        [activeUri]: original,
+        [generatedUri]: generated,
+        [mapUri]: generator.toString(),
+      },
+      selection([
+        cssTarget("selected", ".other.featured", "/dist/app.css"),
+      ]),
+    );
+
+    expect(result.matches).toHaveLength(1);
+    expect(snippets(original, result.matches)[0]).toContain("&.featured");
+    expect(snippets(original, result.matches)[0]).toContain("color: blue");
+  });
+
+  it.each([
+    ["missing", "scss.sourceMapMissing"],
+    ["invalid", "scss.sourceMapInvalid"],
+    ["unmapped", "scss.mappingMissing"],
+  ] as const)(
+    "returns diagnostics and no heuristic for a %s map",
+    async (kind, code) => {
+      const result = await resolveBrokenMap(kind);
+      expect(result.matches).toEqual([]);
+      expect(result.diagnostics?.map((entry) => entry.code)).toContain(code);
+    },
+  );
+});
+
+async function fixtureFiles(): Promise<Record<string, string>> {
+  const root = "file:///workspace/examples/basic-css";
+  const entries = await Promise.all([
+    ["dist/app.css", "../../../examples/basic-css/dist/app.css"],
+    ["dist/app.css.map", "../../../examples/basic-css/dist/app.css.map"],
+    ["src/card.scss", "../../../examples/basic-css/src/card.scss"],
+    ["src/layout.scss", "../../../examples/basic-css/src/layout.scss"],
+  ].map(async ([uri, path]) => [
+    `${root}/${uri}`,
+    await readFile(new URL(path!, import.meta.url), "utf8"),
+  ]));
+  return Object.fromEntries(entries);
+}
+
+async function resolveBrokenMap(
+  kind: "missing" | "invalid" | "unmapped",
+) {
+  const activeUri = "file:///workspace/src/card.scss";
+  const generatedUri = "file:///workspace/dist/app.css";
+  const mapUri = `${generatedUri}.map`;
+  const map = {
+    version: 3,
+    file: "app.css",
+    sources: ["../src/card.scss"],
+    names: [],
+    mappings: "",
+  };
+  const directive = kind === "missing"
+    ? ""
+    : "\n/*# sourceMappingURL=app.css.map */";
+  return resolveScss(
+    activeUri,
+    ".card {}",
+    {
+      [activeUri]: ".card {}",
+      [generatedUri]: `.card {}${directive}`,
+      ...(kind === "invalid"
+        ? { [mapUri]: "{invalid" }
+        : kind === "unmapped"
+          ? { [mapUri]: JSON.stringify(map) }
+          : {}),
+    },
+    selection([cssTarget("selected", ".card", "/dist/app.css")]),
+  );
+}
+
+async function resolveScss(
+  activeUri: string,
+  activeText: string,
+  files: Readonly<Record<string, string>>,
+  selected: SelectionSnapshot,
+) {
+  return new ScssSourcePlugin().resolve({
+    selection: selected,
+    document: document(activeUri, activeText),
+    workspace: memoryWorkspace(files),
+    signal: new AbortController().signal,
+  });
+}
+
+function memoryWorkspace(
+  files: Readonly<Record<string, string>>,
+): SourceWorkspace {
+  return {
+    findFiles: async () => Object.keys(files),
+    async readText(uri) {
+      const text = files[uri];
+      if (text === undefined) throw new Error(`Missing fixture: ${uri}`);
+      return text;
+    },
+    async resolveSourceUri(sourceUrl, baseUrl) {
+      const resolved = new URL(sourceUrl, baseUrl);
+      if (resolved.protocol === "file:" && files[resolved.toString()] !== undefined) {
+        return { uris: [resolved.toString()], status: "exact" };
+      }
+      const pathname = decodeURIComponent(resolved.pathname);
+      const exact = Object.keys(files).filter((uri) =>
+        decodeURIComponent(new URL(uri).pathname).endsWith(pathname),
+      );
+      if (exact.length === 1) return { uris: exact, status: "exact" };
+      if (exact.length > 1) return { uris: [], status: "ambiguous" };
+      const basename = pathname.slice(pathname.lastIndexOf("/") + 1);
+      const fallback = Object.keys(files).filter((uri) =>
+        decodeURIComponent(new URL(uri).pathname).endsWith(`/${basename}`),
+      );
+      if (fallback.length === 1) {
+        return { uris: fallback, status: "unique-basename" };
+      }
+      return {
+        uris: [],
+        status: fallback.length > 1 ? "ambiguous" : "not-found",
+      };
+    },
+    resolveRelativeUri: (base, reference) => new URL(reference, base).toString(),
+    isWorkspaceUri: (uri) => uri.startsWith("file:///workspace/"),
+  };
+}
+
+function selection(targets: readonly InspectTarget[]): SelectionSnapshot {
+  return {
+    sessionId: "session-1",
+    messageId: "inspect-1",
+    targets,
+    context: { url: "http://localhost:4173/page", metadata: {} },
+    metadata: {},
+  };
+}
+
+function cssTarget(
+  role: "selected" | "parent",
+  selector: string,
+  sourceUrl: string,
+): InspectTarget & { facts: CssRuleFact[] } {
+  return {
+    role,
+    depth: role === "selected" ? 0 : 1,
+    subject: { selector, metadata: {} },
+    facts: [
+      {
+        type: "css-rule",
+        selector,
+        property: "color",
+        value: "red",
+        metadata: { sourceUrl },
+      },
+    ],
+    metadata: {},
+  };
+}
+
+function document(uri: string, text: string): SourceDocument {
+  const lines = text.split("\n");
+  return {
+    uri,
+    languageId: "scss",
+    version: 1,
+    getText: () => text,
+    positionAt(offset) {
+      const before = text.slice(0, Math.max(0, Math.min(offset, text.length))).split("\n");
+      return { line: before.length - 1, character: before.at(-1)?.length ?? 0 };
+    },
+    offsetAt(position) {
+      const line = Math.max(0, Math.min(position.line, lines.length - 1));
+      return lines.slice(0, line).reduce((total, value) => total + value.length + 1, 0) +
+        Math.max(0, Math.min(position.character, lines[line]?.length ?? 0));
+    },
+  };
+}
+
+function snippets(text: string, matches: readonly SourceMatch[]): string[] {
+  const source = document("file:///snippet.scss", text);
+  return matches.map((match) => text.slice(
+    source.offsetAt(match.range.start),
+    source.offsetAt(match.range.end),
+  ));
+}

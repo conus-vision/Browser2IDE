@@ -28,6 +28,7 @@ export interface StylesheetRule {
 export interface ParsedStylesheet {
   readonly uri: string;
   readonly syntax: StylesheetSyntax;
+  readonly document: SourceDocument;
   readonly rules: readonly StylesheetRule[];
 }
 
@@ -133,7 +134,7 @@ function parseStylesheet(
     const rule = ruleFromNode(node, document);
     if (rule) rules.push(rule);
   });
-  return { uri: document.uri, syntax, rules };
+  return { uri: document.uri, syntax, document, rules };
 }
 
 function ruleFromNode(
