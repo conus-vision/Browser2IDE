@@ -76,6 +76,10 @@ export class ApplicableRulesTreeDataProvider {
     return this.referencesById.get(referenceId);
   }
 
+  public getReferences(): readonly ResolvedReference[] {
+    return this.items.map((item) => item.reference);
+  }
+
   public dispose(): void {
     this.changeListeners.clear();
     this.items = [];
@@ -102,7 +106,10 @@ function formatReferenceLabel(reference: ResolvedReference): string {
 }
 
 function formatReferenceTooltip(reference: ResolvedReference): string {
-  return `${reference.status}: ${reference.source.uri}:${reference.source.line}:${reference.source.column}`;
+  return [
+    `${reference.status}: ${reference.source.uri}:${reference.source.line}:${reference.source.column}`,
+    ...reference.diagnostics,
+  ].join("\n");
 }
 
 function referenceIcon(reference: ResolvedReference): string {

@@ -90,6 +90,7 @@ describe("CssRuleResolver", () => {
         .endsWith("/examples/basic-css/dist/app.css"),
     ).toBe(true);
     expect(reference.diagnostics).toContain("Source map was not found");
+    expect(reference.metadata.errorCode).toBe("resolver.sourceMapFailed");
     await expect(sourceSnippet(reference)).resolves.toBe(
       ".card {\n  display: flex;\n  padding: 1rem;\n}",
     );
@@ -126,6 +127,9 @@ describe("CssRuleResolver", () => {
       confidence: "unknown",
     });
     expect(byLabel(references, ".missing").workspaceUri).toBeUndefined();
+    expect(byLabel(references, ".missing").metadata.errorCode).toBe(
+      "resolver.fileNotFound",
+    );
     expect(byLabel(references, ".external")).toMatchObject({
       status: "external",
       confidence: "unknown",

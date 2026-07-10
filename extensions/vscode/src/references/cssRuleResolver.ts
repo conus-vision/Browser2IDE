@@ -1,5 +1,6 @@
 import type {
   CssRuleFact,
+  ProtocolErrorCode,
   SourceLocation,
 } from "@browser2ide/protocol";
 import type {
@@ -70,7 +71,7 @@ export class CssRuleResolver implements SourceResolver {
     if (!workspaceUri) {
       return unresolvedReference(fact, sourceUrl, "unmapped", [
         `Stylesheet was not found in the workspace: ${sourceUrl}`,
-      ]);
+      ], "resolver.fileNotFound");
     }
 
     let generatedText: string;
@@ -132,7 +133,12 @@ export class CssRuleResolver implements SourceResolver {
       ),
       confidence: "heuristic",
       status: "matched",
-      metadata: { resolverId: "css-rule" },
+      metadata: {
+        resolverId: "css-rule",
+        ...(sourceMapResult.diagnostics.length > 0
+          ? { errorCode: "resolver.sourceMapFailed" }
+          : {}),
+      },
       workspaceUri,
       diagnostics: sourceMapResult.diagnostics,
     };
@@ -171,6 +177,7 @@ function unresolvedReference(
   uri: string,
   status: "external" | "unmapped" | "error",
   diagnostics: string[],
+  errorCode?: ProtocolErrorCode,
 ): ResolvedReference {
   return {
     kind: "style-rule",
@@ -184,7 +191,10 @@ function unresolvedReference(
     },
     confidence: "unknown",
     status,
-    metadata: { resolverId: "css-rule" },
+    metadata: {
+      resolverId: "css-rule",
+      ...(errorCode ? { errorCode } : {}),
+    },
     diagnostics,
   };
 }

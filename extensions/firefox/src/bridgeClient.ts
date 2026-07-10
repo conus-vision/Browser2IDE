@@ -1,7 +1,19 @@
 import {
   Browser2IdeMessageSchema,
   type InspectMessage,
+  type ProtocolErrorCode,
 } from "@browser2ide/protocol";
+
+export class BrowserProtocolError extends Error {
+  public readonly name = "BrowserProtocolError";
+
+  public constructor(
+    public readonly code: ProtocolErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 export interface BrowserCredentials {
   readonly sessionId: string;
@@ -152,12 +164,22 @@ export class BrowserBridgeClient {
     try {
       raw = JSON.parse(typeof data === "string" ? data : String(data));
     } catch {
-      this.fail(new Error("Bridge sent invalid JSON"));
+      this.fail(
+        new BrowserProtocolError(
+          "protocol.invalidMessage",
+          "Bridge sent invalid JSON",
+        ),
+      );
       return;
     }
     const parsed = Browser2IdeMessageSchema.safeParse(raw);
     if (!parsed.success) {
-      this.fail(new Error("Bridge sent an invalid protocol message"));
+      this.fail(
+        new BrowserProtocolError(
+          "protocol.invalidMessage",
+          "Bridge sent an invalid protocol message",
+        ),
+      );
       return;
     }
     const message = parsed.data;
@@ -182,7 +204,7 @@ export class BrowserBridgeClient {
       return;
     }
     if (message.type === "error") {
-      this.fail(new Error(`${message.code}: ${message.message}`));
+      this.fail(new BrowserProtocolError(message.code, message.message));
     }
   }
 

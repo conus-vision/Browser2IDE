@@ -117,6 +117,40 @@ describe("BrowserBridgeClient", () => {
     expect(socket.closed).toBe(true);
     expect(socket.onmessage).toBeNull();
   });
+
+  it("preserves structured bridge error codes for panel diagnostics", () => {
+    const socket = new FakeSocket();
+    const errors: Error[] = [];
+    const client = new BrowserBridgeClient({
+      url: "ws://127.0.0.1:48735",
+      sourceId: "firefox-test",
+      socketFactory: () => socket,
+      onError: (error) => errors.push(error),
+    });
+
+    client.connect({ sessionId: "session-1", authToken: "browser-token" });
+    socket.open();
+    socket.message({
+      protocolVersion: 1,
+      type: "error",
+      messageId: "error-1",
+      code: "bridge.noIdeClient",
+      message: "No IDE client is connected",
+      metadata: {},
+    });
+
+    expect(errors).toEqual([
+      expect.objectContaining({
+        code: "bridge.noIdeClient",
+        message: "No IDE client is connected",
+      }),
+    ]);
+
+    socket.onmessage?.({ data: "{" });
+    expect(errors.at(-1)).toEqual(
+      expect.objectContaining({ code: "protocol.invalidMessage" }),
+    );
+  });
 });
 
 describe("InspectPublisher", () => {

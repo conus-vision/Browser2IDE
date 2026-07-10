@@ -176,7 +176,7 @@ describe("Browser2IDE protocol schemas", () => {
         protocolVersion: 1,
         type: "error",
         messageId: "msg-error",
-        code: "UNMAPPED_SOURCE",
+        code: "resolver.fileNotFound",
         message: "Could not map element to source",
         details: {
           selector: "#missing",
@@ -207,6 +207,44 @@ describe("Browser2IDE protocol schemas", () => {
     ],
   ])("parses a valid %s message", (_name, message) => {
     expect(parseMessage(message)).toEqual(message);
+  });
+
+  it("accepts only the structured Browser2IDE error vocabulary", () => {
+    const codes = [
+      "pairing.invalidCode",
+      "pairing.expiredCode",
+      "auth.invalidSessionToken",
+      "protocol.invalidMessage",
+      "bridge.noIdeClient",
+      "bridge.noBrowserClient",
+      "resolver.fileNotFound",
+      "resolver.sourceMapFailed",
+      "browser.stylesheetInaccessible",
+    ];
+
+    for (const code of codes) {
+      expect(
+        parseMessage({
+          protocolVersion: 1,
+          type: "error",
+          messageId: `error-${code}`,
+          code,
+          message: "Diagnostic",
+          metadata: {},
+        }),
+      ).toMatchObject({ code });
+    }
+
+    expect(() =>
+      parseMessage({
+        protocolVersion: 1,
+        type: "error",
+        messageId: "error-unknown",
+        code: "UNKNOWN_ERROR",
+        message: "Diagnostic",
+        metadata: {},
+      }),
+    ).toThrow();
   });
 
   it("rejects inspect messages with facts nested inside the subject", () => {

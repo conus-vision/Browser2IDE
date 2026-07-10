@@ -159,10 +159,22 @@ export const CommandMessageSchema = z.discriminatedUnion("command", [
   HighlightElementCommandMessageSchema,
 ]);
 
+export const ProtocolErrorCodeSchema = z.enum([
+  "pairing.invalidCode",
+  "pairing.expiredCode",
+  "auth.invalidSessionToken",
+  "protocol.invalidMessage",
+  "bridge.noIdeClient",
+  "bridge.noBrowserClient",
+  "resolver.fileNotFound",
+  "resolver.sourceMapFailed",
+  "browser.stylesheetInaccessible",
+]);
+
 export const ErrorMessageSchema = baseMessageSchema
   .extend({
     type: z.literal("error"),
-    code: z.string().min(1),
+    code: ProtocolErrorCodeSchema,
     message: z.string().min(1),
     details: metadataSchema.optional(),
   })
@@ -214,6 +226,7 @@ export type HighlightElementCommandMessage = z.infer<
   typeof HighlightElementCommandMessageSchema
 >;
 export type CommandMessage = z.infer<typeof CommandMessageSchema>;
+export type ProtocolErrorCode = z.infer<typeof ProtocolErrorCodeSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 export type PingMessage = z.infer<typeof PingMessageSchema>;
 export type PongMessage = z.infer<typeof PongMessageSchema>;

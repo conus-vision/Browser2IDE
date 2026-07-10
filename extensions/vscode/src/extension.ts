@@ -2,7 +2,10 @@ import * as vscode from "vscode";
 import { BridgeClient, type ConnectionState } from "./bridgeClient.js";
 import { BridgeManager } from "./bridgeManager.js";
 import { readBridgeConfiguration } from "./config.js";
-import { writeBridgeDiagnostics } from "./diagnostics.js";
+import {
+  DiagnosticsTracker,
+  writeBridgeDiagnostics,
+} from "./diagnostics.js";
 import { CssRuleResolver } from "./references/cssRuleResolver.js";
 import { SourceResolverRegistry } from "./references/sourceResolverRegistry.js";
 import type {
@@ -20,17 +23,25 @@ let clientState: ConnectionState = "disconnected";
 let statusBar: vscode.StatusBarItem | undefined;
 let output: vscode.OutputChannel | undefined;
 let presenterRuntime: PresenterRuntime | undefined;
+let diagnostics: DiagnosticsTracker | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("Browser2IDE");
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
   statusBar.show();
   updateStatus("disconnected");
+  diagnostics = new DiagnosticsTracker();
 
   presenterRuntime = createPresenterRuntime({
     resolver: new SourceResolverRegistry([new CssRuleResolver()]),
     host: createPresenterHost(),
   });
+  const diagnosticsTreeSubscription =
+    presenterRuntime.tree.onDidChangeTreeData(() => {
+      if (presenterRuntime) {
+        diagnostics?.recordReferences(presenterRuntime.tree.getReferences());
+      }
+    });
 
   const configuration = readBridgeConfiguration(
     vscode.workspace.getConfiguration("browser2ide"),
@@ -54,7 +65,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       clientState = state;
       updateStatus(state);
     });
+    client.onProtocolError((message) => {
+      diagnostics?.recordProtocolError(message);
+      output?.appendLine(`protocol error ${message.code}: ${message.message}`);
+    });
     client.onInspect((message) => {
+      diagnostics?.recordInspect(message);
       output?.appendLine(`inspect ${message.messageId}`);
       const openAll = vscode.workspace
         .getConfiguration("browser2ide")
@@ -70,6 +86,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     output,
     statusBar,
     presenterRuntime,
+    diagnosticsTreeSubscription,
     vscode.commands.registerCommand("browser2ide.start", async () => {
       try {
         await start();
@@ -96,8 +113,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       void vscode.window.showInformationMessage("Browser2IDE pairing has been reset.");
     }),
     vscode.commands.registerCommand("browser2ide.openDiagnostics", () => {
-      if (output && manager) {
-        writeBridgeDiagnostics(output, manager.snapshot(), clientState);
+      if (output && manager && diagnostics) {
+        writeBridgeDiagnostics(
+          output,
+          diagnostics.snapshot(manager.snapshot(), clientState),
+        );
         output.show(true);
       }
     }),
@@ -113,6 +133,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 export async function deactivate(): Promise<void> {
   presenterRuntime?.dispose();
   presenterRuntime = undefined;
+  diagnostics = undefined;
   client?.dispose();
   client = undefined;
   await manager?.stop();

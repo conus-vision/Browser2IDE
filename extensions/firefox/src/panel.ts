@@ -2,6 +2,7 @@ import browser from "webextension-polyfill";
 import type { InspectPayload } from "./bridgeClient.js";
 import {
   BrowserBridgeClient,
+  BrowserProtocolError,
   InspectPublisher,
   type BrowserConnectionState,
   type BrowserCredentials,
@@ -13,6 +14,7 @@ import {
   type PanelSettings,
   type PanelStorage,
 } from "./panelState.js";
+import { PanelDiagnostics } from "./panelDiagnostics.js";
 import { PanelInspectController } from "./panelInspectController.js";
 
 const bridgeUrlInput = required<HTMLInputElement>("bridge-url");
@@ -23,6 +25,13 @@ const connectButton = required<HTMLButtonElement>("connect-button");
 const inspectToggle = required<HTMLInputElement>("inspect-mode");
 const connectionStatus = required<HTMLOutputElement>("connection-status");
 const selectedSummary = required<HTMLOutputElement>("selected-summary");
+const pairingStatus = required<HTMLOutputElement>("pairing-status");
+const lastMessage = required<HTMLOutputElement>("last-message");
+const lastError = required<HTMLOutputElement>("last-error");
+const matchedFacts = required<HTMLOutputElement>("matched-facts");
+const inaccessibleStylesheets = required<HTMLOutputElement>(
+  "inaccessible-stylesheets",
+);
 const channel = new URLSearchParams(location.search).get("channel") ?? "";
 const sourceId = `firefox-${globalThis.crypto.randomUUID()}`;
 const storage: PanelStorage = {
@@ -35,13 +44,17 @@ let settings: PanelSettings;
 let inspectedTabId: number | undefined;
 let client: BrowserBridgeClient | undefined;
 let connected = false;
+const diagnostics = new PanelDiagnostics();
 const inspectController = new PanelInspectController((message) =>
   browser.runtime.sendMessage(message),
 );
 
 const publisher = new InspectPublisher({
   send: (payload) => {
-    client?.sendInspect(payload);
+    if (client?.sendInspect(payload)) {
+      diagnostics.recordMessageSent();
+      renderDiagnostics();
+    }
   },
 });
 
@@ -53,6 +66,8 @@ async function initialize(): Promise<void> {
   sessionIdInput.value = settings.sessionId;
   pairButton.disabled = false;
   connectButton.disabled = false;
+  diagnostics.setPaired(Boolean(settings.authToken));
+  renderDiagnostics();
   updatePairButton();
   updateControls();
   browser.runtime.onMessage.addListener(handleRuntimeMessage);
@@ -92,6 +107,7 @@ async function pairOrReset(): Promise<void> {
     connected = false;
     await resetPairing(storage);
     settings = { ...settings, authToken: undefined };
+    diagnostics.setPaired(false);
     pairingCodeInput.value = "";
     updatePairButton();
     updateConnectionState("disconnected");
@@ -153,10 +169,13 @@ async function storeCredentials(
   };
   sessionIdInput.value = credentials.sessionId;
   await savePanelSettings(storage, settings);
+  diagnostics.setPaired(true);
+  renderDiagnostics();
   updatePairButton();
 }
 
 function updateConnectionState(state: BrowserConnectionState): void {
+  diagnostics.setConnectionState(state);
   publisher.reset();
   connected = state === "connected";
   if (!connected && inspectController.enabled) {
@@ -166,6 +185,7 @@ function updateConnectionState(state: BrowserConnectionState): void {
   connectionStatus.dataset.state = state;
   connectButton.textContent = connected ? "Disconnect" : "Connect";
   updateControls();
+  renderDiagnostics();
 }
 
 function updatePairButton(): void {
@@ -210,6 +230,14 @@ function handleRuntimeMessage(message: unknown): void {
     const inaccessible = Array.isArray(payload.inaccessibleStylesheets)
       ? payload.inaccessibleStylesheets.length
       : 0;
+    diagnostics.recordSelection(payload.facts, inaccessible);
+    if (inaccessible > 0) {
+      diagnostics.recordError({
+        code: "browser.stylesheetInaccessible",
+        message: `${inaccessible} stylesheet${inaccessible === 1 ? " is" : "s are"} inaccessible`,
+      });
+    }
+    renderDiagnostics();
     selectedSummary.value = `${payload.subject.selector ?? "element"} | ${payload.facts.length} facts | ${inaccessible} inaccessible`;
     publisher.publish({
       subject: payload.subject,
@@ -261,8 +289,29 @@ function stateLabel(state: BrowserConnectionState): string {
 }
 
 function showError(error: unknown): void {
-  connectionStatus.value = error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  diagnostics.recordError({
+    ...(error instanceof BrowserProtocolError ? { code: error.code } : {}),
+    message,
+  });
+  diagnostics.setConnectionState("error");
+  connectionStatus.value = message;
   connectionStatus.dataset.state = "error";
+  renderDiagnostics();
+}
+
+function renderDiagnostics(): void {
+  const snapshot = diagnostics.snapshot();
+  pairingStatus.value = snapshot.paired ? "Paired" : "Unpaired";
+  lastMessage.value =
+    snapshot.lastMessageSentAt?.toISOString() ?? "None";
+  lastError.value = snapshot.lastError
+    ? `${snapshot.lastError.code ? `${snapshot.lastError.code}: ` : ""}${snapshot.lastError.message}`
+    : "None";
+  matchedFacts.value = String(snapshot.matchedCssFactCount);
+  inaccessibleStylesheets.value = String(
+    snapshot.inaccessibleStylesheetCount,
+  );
 }
 
 function required<T extends HTMLElement>(id: string): T {

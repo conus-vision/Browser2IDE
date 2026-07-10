@@ -37,6 +37,21 @@ describe("PairingStore", () => {
     expect(store.acceptPairRequest(expired.code)).toBeUndefined();
   });
 
+  it("distinguishes invalid and expired pairing codes for protocol errors", () => {
+    let now = new Date("2026-07-09T12:00:00.000Z");
+    const store = new PairingStore({ now: () => now });
+
+    expect(store.acceptPairRequestDetailed("000000")).toEqual({
+      errorCode: "pairing.invalidCode",
+    });
+
+    const pairing = store.createPairingCode("session-1");
+    now = new Date("2026-07-09T12:02:00.001Z");
+    expect(store.acceptPairRequestDetailed(pairing.code)).toEqual({
+      errorCode: "pairing.expiredCode",
+    });
+  });
+
   it("validates authorized tokens by session", () => {
     let now = new Date("2026-07-09T12:00:00.000Z");
     const store = new PairingStore({ now: () => now });

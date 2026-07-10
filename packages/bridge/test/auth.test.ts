@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { createAuthorizedToken, tokensEqual } from "../src/auth.js";
+import { PairingStore } from "../src/pairing.js";
 import { createBridgeServer } from "../src/server.js";
 
 describe("bridge auth", () => {
@@ -83,6 +84,80 @@ describe("bridge auth", () => {
     }
   });
 
+  it("returns distinct structured errors for invalid and expired pairing codes", async () => {
+    let now = new Date("2026-07-09T12:00:00.000Z");
+    const pairingStore = new PairingStore({ now: () => now });
+    const server = createBridgeServer({ port: 0, pairingStore });
+    await server.start();
+
+    try {
+      const invalidSocket = await connect(server.getUrl());
+      invalidSocket.send(
+        JSON.stringify({
+          protocolVersion: 1,
+          type: "pairRequest",
+          messageId: "pair-invalid",
+          pairingCode: "000000-invalid",
+          source: { role: "browser", id: "browser-source", metadata: {} },
+          metadata: {},
+        }),
+      );
+      await expect(nextJsonMessage(invalidSocket)).resolves.toMatchObject({
+        type: "error",
+        code: "pairing.invalidCode",
+      });
+
+      const pairing = server.createPairingCode("session-1");
+      now = new Date("2026-07-09T12:02:00.001Z");
+      const expiredSocket = await connect(server.getUrl());
+      expiredSocket.send(
+        JSON.stringify({
+          protocolVersion: 1,
+          type: "pairRequest",
+          messageId: "pair-expired",
+          pairingCode: pairing.code,
+          source: { role: "browser", id: "browser-source", metadata: {} },
+          metadata: {},
+        }),
+      );
+      await expect(nextJsonMessage(expiredSocket)).resolves.toMatchObject({
+        type: "error",
+        code: "pairing.expiredCode",
+      });
+
+      invalidSocket.close();
+      expiredSocket.close();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("returns protocol.invalidMessage and closes malformed clients", async () => {
+    const server = createBridgeServer({ port: 0 });
+    await server.start();
+
+    try {
+      const socket = await connect(server.getUrl());
+      const closed = once(socket, "close");
+      socket.send(
+        JSON.stringify({
+          protocolVersion: 1,
+          type: "unknown",
+          messageId: "invalid-1",
+          metadata: {},
+        }),
+      );
+
+      await expect(nextJsonMessage(socket)).resolves.toMatchObject({
+        type: "error",
+        code: "protocol.invalidMessage",
+      });
+      await closed;
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("rejects invalid session tokens with an error message and closes the socket", async () => {
     const server = createBridgeServer({ port: 0, sessionId: "session-1" });
     await server.start();
@@ -108,7 +183,7 @@ describe("bridge auth", () => {
       expect(error).toMatchObject({
         protocolVersion: 1,
         type: "error",
-        code: "UNAUTHORIZED",
+        code: "auth.invalidSessionToken",
         message: "Invalid session token",
         metadata: {},
       });
@@ -154,7 +229,7 @@ describe("bridge auth", () => {
 
       await expect(nextJsonMessage(helloSocket)).resolves.toMatchObject({
         type: "error",
-        code: "UNAUTHORIZED",
+        code: "auth.invalidSessionToken",
       });
       await closed;
       pairingSocket.close();
@@ -184,10 +259,31 @@ describe("bridge auth", () => {
       await explicitHostServer.stop();
     }
   });
+
+  it("rejects webpage origins while allowing extension and originless clients", async () => {
+    const server = createBridgeServer({ port: 0 });
+    await server.start();
+
+    try {
+      await expect(
+        connect(server.getUrl(), "https://untrusted.example"),
+      ).rejects.toThrow();
+
+      const extensionSocket = await connect(
+        server.getUrl(),
+        "moz-extension://browser2ide-test",
+      );
+      const originlessSocket = await connect(server.getUrl());
+      extensionSocket.close();
+      originlessSocket.close();
+    } finally {
+      await server.stop();
+    }
+  });
 });
 
-async function connect(url: string): Promise<WebSocket> {
-  const socket = new WebSocket(url);
+async function connect(url: string, origin?: string): Promise<WebSocket> {
+  const socket = new WebSocket(url, origin ? { origin } : undefined);
   await once(socket, "open");
   return socket;
 }

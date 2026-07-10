@@ -4,6 +4,7 @@ import {
   type Browser2IdeMessage,
   type ClientRole,
   type ErrorMessage,
+  type ProtocolErrorCode,
 } from "@browser2ide/protocol";
 import type { ClientRegistry, RegisteredClient } from "./clientRegistry.js";
 
@@ -15,17 +16,35 @@ export function routeMessage(
   switch (message.type) {
     case "inspect":
       if (sender.source.role === "browser" || sender.source.role === "simulator") {
-        sendToRoles(registry, sender.sessionId, ["ide"], message);
+        if (sendToRoles(registry, sender.sessionId, ["ide"], message) === 0) {
+          sendError(
+            sender,
+            "bridge.noIdeClient",
+            "No IDE client is connected to this session",
+          );
+        }
       }
       return;
     case "references":
       if (sender.source.role === "ide") {
-        sendToRoles(registry, sender.sessionId, ["browser"], message);
+        if (sendToRoles(registry, sender.sessionId, ["browser"], message) === 0) {
+          sendError(
+            sender,
+            "bridge.noBrowserClient",
+            "No browser client is connected to this session",
+          );
+        }
       }
       return;
     case "command":
       if (sender.source.role === "ide") {
-        sendToRoles(registry, sender.sessionId, ["browser"], message);
+        if (sendToRoles(registry, sender.sessionId, ["browser"], message) === 0) {
+          sendError(
+            sender,
+            "bridge.noBrowserClient",
+            "No browser client is connected to this session",
+          );
+        }
       }
       return;
     case "error":
@@ -38,7 +57,7 @@ export function routeMessage(
 
 export function sendError(
   client: RegisteredClient,
-  code: string,
+  code: ProtocolErrorCode,
   message: string,
   fatal = false,
 ): void {
@@ -66,10 +85,13 @@ function sendToRoles(
   sessionId: string,
   roles: ClientRole[],
   message: Browser2IdeMessage,
-): void {
+): number {
+  let sent = 0;
   for (const role of roles) {
     for (const client of registry.findBySessionAndRole(sessionId, role)) {
       sendMessage(client, message);
+      sent += 1;
     }
   }
+  return sent;
 }

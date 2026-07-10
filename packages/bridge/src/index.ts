@@ -7,6 +7,7 @@ export {
   PairingStore,
   type AcceptedPairing,
   type AuthorizedToken,
+  type PairingAttempt,
   type PairingCode,
   type PairingStoreOptions,
 } from "./pairing.js";

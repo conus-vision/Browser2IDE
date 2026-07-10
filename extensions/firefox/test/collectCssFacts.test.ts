@@ -91,6 +91,7 @@ describe("collectCssFacts", () => {
 
     expect(result.inaccessibleStylesheets).toEqual([
       {
+        code: "browser.stylesheetInaccessible",
         sourceUrl: "https://cdn.example/vendor.css",
         reason: "Permission denied",
       },

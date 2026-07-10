@@ -14,6 +14,7 @@ describe("ApplicableRulesTreeDataProvider", () => {
       line: 18,
       confidence: "sourcemap",
       workspaceUri: uri("F:/workspace/styles/card.scss"),
+      diagnostics: ["Mapped through app.css.map"],
     });
     const heuristic = reference({
       label: ".fallback",
@@ -50,6 +51,13 @@ describe("ApplicableRulesTreeDataProvider", () => {
       title: "Open Reference",
       arguments: [stableReferenceId(mapped)],
     });
+    expect(items[0].tooltip).toContain("Mapped through app.css.map");
+    expect(provider.getReferences()).toEqual([
+      mapped,
+      heuristic,
+      unmapped,
+      external,
+    ]);
 
     provider.update(snapshot([mapped]));
     expect(provider.getChildren()[0].referenceId).toBe(stableReferenceId(mapped));
@@ -86,6 +94,7 @@ function reference(
     confidence?: ResolvedReference["confidence"];
     status?: ResolvedReference["status"];
     workspaceUri?: vscode.Uri;
+    diagnostics?: string[];
   },
 ): ResolvedReference {
   return {
@@ -102,7 +111,7 @@ function reference(
     status: overrides.status ?? "matched",
     metadata: {},
     workspaceUri: overrides.workspaceUri,
-    diagnostics: [],
+    diagnostics: overrides.diagnostics ?? [],
   };
 }
 

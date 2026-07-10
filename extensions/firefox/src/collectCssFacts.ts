@@ -1,4 +1,7 @@
-import type { CssRuleFact } from "@browser2ide/protocol";
+import type {
+  CssRuleFact,
+  ProtocolErrorCode,
+} from "@browser2ide/protocol";
 
 export interface MatchableElement {
   matches(selector: string): boolean;
@@ -35,6 +38,10 @@ export interface CssDocumentSource {
 }
 
 export interface InaccessibleStylesheet {
+  readonly code: Extract<
+    ProtocolErrorCode,
+    "browser.stylesheetInaccessible"
+  >;
   readonly sourceUrl: string;
   readonly reason: string;
 }
@@ -61,6 +68,7 @@ export function collectCssFacts(
       rules = Array.from(stylesheet.cssRules);
     } catch (error) {
       inaccessibleStylesheets.push({
+        code: "browser.stylesheetInaccessible",
         sourceUrl,
         reason: messageOf(error),
       });

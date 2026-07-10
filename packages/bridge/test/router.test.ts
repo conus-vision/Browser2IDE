@@ -86,6 +86,21 @@ describe("bridge router and registry", () => {
     expect(ideOther.sent).toEqual([]);
   });
 
+  it("reports when an inspect message has no IDE recipient", () => {
+    const registry = new ClientRegistry();
+    const browserConnection = client("browser", "session-1");
+    const browser = registry.add(browserConnection);
+
+    routeMessage(registry, browser, inspectMessage);
+
+    expect(browserConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noIdeClient",
+      }),
+    ]);
+  });
+
   it("routes command from IDE clients to browser clients in the same session", () => {
     const registry = new ClientRegistry();
     const ide = registry.add(client("ide", "session-1"));
@@ -98,6 +113,21 @@ describe("bridge router and registry", () => {
 
     expect(browserSame.sent).toEqual([commandMessage]);
     expect(browserOther.sent).toEqual([]);
+  });
+
+  it("reports when an IDE message has no browser recipient", () => {
+    const registry = new ClientRegistry();
+    const ideConnection = client("ide", "session-1");
+    const ide = registry.add(ideConnection);
+
+    routeMessage(registry, ide, commandMessage);
+
+    expect(ideConnection.sent).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: "bridge.noBrowserClient",
+      }),
+    ]);
   });
 
   it("routes references to browser clients in the same session", () => {

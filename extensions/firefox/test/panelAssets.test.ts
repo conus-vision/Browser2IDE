@@ -21,6 +21,11 @@ describe("Firefox DevTools panel assets", () => {
       "inspect-mode",
       "connection-status",
       "selected-summary",
+      "pairing-status",
+      "last-message",
+      "last-error",
+      "matched-facts",
+      "inaccessible-stylesheets",
     ]) {
       expect(panel).toContain(`id="${id}"`);
     }

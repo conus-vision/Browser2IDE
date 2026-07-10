@@ -103,6 +103,43 @@ describe("BridgeClient", () => {
     expect(socket.closed).toBe(true);
   });
 
+  it("publishes structured bridge errors to diagnostic listeners", () => {
+    const socket = new FakeSocket();
+    const errors: unknown[] = [];
+    const client = new BridgeClient({
+      url: "ws://127.0.0.1:48735",
+      sessionId: "session-1",
+      authToken: "ide-token",
+      socketFactory: () => socket,
+    });
+    client.onProtocolError((error) => errors.push(error));
+
+    client.connect();
+    socket.open();
+    socket.message({
+      protocolVersion: 1,
+      type: "error",
+      messageId: "error-1",
+      code: "bridge.noBrowserClient",
+      message: "No browser client is connected",
+      metadata: {},
+    });
+
+    expect(errors).toEqual([
+      expect.objectContaining({
+        code: "bridge.noBrowserClient",
+        message: "No browser client is connected",
+      }),
+    ]);
+
+    socket.onmessage?.({ data: "{" });
+    expect(errors.at(-1)).toEqual(
+      expect.objectContaining({
+        code: "protocol.invalidMessage",
+      }),
+    );
+  });
+
   it("disposes socket callbacks, retry timers, and listeners", () => {
     const socket = new FakeSocket();
     const cleared: number[] = [];

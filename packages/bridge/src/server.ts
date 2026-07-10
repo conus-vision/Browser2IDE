@@ -5,6 +5,7 @@ import {
   Browser2IdeMessageSchema,
   PairAcceptedMessageSchema,
   type Browser2IdeMessage,
+  type ProtocolErrorCode,
 } from "@browser2ide/protocol";
 import { ClientRegistry, type RegisteredClient } from "./clientRegistry.js";
 import { startHeartbeat, type Heartbeat } from "./heartbeat.js";
@@ -57,7 +58,12 @@ export function createBridgeServer(
       }
 
       startPromise = (async () => {
-        const nextServer = new WebSocketServer({ host, port });
+        const nextServer = new WebSocketServer({
+          host,
+          port,
+          verifyClient: ({ origin }: { origin: string }) =>
+            isAllowedWebSocketOrigin(origin),
+        });
         nextServer.on("connection", (socket) => {
           activeSockets.add(socket);
           socket.once("close", () => activeSockets.delete(socket));
@@ -143,20 +149,32 @@ function handleConnection(
     try {
       message = Browser2IdeMessageSchema.parse(JSON.parse(raw));
     } catch {
-      sendSocketError(socket, "INVALID_MESSAGE", "Message does not match protocol", true);
+      sendSocketError(
+        socket,
+        "protocol.invalidMessage",
+        "Message does not match protocol",
+        true,
+      );
       socket.close();
       return;
     }
 
     if (message.type === "pairRequest") {
-      const accepted = pairingStore.acceptPairRequest(
+      const pairingAttempt = pairingStore.acceptPairRequestDetailed(
         message.pairingCode,
         message.source.role,
       );
-      if (!accepted) {
-        sendSocketError(socket, "PAIRING_REJECTED", "Pairing code is invalid or expired");
+      if ("errorCode" in pairingAttempt) {
+        sendSocketError(
+          socket,
+          pairingAttempt.errorCode,
+          pairingAttempt.errorCode === "pairing.expiredCode"
+            ? "Pairing code has expired"
+            : "Pairing code is invalid or already used",
+        );
         return;
       }
+      const { accepted } = pairingAttempt;
 
       const response = PairAcceptedMessageSchema.parse({
         protocolVersion: 1,
@@ -173,7 +191,12 @@ function handleConnection(
 
     if (!registered) {
       if (message.type !== "hello") {
-        sendSocketError(socket, "UNAUTHORIZED", "Client must authenticate with hello", true);
+        sendSocketError(
+          socket,
+          "protocol.invalidMessage",
+          "Client must authenticate with hello",
+          true,
+        );
         socket.close();
         return;
       }
@@ -185,7 +208,12 @@ function handleConnection(
           message.authToken,
         )
       ) {
-        sendSocketError(socket, "UNAUTHORIZED", "Invalid session token", true);
+        sendSocketError(
+          socket,
+          "auth.invalidSessionToken",
+          "Invalid session token",
+          true,
+        );
         socket.close();
         return;
       }
@@ -215,7 +243,7 @@ function handleConnection(
 
 function sendSocketError(
   socket: WebSocket,
-  code: string,
+  code: ProtocolErrorCode,
   message: string,
   fatal = false,
 ): void {
@@ -229,4 +257,17 @@ function sendSocketError(
     metadata: {},
   });
   socket.send(JSON.stringify(error));
+}
+
+function isAllowedWebSocketOrigin(origin: string): boolean {
+  if (!origin) {
+    return true;
+  }
+
+  try {
+    const protocol = new URL(origin).protocol;
+    return protocol === "moz-extension:" || protocol === "chrome-extension:";
+  } catch {
+    return false;
+  }
 }

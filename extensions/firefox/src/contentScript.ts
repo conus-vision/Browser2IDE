@@ -59,6 +59,7 @@ async function sendSelection(element: InspectableElement): Promise<void> {
         metadata: {
           inaccessibleStylesheetCount:
             collection.inaccessibleStylesheets.length,
+          browserErrors: collection.inaccessibleStylesheets,
         },
       },
       metadata: {},

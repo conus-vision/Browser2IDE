@@ -4,6 +4,7 @@ import {
   Browser2IdeMessageSchema,
   CommandMessageSchema,
   type CommandMessage,
+  type ErrorMessage,
   type InspectMessage,
 } from "@browser2ide/protocol";
 
@@ -32,6 +33,9 @@ export class BridgeClient {
   private readonly scheduleTimer: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
   private readonly cancelTimer: (timer: ReturnType<typeof setTimeout>) => void;
   private readonly inspectListeners = new Set<(message: InspectMessage) => void>();
+  private readonly protocolErrorListeners = new Set<
+    (message: ErrorMessage) => void
+  >();
   private readonly stateListeners = new Set<(state: ConnectionState) => void>();
   private socket: SocketLike | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -71,6 +75,7 @@ export class BridgeClient {
   dispose(): void {
     this.disconnect();
     this.inspectListeners.clear();
+    this.protocolErrorListeners.clear();
     this.stateListeners.clear();
   }
 
@@ -82,6 +87,11 @@ export class BridgeClient {
   onConnectionStateChanged(listener: (state: ConnectionState) => void): () => void {
     this.stateListeners.add(listener);
     return () => this.stateListeners.delete(listener);
+  }
+
+  onProtocolError(listener: (message: ErrorMessage) => void): () => void {
+    this.protocolErrorListeners.add(listener);
+    return () => this.protocolErrorListeners.delete(listener);
   }
 
   sendCommand(command: CommandMessage): void {
@@ -126,12 +136,16 @@ export class BridgeClient {
     try {
       raw = JSON.parse(payload);
     } catch {
+      this.emitProtocolError(localProtocolError("Bridge sent invalid JSON"));
       this.setState("error");
       return;
     }
 
     const parsed = Browser2IdeMessageSchema.safeParse(raw);
     if (!parsed.success) {
+      this.emitProtocolError(
+        localProtocolError("Bridge sent an invalid protocol message"),
+      );
       this.setState("error");
       return;
     }
@@ -140,6 +154,9 @@ export class BridgeClient {
       for (const listener of this.inspectListeners) {
         listener(parsed.data);
       }
+    }
+    if (parsed.data.type === "error") {
+      this.emitProtocolError(parsed.data);
     }
     if (parsed.data.type === "ping") {
       socket.send(
@@ -178,6 +195,12 @@ export class BridgeClient {
     }, delay);
   }
 
+  private emitProtocolError(message: ErrorMessage): void {
+    for (const listener of this.protocolErrorListeners) {
+      listener(message);
+    }
+  }
+
   private setState(state: ConnectionState): void {
     if (this.state === state) {
       return;
@@ -194,4 +217,15 @@ export class BridgeClient {
     socket.onclose = null;
     socket.onerror = null;
   }
+}
+
+function localProtocolError(message: string): ErrorMessage {
+  return {
+    protocolVersion: 1,
+    type: "error",
+    messageId: randomUUID(),
+    code: "protocol.invalidMessage",
+    message,
+    metadata: {},
+  };
 }

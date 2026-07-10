@@ -4,7 +4,7 @@ import {
   tokensEqual,
   type AuthorizedToken,
 } from "./auth.js";
-import type { ClientRole } from "@browser2ide/protocol";
+import type { ClientRole, ProtocolErrorCode } from "@browser2ide/protocol";
 
 export interface PairingCode {
   readonly code: string;
@@ -19,6 +19,15 @@ export interface AcceptedPairing {
   readonly sessionId: string;
   readonly authToken: AuthorizedToken;
 }
+
+export type PairingAttempt =
+  | { readonly accepted: AcceptedPairing }
+  | {
+      readonly errorCode: Extract<
+        ProtocolErrorCode,
+        "pairing.invalidCode" | "pairing.expiredCode"
+      >;
+    };
 
 export interface PairingStoreOptions {
   readonly now?: () => Date;
@@ -63,11 +72,22 @@ export class PairingStore {
     code: string,
     role: ClientRole = "browser",
   ): AcceptedPairing | undefined {
+    const result = this.acceptPairRequestDetailed(code, role);
+    return "accepted" in result ? result.accepted : undefined;
+  }
+
+  acceptPairRequestDetailed(
+    code: string,
+    role: ClientRole = "browser",
+  ): PairingAttempt {
     const pairing = this.pairings.get(code);
     const now = this.now();
 
-    if (!pairing || pairing.usedAt || pairing.expiresAt.getTime() <= now.getTime()) {
-      return undefined;
+    if (!pairing || pairing.usedAt) {
+      return { errorCode: "pairing.invalidCode" };
+    }
+    if (pairing.expiresAt.getTime() <= now.getTime()) {
+      return { errorCode: "pairing.expiredCode" };
     }
 
     pairing.usedAt = now;
@@ -76,8 +96,10 @@ export class PairingStore {
     this.onTokenCreated?.(authToken);
 
     return {
-      sessionId: pairing.sessionId,
-      authToken,
+      accepted: {
+        sessionId: pairing.sessionId,
+        authToken,
+      },
     };
   }
 

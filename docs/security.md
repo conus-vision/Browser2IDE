@@ -10,7 +10,7 @@ The product exposes no HTTP product API. Browser2IDE product traffic uses WebSoc
 Firefox extension -> VS Code-managed localhost bridge -> VS Code extension
 ```
 
-The bridge rejects unexpected WebSocket origins when an origin header is present. It is not intended to accept remote network traffic.
+The bridge rejects unexpected WebSocket origins when an origin header is present. Firefox and Chromium extension origins are allowed; originless local clients such as the VS Code extension and simulator are allowed. Ordinary webpage origins are rejected. The bridge is not intended to accept remote network traffic.
 
 ## Pairing And Tokens
 
@@ -35,3 +35,16 @@ Allowed browser-sent metadata in the MVP is limited to:
 - source metadata such as generated line and column when available.
 
 Future adapters and resolvers should keep this data-minimizing shape unless a user explicitly enables richer instrumentation.
+
+## Structured Errors
+
+Protocol errors use a closed, versioned code vocabulary:
+
+- `pairing.invalidCode` and `pairing.expiredCode`;
+- `auth.invalidSessionToken`;
+- `protocol.invalidMessage`;
+- `bridge.noIdeClient` and `bridge.noBrowserClient`;
+- `resolver.fileNotFound` and `resolver.sourceMapFailed`;
+- `browser.stylesheetInaccessible`.
+
+Pairing codes and auth tokens are never included in error messages or diagnostic metadata.

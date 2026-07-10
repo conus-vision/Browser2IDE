@@ -18,7 +18,8 @@ body {
 .panel-header,
 .connection,
 .inspect-toolbar,
-.selection {
+.selection,
+.diagnostics {
   padding: 10px 12px;
   border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
 }
@@ -141,7 +142,30 @@ input:disabled {
 .selection {
   display: grid;
   gap: 7px;
+}
+
+.diagnostics {
+  display: grid;
+  gap: 8px;
   border-bottom: 0;
+}
+
+.diagnostics dl {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(100px, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.diagnostics dt {
+  color: color-mix(in srgb, CanvasText 68%, transparent);
+}
+
+.diagnostics dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 #selected-summary {
