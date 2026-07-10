@@ -22,10 +22,10 @@
     {
       "type": "css-rule",
       "selector": ".card",
-      "property": "border-radius",
-      "value": "8px",
+      "property": "display",
+      "value": "flex",
       "metadata": {
-        "stylesheet": "src/styles/card.css"
+        "sourceUrl": "/dist/app.css"
       }
     },
     {
@@ -34,7 +34,7 @@
       "property": "box-shadow",
       "value": "0 12px 32px rgba(0, 0, 0, 0.18)",
       "metadata": {
-        "stylesheet": "src/styles/features.css"
+        "sourceUrl": "/dist/app.css"
       }
     },
     {

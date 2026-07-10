@@ -3,18 +3,34 @@ import { BridgeClient, type ConnectionState } from "./bridgeClient.js";
 import { BridgeManager } from "./bridgeManager.js";
 import { readBridgeConfiguration } from "./config.js";
 import { writeBridgeDiagnostics } from "./diagnostics.js";
+import { CssRuleResolver } from "./references/cssRuleResolver.js";
+import { SourceResolverRegistry } from "./references/sourceResolverRegistry.js";
+import type {
+  DecorationEditorLike,
+} from "./presenter/decorations.js";
+import {
+  createPresenterRuntime,
+  type PresenterRuntime,
+  type PresenterRuntimeHost,
+} from "./presenter/runtime.js";
 
 let manager: BridgeManager | undefined;
 let client: BridgeClient | undefined;
 let clientState: ConnectionState = "disconnected";
 let statusBar: vscode.StatusBarItem | undefined;
 let output: vscode.OutputChannel | undefined;
+let presenterRuntime: PresenterRuntime | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("Browser2IDE");
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
   statusBar.show();
   updateStatus("disconnected");
+
+  presenterRuntime = createPresenterRuntime({
+    resolver: new SourceResolverRegistry([new CssRuleResolver()]),
+    host: createPresenterHost(),
+  });
 
   const configuration = readBridgeConfiguration(
     vscode.workspace.getConfiguration("browser2ide"),
@@ -38,13 +54,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       clientState = state;
       updateStatus(state);
     });
-    client.onInspect((message) => output?.appendLine(`inspect ${message.messageId}`));
+    client.onInspect((message) => {
+      output?.appendLine(`inspect ${message.messageId}`);
+      const openAll = vscode.workspace
+        .getConfiguration("browser2ide")
+        .get<boolean>("openAllReferences", true);
+      void presenterRuntime?.presenter
+        .present(message, openAll)
+        .catch(reportError);
+    });
     client.connect();
   };
 
   context.subscriptions.push(
     output,
     statusBar,
+    presenterRuntime,
     vscode.commands.registerCommand("browser2ide.start", async () => {
       try {
         await start();
@@ -53,6 +78,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     vscode.commands.registerCommand("browser2ide.stop", async () => {
+      presenterRuntime?.presenter.cancel();
       client?.dispose();
       client = undefined;
       await manager?.stop();
@@ -85,6 +111,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export async function deactivate(): Promise<void> {
+  presenterRuntime?.dispose();
+  presenterRuntime = undefined;
   client?.dispose();
   client = undefined;
   await manager?.stop();
@@ -110,4 +138,48 @@ function reportError(error: unknown): void {
   clientState = "error";
   updateStatus(clientState);
   output?.appendLine(error instanceof Error ? error.stack ?? error.message : String(error));
+}
+
+function createPresenterHost(): PresenterRuntimeHost {
+  return {
+    createThemeIcon: (id) => new vscode.ThemeIcon(id),
+    registerTreeDataProvider: (provider) =>
+      vscode.window.registerTreeDataProvider(
+        "browser2ide.applicableRules",
+        provider,
+      ),
+    registerCommand: (command, callback) =>
+      vscode.commands.registerCommand(command, callback),
+    createDecorationType: (options) =>
+      vscode.window.createTextEditorDecorationType(options),
+    createRange: (startLine, startColumn, endLine, endColumn) =>
+      new vscode.Range(startLine, startColumn, endLine, endColumn),
+    getVisibleEditors: () =>
+      vscode.window.visibleTextEditors.map(decorationEditor),
+    onDidChangeVisibleEditors: (listener) =>
+      vscode.window.onDidChangeVisibleTextEditors((editors) =>
+        listener(editors.map(decorationEditor)),
+      ),
+    openTextDocument: (uri) => vscode.workspace.openTextDocument(uri),
+    showTextDocument: (document, options) =>
+      vscode.window.showTextDocument(document as vscode.TextDocument, options),
+    revealRange: (editor, range) =>
+      (editor as vscode.TextEditor).revealRange(
+        range as vscode.Range,
+        vscode.TextEditorRevealType.InCenter,
+      ),
+    reportError,
+  };
+}
+
+function decorationEditor(editor: vscode.TextEditor): DecorationEditorLike {
+  return {
+    document: { uri: editor.document.uri },
+    setDecorations(decorationType, ranges) {
+      editor.setDecorations(
+        decorationType as vscode.TextEditorDecorationType,
+        ranges as readonly vscode.Range[],
+      );
+    },
+  };
 }

@@ -44,12 +44,12 @@ describe("inspect-card fixture", () => {
         expect.objectContaining({
           type: "css-rule",
           selector: ".card",
-          metadata: expect.any(Object),
+          metadata: { sourceUrl: "/dist/app.css" },
         }),
         expect.objectContaining({
           type: "css-rule",
           selector: ".featured",
-          metadata: expect.any(Object),
+          metadata: { sourceUrl: "/dist/app.css" },
         }),
         expect.objectContaining({
           type: "css-rule",

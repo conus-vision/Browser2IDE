@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("VS Code extension manifest", () => {
@@ -11,6 +11,10 @@ describe("VS Code extension manifest", () => {
       contributes: {
         commands: Array<{ command: string }>;
         configuration: { properties: Record<string, { default: unknown }> };
+        viewsContainers: {
+          activitybar: Array<{ id: string; title: string; icon: string }>;
+        };
+        views: Record<string, Array<{ id: string; name: string }>>;
       };
     };
 
@@ -23,6 +27,7 @@ describe("VS Code extension manifest", () => {
       "browser2ide.showPairingCode",
       "browser2ide.resetPairing",
       "browser2ide.openDiagnostics",
+      "browser2ide.openReference",
     ]);
     expect(manifest.contributes.configuration.properties).toMatchObject({
       "browser2ide.bridgeUrl": { default: "ws://127.0.0.1:48735" },
@@ -30,5 +35,21 @@ describe("VS Code extension manifest", () => {
       "browser2ide.sessionId": { default: "default" },
       "browser2ide.openAllReferences": { default: true },
     });
+
+    expect(manifest.contributes.viewsContainers.activitybar).toContainEqual({
+      id: "browser2ide",
+      title: "Browser2IDE",
+      icon: "resources/browser2ide.svg",
+    });
+    expect(manifest.contributes.views.browser2ide).toContainEqual({
+      id: "browser2ide.applicableRules",
+      name: "Applicable Rules",
+    });
+    expect(
+      existsSync(new URL("../resources/browser2ide.svg", import.meta.url)),
+    ).toBe(true);
+    expect(
+      readFileSync(new URL("../resources/browser2ide.svg", import.meta.url), "utf8"),
+    ).toMatch(/<svg[^>]*width="24"[^>]*height="24"/);
   });
 });

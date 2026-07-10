@@ -32,8 +32,29 @@
       {
         "command": "browser2ide.openDiagnostics",
         "title": "Browser2IDE: Open Diagnostics"
+      },
+      {
+        "command": "browser2ide.openReference",
+        "title": "Browser2IDE: Open Reference"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "browser2ide",
+          "title": "Browser2IDE",
+          "icon": "resources/browser2ide.svg"
+        }
+      ]
+    },
+    "views": {
+      "browser2ide": [
+        {
+          "id": "browser2ide.applicableRules",
+          "name": "Applicable Rules"
+        }
+      ]
+    },
     "configuration": {
       "title": "Browser2IDE",
       "properties": {
