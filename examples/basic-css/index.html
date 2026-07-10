@@ -4,11 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Browser2IDE CSS example</title>
+    <link
+      rel="stylesheet"
+      href="__VENDOR_CSS_URL__"
+      crossorigin="anonymous"
+    />
     <link rel="stylesheet" href="./dist/app.css" />
+    <link rel="stylesheet" href="./fallback.css" />
+    <link rel="stylesheet" href="./virtual.css" />
   </head>
   <body>
     <main class="layout">
-      <article class="card featured">Inspect this card</article>
+      <article class="card featured">
+        <h1>Browser2IDE fixture</h1>
+        <p>Inspect this card.</p>
+      </article>
     </main>
   </body>
 </html>

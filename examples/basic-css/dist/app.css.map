@@ -1,1 +1,1 @@
-{"version":3,"sources":["../src/card.scss","../src/layout.scss"],"names":[],"mappings":"AAAA;;;;AAIE;;;;AAKF;;;;ACTA","file":"app.css","sourcesContent":[".card {\n  display: flex;\n  padding: 1rem;\n\n  &:hover {\n    color: #0b57d0;\n  }\n}\n\n.featured {\n  box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 18%);\n}\n",".layout {\n  display: grid;\n  gap: 1.5rem;\n}\n"]}
+{"version":3,"sourceRoot":"","sources":["../src/card.scss","../src/layout.scss"],"names":[],"mappings":"AAAA;EACE;EACA;;AAEA;EACE;;;AAIJ;EACE;;;ACVF;EACE;EACA;;;AAGF;EACE","file":"app.css"}

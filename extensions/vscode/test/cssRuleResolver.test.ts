@@ -24,6 +24,7 @@ const fixtureFiles = [
   resolve(exampleRoot, "src/layout.scss"),
   resolve(exampleRoot, "dist/app.css"),
   resolve(exampleRoot, "dist/app.css.map"),
+  resolve(exampleRoot, "fallback.css"),
 ];
 
 describe("CssRuleResolver", () => {
@@ -135,6 +136,42 @@ describe("CssRuleResolver", () => {
       confidence: "unknown",
     });
     expect(byLabel(references, ".external").workspaceUri).toBeUndefined();
+  });
+
+  it("resolves every deterministic E2E fixture category", async () => {
+    const resolver = new CssRuleResolver({ workspace: fileWorkspace(fixtureFiles) });
+
+    const references = await resolver.resolve(
+      input([
+        cssFact(".card", "/dist/app.css"),
+        cssFact(".layout > .card", "/dist/app.css"),
+        cssFact(".card", "/fallback.css"),
+        cssFact(".card", "/virtual.css"),
+        cssFact(".card", "http://127.0.0.1:4174/vendor.css"),
+      ]),
+    );
+
+    expect(references).toHaveLength(5);
+    expect(
+      references
+        .filter((reference) => reference.confidence === "sourcemap")
+        .map((reference) =>
+          reference.workspaceUri?.fsPath.replace(/\\/g, "/").split("/").at(-1),
+        ),
+    ).toEqual(["card.scss", "layout.scss"]);
+    expect(
+      references.find((reference) =>
+        reference.workspaceUri?.fsPath.endsWith("fallback.css"),
+      ),
+    ).toMatchObject({ confidence: "heuristic", status: "matched" });
+    expect(
+      references.find((reference) => reference.source.uri === "/virtual.css"),
+    ).toMatchObject({ status: "unmapped" });
+    expect(
+      references.find((reference) => reference.status === "external"),
+    ).toMatchObject({
+      source: { uri: "http://127.0.0.1:4174/vendor.css" },
+    });
   });
 
   it("uses the mapped position when a source file repeats a selector", async () => {
