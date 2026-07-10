@@ -81,6 +81,12 @@ importers:
         specifier: ^8.5.12
         version: 8.18.1
 
+  packages/plugin-api:
+    dependencies:
+      '@browser2ide/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+
   packages/protocol:
     dependencies:
       zod:
