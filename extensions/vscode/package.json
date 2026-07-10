@@ -114,7 +114,8 @@
   },
   "scripts": {
     "build": "pnpm run typecheck && node ./esbuild.mjs",
-    "test": "vitest run",
+    "test": "vitest run --exclude \"test/integration/**\"",
+    "test:integration": "pnpm run build && pnpm --filter source-plugin-fixture build && vscode-test --label sourcePluginApi",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
@@ -128,10 +129,14 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.5.12",
+    "@vscode/test-cli": "0.0.15",
+    "@vscode/test-electron": "3.0.0",
     "esbuild": "^0.21.5",
+    "mocha": "^11.7.6",
     "vitest": "^2.1.0"
   }
 }
