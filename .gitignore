@@ -1,5 +1,8 @@
 node_modules/
 dist/
+!examples/basic-css/dist/
+!examples/basic-css/dist/app.css
+!examples/basic-css/dist/app.css.map
 out/
 .vscode-test/
 *.vsix

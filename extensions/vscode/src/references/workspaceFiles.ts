@@ -56,12 +56,33 @@ export async function readText(
 export function findRuleRangeBySelector(
   text: string,
   selector: string,
+  nearOffset?: number,
 ): RuleTextRange | undefined {
+  const ranges = findRuleRangesBySelector(text, selector);
+  if (nearOffset === undefined) {
+    return ranges[0];
+  }
+  return ranges.reduce<RuleTextRange | undefined>((nearest, range) => {
+    if (!nearest) {
+      return range;
+    }
+    return distanceFromRange(range, nearOffset) <
+      distanceFromRange(nearest, nearOffset)
+      ? range
+      : nearest;
+  }, undefined);
+}
+
+export function findRuleRangesBySelector(
+  text: string,
+  selector: string,
+): RuleTextRange[] {
   const target = normalizeSelector(selector);
   if (!target) {
-    return undefined;
+    return [];
   }
 
+  const ranges: RuleTextRange[] = [];
   let boundary = 0;
   let index = 0;
 
@@ -76,7 +97,7 @@ export function findRuleRangeBySelector(
     if (character === "{" && text[index - 1] === "#") {
       const interpolationEnd = findMatchingBrace(text, index);
       if (interpolationEnd === undefined) {
-        return undefined;
+        return ranges;
       }
       index = interpolationEnd + 1;
       continue;
@@ -87,17 +108,17 @@ export function findRuleRangeBySelector(
       if (selectorMatches(normalizedPrelude, target)) {
         const closingBrace = findMatchingBrace(text, index);
         if (closingBrace === undefined) {
-          return undefined;
+          return ranges;
         }
 
         const startOffset = findPreludeStart(text, boundary, index);
         const endOffset = closingBrace + 1;
-        return {
+        ranges.push({
           startOffset,
           endOffset,
           start: offsetToPosition(text, startOffset),
           end: offsetToPosition(text, endOffset),
-        };
+        });
       }
 
       boundary = index + 1;
@@ -108,7 +129,27 @@ export function findRuleRangeBySelector(
     index += 1;
   }
 
-  return undefined;
+  return ranges;
+}
+
+export function textOffsetAt(text: string, position: TextPosition): number {
+  let offset = 0;
+  let currentLine = 0;
+
+  while (currentLine < position.line && offset < text.length) {
+    const newline = text.indexOf("\n", offset);
+    if (newline === -1) {
+      return text.length;
+    }
+    offset = newline + 1;
+    currentLine += 1;
+  }
+
+  const lineEnd = text.indexOf("\n", offset);
+  return Math.min(
+    offset + position.character,
+    lineEnd === -1 ? text.length : lineEnd,
+  );
 }
 
 async function getDefaultWorkspaceApi(): Promise<WorkspaceFileApi> {
@@ -248,4 +289,14 @@ function offsetToPosition(text: string, offset: number): TextPosition {
   }
 
   return { line, character };
+}
+
+function distanceFromRange(range: RuleTextRange, targetOffset: number): number {
+  if (targetOffset < range.startOffset) {
+    return range.startOffset - targetOffset;
+  }
+  if (targetOffset > range.endOffset) {
+    return targetOffset - range.endOffset;
+  }
+  return 0;
 }

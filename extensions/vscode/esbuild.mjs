@@ -5,7 +5,7 @@ await build({
   bundle: true,
   platform: "node",
   format: "cjs",
-  external: ["vscode"],
+  external: ["vscode", "source-map"],
   outfile: "dist/extension.cjs",
   sourcemap: true,
 });

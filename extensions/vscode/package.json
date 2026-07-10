@@ -65,6 +65,7 @@
   "dependencies": {
     "@browser2ide/bridge": "workspace:*",
     "@browser2ide/protocol": "workspace:*",
+    "source-map": "^0.7.6",
     "ws": "^8.18.0"
   },
   "devDependencies": {

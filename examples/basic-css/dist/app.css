@@ -1,0 +1,18 @@
+.card {
+  display: flex;
+  padding: 1rem;
+}
+.card:hover {
+  color: #0b57d0;
+}
+
+.featured {
+  box-shadow: 0 0.75rem 2rem rgba(0, 0, 0, 0.18);
+}
+
+.layout {
+  display: grid;
+  gap: 1.5rem;
+}
+
+/*# sourceMappingURL=app.css.map */

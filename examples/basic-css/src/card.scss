@@ -1,0 +1,12 @@
+.card {
+  display: flex;
+  padding: 1rem;
+
+  &:hover {
+    color: #0b57d0;
+  }
+}
+
+.featured {
+  box-shadow: 0 0.75rem 2rem rgb(0 0 0 / 18%);
+}
