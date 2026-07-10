@@ -42,6 +42,9 @@ importers:
       '@browser2ide/bridge':
         specifier: workspace:*
         version: link:../../packages/bridge
+      '@browser2ide/plugin-api':
+        specifier: workspace:*
+        version: link:../../packages/plugin-api
       '@browser2ide/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
