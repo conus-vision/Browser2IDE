@@ -71,7 +71,7 @@ describe("BridgeManager", () => {
           createPairingCode: () => ({
             code: String(123456 + pairingCodeCalls++),
             sessionId: "session-1",
-            expiresAt: new Date("2026-07-10T12:02:00.000Z"),
+            expiresAt: new Date(Date.now() + 120_000),
           }),
           getUrl: () => `ws://127.0.0.1:${port}`,
         };
@@ -162,7 +162,7 @@ describe("BridgeManager", () => {
           createPairingCode: () => ({
             code: "123456",
             sessionId: "session-1",
-            expiresAt: new Date("2026-07-10T12:02:00.000Z"),
+            expiresAt: new Date(Date.now() + 120_000),
           }),
           getUrl: () => `ws://127.0.0.1:${port}`,
         };
