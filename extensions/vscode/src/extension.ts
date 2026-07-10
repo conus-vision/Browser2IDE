@@ -6,6 +6,7 @@ import {
   DiagnosticsTracker,
   writeBridgeDiagnostics,
 } from "./diagnostics.js";
+import { showPairingCode } from "./pairing.js";
 import { CssRuleResolver } from "./references/cssRuleResolver.js";
 import { SourceResolverRegistry } from "./references/sourceResolverRegistry.js";
 import type {
@@ -102,11 +103,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       clientState = "disconnected";
       updateStatus(clientState);
     }),
-    vscode.commands.registerCommand("browser2ide.showPairingCode", () => {
-      const code = manager?.snapshot().pairingCode;
-      void vscode.window.showInformationMessage(
-        code ? `Browser2IDE pairing code: ${code}` : "Browser2IDE has no active pairing code.",
-      );
+    vscode.commands.registerCommand("browser2ide.showPairingCode", async () => {
+      await showPairingCode({
+        async refreshPairing() {
+          try {
+            await start();
+          } catch (error) {
+            reportError(error);
+            throw error;
+          }
+        },
+        getPairing() {
+          const snapshot = manager?.snapshot();
+          return {
+            code: snapshot?.pairingCode,
+            expiresAt: snapshot?.pairingExpiresAt,
+          };
+        },
+        writeClipboard: (value) => vscode.env.clipboard.writeText(value),
+        showInputBox: (options) => vscode.window.showInputBox(options),
+        showErrorMessage: (message) =>
+          vscode.window.showErrorMessage(message),
+      });
     }),
     vscode.commands.registerCommand("browser2ide.resetPairing", async () => {
       await manager?.resetPairing();

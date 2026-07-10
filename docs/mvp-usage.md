@@ -4,11 +4,11 @@
 
 1. Run the VS Code extension host.
 2. Run `Browser2IDE: Start`.
-3. Copy the short-lived pairing code shown by VS Code.
+3. Run `Browser2IDE: Show Pairing Code`; VS Code creates a fresh short-lived code, copies it, and keeps it visible while focus moves to Firefox.
 4. Load the Firefox extension in development mode.
 5. Open Firefox DevTools on a local page.
 6. Open the Browser2IDE DevTools panel.
-7. Enter the pairing code and pair the browser with VS Code.
+7. Paste the pairing code and pair the browser with VS Code.
 8. Enable inspect mode in the Browser2IDE panel.
 9. Click an element in the inspected page.
 10. Verify VS Code opens the related SCSS source when a source map resolves, or generated CSS as a fallback.

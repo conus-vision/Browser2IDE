@@ -58,7 +58,7 @@ code --new-window --extensionDevelopmentPath="$PWD/extensions/vscode" "$PWD"
 In the new VS Code window:
 
 1. Run `Browser2IDE: Start` from the Command Palette.
-2. Run `Browser2IDE: Show Pairing Code` and keep the six-digit code visible.
+2. Run `Browser2IDE: Show Pairing Code`. The command creates a fresh code, copies it to the clipboard, and keeps it visible in an input box while VS Code loses focus.
 3. Open the Browser2IDE Activity Bar view and keep `Applicable Rules` visible.
 
 If port `48735` is occupied, run `Browser2IDE: Open Diagnostics` and use the fallback bridge URL shown there in the Firefox panel.
@@ -78,7 +78,7 @@ In Firefox:
 1. Open DevTools with `F12`.
 2. Open the `Browser2IDE` DevTools panel.
 3. Confirm bridge URL `ws://127.0.0.1:48735` and session `default`, unless VS Code diagnostics reported a fallback URL or another configured session.
-4. Enter the VS Code pairing code and click `Pair`.
+4. Paste the VS Code pairing code and click `Pair`.
 5. Confirm `Connected` and `Paired` are visible.
 6. Enable `Inspect mode`.
 7. Click the padding or background of the `.card.featured` article, not its inner heading or paragraph.

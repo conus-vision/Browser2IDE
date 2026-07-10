@@ -6,6 +6,22 @@ export interface SecretStorageLike {
   delete(key: string): Thenable<void>;
 }
 
+export interface PairingCodeInputOptions {
+  readonly title: string;
+  readonly prompt: string;
+  readonly value: string;
+  readonly valueSelection: [number, number];
+  readonly ignoreFocusOut: boolean;
+}
+
+export interface PairingCodeCommandHost {
+  refreshPairing(): Promise<void>;
+  getPairing(): { readonly code?: string; readonly expiresAt?: Date };
+  writeClipboard(value: string): PromiseLike<void>;
+  showInputBox(options: PairingCodeInputOptions): PromiseLike<unknown>;
+  showErrorMessage(message: string): PromiseLike<unknown>;
+}
+
 interface SerializedAuthorizedToken {
   readonly sessionId: string;
   readonly role: "browser" | "ide" | "simulator";
@@ -34,6 +50,48 @@ export class PairingState {
   clear(): void {
     this.pairing = undefined;
   }
+}
+
+export async function showPairingCode(
+  host: PairingCodeCommandHost,
+): Promise<boolean> {
+  try {
+    await host.refreshPairing();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await host.showErrorMessage(
+      `Browser2IDE could not create a pairing code: ${message}`,
+    );
+    return false;
+  }
+
+  const pairing = host.getPairing();
+  if (!pairing.code) {
+    await host.showErrorMessage(
+      'Browser2IDE could not create a pairing code. Run "Browser2IDE: Open Diagnostics" for details.',
+    );
+    return false;
+  }
+
+  let copied = true;
+  try {
+    await host.writeClipboard(pairing.code);
+  } catch {
+    copied = false;
+  }
+
+  const deadline = pairing.expiresAt
+    ? ` before ${pairing.expiresAt.toISOString()}`
+    : "";
+  await host.showInputBox({
+    title: "Browser2IDE pairing code",
+    prompt: `${copied ? "Copied to clipboard." : "Automatic copy failed."} Paste this code into Firefox${deadline}.`,
+    value: pairing.code,
+    valueSelection: [0, pairing.code.length],
+    ignoreFocusOut: true,
+  });
+
+  return true;
 }
 
 export function serializeAuthorizedTokens(
