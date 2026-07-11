@@ -4,14 +4,6 @@ export {
   type BridgeServerOptions,
 } from "./server.js";
 export {
-  PairingStore,
-  type AcceptedPairing,
-  type AuthorizedToken,
-  type PairingAttempt,
-  type PairingCode,
-  type PairingStoreOptions,
-} from "./pairing.js";
-export {
   LinkAuthenticator,
   type LinkAttempt,
   type LinkAuthenticatorOptions,

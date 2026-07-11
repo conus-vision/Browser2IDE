@@ -3,7 +3,11 @@ import {
   Browser2IdeMessageSchema,
   PROTOCOL_VERSION,
 } from "@browser2ide/protocol";
-import type { ClientRegistry } from "./clientRegistry.js";
+import {
+  sendConnectionSafely,
+  terminateConnectionSafely,
+  type ClientRegistry,
+} from "./clientRegistry.js";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 
@@ -18,7 +22,7 @@ export function startHeartbeat(
   const interval = setInterval(() => {
     for (const client of registry.all()) {
       if (client.missedPongs >= 2) {
-        client.connection.terminate();
+        terminateConnectionSafely(client.connection);
         registry.remove(client.id);
         continue;
       }
@@ -31,7 +35,7 @@ export function startHeartbeat(
         sentAt: new Date().toISOString(),
         metadata: {},
       });
-      client.connection.send(JSON.stringify(ping));
+      sendConnectionSafely(client.connection, JSON.stringify(ping));
     }
   }, intervalMs);
 

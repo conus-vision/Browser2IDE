@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import { ClientRegistry } from "../src/clientRegistry.js";
 import { routeMessage } from "../src/router.js";
@@ -12,11 +13,12 @@ function client(role: "browser" | "ide" | "simulator", sessionId: string) {
     },
     source: { role, id: `${role}-source`, metadata: {} },
     sessionId,
+    authToken: `${role}-${sessionId}-token`,
   };
 }
 
 const inspectMessage = {
-  protocolVersion: 2,
+  protocolVersion: PROTOCOL_VERSION,
   type: "inspect",
   messageId: "inspect-1",
   sessionId: "session-1",
@@ -41,7 +43,7 @@ const simulatorInspectMessage = {
 } as const;
 
 const referencesMessage = {
-  protocolVersion: 2,
+  protocolVersion: PROTOCOL_VERSION,
   type: "references",
   messageId: "references-1",
   subject: { selector: "#submit", metadata: {} },
@@ -50,7 +52,7 @@ const referencesMessage = {
 } as const;
 
 const commandMessage = {
-  protocolVersion: 2,
+  protocolVersion: PROTOCOL_VERSION,
   type: "command",
   messageId: "command-1",
   command: "highlightElement",
@@ -68,9 +70,14 @@ describe("bridge router and registry", () => {
     expect(registry.findBySessionAndRole("session-1", "ide")).toEqual([ide]);
     expect(registry.findBySessionAndRole("session-1", "browser")).toHaveLength(1);
     expect(registry.findBySessionAndRole("session-2", "ide")).toHaveLength(1);
+    expect(registry.countByRole("browser")).toBe(1);
+    expect(registry.countByRole("ide")).toBe(2);
 
     registry.remove(ide.id);
     expect(registry.findBySessionAndRole("session-1", "ide")).toEqual([]);
+
+    registry.clear();
+    expect(registry.all()).toEqual([]);
   });
 
   it("routes inspect from browser and simulator clients to IDE clients in the same session", () => {
@@ -159,5 +166,17 @@ describe("bridge router and registry", () => {
     routeMessage(registry, simulatorSender, referencesMessage);
 
     expect(browserRecipient.sent).toEqual([]);
+  });
+
+  it("contains recipient send failures", () => {
+    const registry = new ClientRegistry();
+    const browser = registry.add(client("browser", "session-1"));
+    const ide = client("ide", "session-1");
+    ide.connection.send = () => {
+      throw new Error("send failed");
+    };
+    registry.add(ide);
+
+    expect(() => routeMessage(registry, browser, inspectMessage)).not.toThrow();
   });
 });

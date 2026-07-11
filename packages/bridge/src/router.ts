@@ -7,7 +7,11 @@ import {
   type ErrorMessage,
   type ProtocolErrorCode,
 } from "@browser2ide/protocol";
-import type { ClientRegistry, RegisteredClient } from "./clientRegistry.js";
+import {
+  sendConnectionSafely,
+  type ClientRegistry,
+  type RegisteredClient,
+} from "./clientRegistry.js";
 
 export function routeMessage(
   registry: ClientRegistry,
@@ -78,7 +82,7 @@ export function sendMessage(
   message: Browser2IdeMessage | ErrorMessage,
 ): void {
   const parsed = Browser2IdeMessageSchema.parse(message);
-  client.connection.send(JSON.stringify(parsed));
+  sendConnectionSafely(client.connection, JSON.stringify(parsed));
 }
 
 function sendToRoles(

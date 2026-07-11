@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ClientRole, ClientSource } from "@browser2ide/protocol";
+import WebSocket from "ws";
 
 export interface BridgeConnection {
   send(payload: string): void;
@@ -7,10 +8,79 @@ export interface BridgeConnection {
   close?: () => void;
 }
 
+export function createGuardedWebSocketConnection(
+  socket: WebSocket,
+): BridgeConnection {
+  return {
+    send(payload) {
+      if (socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      try {
+        socket.send(payload, (error) => {
+          if (error) {
+            terminateWebSocket(socket);
+          }
+        });
+      } catch {
+        terminateWebSocket(socket);
+      }
+    },
+    terminate() {
+      terminateWebSocket(socket);
+    },
+    close() {
+      if (
+        socket.readyState === WebSocket.CLOSING ||
+        socket.readyState === WebSocket.CLOSED
+      ) {
+        return;
+      }
+
+      try {
+        socket.close();
+      } catch {
+        terminateWebSocket(socket);
+      }
+    },
+  };
+}
+
+export function sendConnectionSafely(
+  connection: BridgeConnection,
+  payload: string,
+): void {
+  try {
+    connection.send(payload);
+  } catch {
+    terminateConnectionSafely(connection);
+  }
+}
+
+export function terminateConnectionSafely(
+  connection: BridgeConnection,
+): void {
+  try {
+    connection.terminate();
+  } catch {
+    // Connection failures are terminal and must not escape the bridge loop.
+  }
+}
+
+function terminateWebSocket(socket: WebSocket): void {
+  try {
+    socket.terminate();
+  } catch {
+    // The socket is already unusable.
+  }
+}
+
 export interface ClientRegistration {
   readonly connection: BridgeConnection;
   readonly source: ClientSource;
   readonly sessionId: string;
+  readonly authToken: string;
 }
 
 export interface RegisteredClient extends ClientRegistration {
@@ -32,8 +102,22 @@ export class ClientRegistry {
     return entry;
   }
 
-  remove(id: string): void {
-    this.clients.delete(id);
+  remove(id: string): boolean {
+    return this.clients.delete(id);
+  }
+
+  countByRole(role: ClientRole): number {
+    let count = 0;
+    for (const client of this.clients.values()) {
+      if (client.source.role === role) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  clear(): void {
+    this.clients.clear();
   }
 
   findBySessionAndRole(

@@ -38,6 +38,8 @@ const PIN_PATTERN = /^\d{2}$/;
 const FAILURE_WINDOW_MS = 60_000;
 const MAX_FAILURES = 5;
 const COOLDOWN_MS = 60_000;
+// Bounds link churn independently for browser, simulator, and IDE credentials.
+const MAX_ACTIVE_TOKENS_PER_ROLE = 64;
 
 export class LinkAuthenticator {
   private readonly sessionId: string;
@@ -134,6 +136,7 @@ export class LinkAuthenticator {
     bridgeInstanceId: string,
   ): TokenValidation {
     const now = this.readNow();
+    this.pruneExpiredTokens(now.getTime());
     const authorized = this.tokens.find((candidate) =>
       tokensEqual(candidate.value, token),
     );
@@ -171,6 +174,17 @@ export class LinkAuthenticator {
   }
 
   private issueToken(role: ClientRole, now: Date): AuthorizedToken {
+    this.pruneExpiredTokens(now.getTime());
+    let activeForRole = this.tokens.filter((token) => token.role === role).length;
+    while (activeForRole >= MAX_ACTIVE_TOKENS_PER_ROLE) {
+      const oldestIndex = this.tokens.findIndex((token) => token.role === role);
+      if (oldestIndex < 0) {
+        break;
+      }
+      this.tokens.splice(oldestIndex, 1);
+      activeForRole -= 1;
+    }
+
     const token = createAuthorizedToken(
       this.sessionId,
       role,
@@ -179,6 +193,13 @@ export class LinkAuthenticator {
     );
     this.tokens.push(cloneAuthorizedToken(token));
     return cloneAuthorizedToken(token);
+  }
+
+  private pruneExpiredTokens(now: number): void {
+    this.tokens = this.tokens.filter((token) => {
+      const expiresAt = token.expiresAt.getTime();
+      return Number.isFinite(expiresAt) && expiresAt > now;
+    });
   }
 
   private pruneFailures(now: number): void {

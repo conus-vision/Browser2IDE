@@ -301,6 +301,29 @@ describe("LinkAuthenticator", () => {
     ).toBe("rejected");
   });
 
+  it("caps active tokens per role and evicts the oldest token", () => {
+    const auth = authenticator();
+    const ideToken = auth.issueTrustedToken("ide");
+    const browserTokens = Array.from({ length: 65 }, () =>
+      acceptedToken(auth, "browser"),
+    );
+    const oldest = browserTokens[0];
+    const newest = browserTokens.at(-1);
+    if (!oldest || !newest) {
+      throw new Error("Expected browser tokens for cap regression");
+    }
+
+    expect(
+      auth.validateToken("default", "browser", oldest.value, INSTANCE_ID),
+    ).toBe("rejected");
+    expect(
+      auth.validateToken("default", "browser", newest.value, INSTANCE_ID),
+    ).toBe("accepted");
+    expect(
+      auth.validateToken("default", "ide", ideToken.value, INSTANCE_ID),
+    ).toBe("accepted");
+  });
+
   it("revokes one token without revoking another", () => {
     const auth = authenticator();
     const revoked = acceptedToken(auth, "browser");

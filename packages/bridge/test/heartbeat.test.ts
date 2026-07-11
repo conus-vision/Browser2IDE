@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "@browser2ide/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { ClientRegistry } from "../src/clientRegistry.js";
 import { startHeartbeat } from "../src/heartbeat.js";
@@ -18,6 +19,7 @@ function client() {
     },
     source: { role: "browser" as const, id: "browser-source", metadata: {} },
     sessionId: "session-1",
+    authToken: "browser-session-1-token",
   };
 }
 
@@ -32,7 +34,7 @@ describe("bridge heartbeat", () => {
     vi.advanceTimersByTime(15_000);
     expect(entry.connection.sent).toHaveLength(1);
     expect(entry.connection.sent[0]).toMatchObject({
-      protocolVersion: 2,
+      protocolVersion: PROTOCOL_VERSION,
       type: "ping",
       metadata: {},
     });
@@ -48,5 +50,23 @@ describe("bridge heartbeat", () => {
 
     heartbeat.stop();
     vi.useRealTimers();
+  });
+
+  it("contains connection send failures", () => {
+    vi.useFakeTimers();
+    const registry = new ClientRegistry();
+    const failing = client();
+    failing.connection.send = () => {
+      throw new Error("send failed");
+    };
+    registry.add(failing);
+    const heartbeat = startHeartbeat(registry);
+
+    try {
+      expect(() => vi.advanceTimersByTime(15_000)).not.toThrow();
+    } finally {
+      heartbeat.stop();
+      vi.useRealTimers();
+    }
   });
 });
