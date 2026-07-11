@@ -1,7 +1,7 @@
 # Browser2IDE Zero-Terminal Window Linking And Distribution Design
 
 **Date:** 2026-07-11
-**Status:** Design approved; pending written spec review
+**Status:** Approved for implementation planning
 
 ## Summary
 
@@ -20,6 +20,14 @@ or silently chooses a different VS Code window.
 The first public repository setup will also add installable artifacts, CI,
 unlisted Mozilla signing for Firefox Stable, documentation, contribution and
 security materials, and an MIT license.
+
+## Implementation Plans
+
+Implementation proceeds in this order:
+
+1. `docs/superpowers/plans/2026-07-11-window-linking-runtime.md`
+2. `docs/superpowers/plans/2026-07-11-browser-window-core-and-chrome.md`
+3. `docs/superpowers/plans/2026-07-11-distribution-and-repository.md`
 
 ## Goals
 
