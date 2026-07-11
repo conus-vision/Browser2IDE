@@ -114,7 +114,7 @@
   },
   "scripts": {
     "build": "pnpm run typecheck && node ./esbuild.mjs",
-    "test": "vitest run --exclude \"test/integration/**\"",
+    "test": "pnpm --filter @browser2ide/protocol build && pnpm --filter @browser2ide/bridge build && vitest run --exclude \"test/integration/**\"",
     "test:integration": "pnpm run build && pnpm --filter source-plugin-fixture build && vscode-test --label sourcePluginApi",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json"

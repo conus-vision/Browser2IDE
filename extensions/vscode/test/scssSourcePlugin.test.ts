@@ -159,7 +159,7 @@ async function fixtureFiles(): Promise<Record<string, string>> {
     ["src/layout.scss", "../../../examples/basic-css/src/layout.scss"],
   ].map(async ([uri, path]) => [
     `${root}/${uri}`,
-    await readFile(new URL(path!, import.meta.url), "utf8"),
+    (await readFile(new URL(path!, import.meta.url), "utf8")).replace(/\r\n/g, "\n"),
   ]));
   return Object.fromEntries(entries);
 }
