@@ -65,6 +65,57 @@ describe("CssSourcePlugin", () => {
     expect(fallback.matches[0]?.confidence).toBe("heuristic");
   });
 
+  it("uses precise source evidence before comparing selector serialization", async () => {
+    const text = ".card,\n.featured { color: red; }\n.other { color: blue; }";
+    const positioned = await resolveCss(
+      text,
+      selection([
+        cssTarget("selected", ".card,.featured", "/dist/app.css", {
+          uri: "http://localhost:4173/dist/app.css",
+          line: 1,
+          column: 1,
+          metadata: {},
+        }),
+      ]),
+    );
+    const pathTarget = cssTarget(
+      "selected",
+      ".browser-serialized-selector",
+      "/dist/app.css",
+    );
+    pathTarget.facts[0]!.metadata.rulePath = "1";
+    const byPath = await resolveCss(text, selection([pathTarget]));
+
+    expect(snippets(text, positioned.matches)).toEqual([
+      ".card,\n.featured { color: red; }",
+    ]);
+    expect(snippets(text, byPath.matches)).toEqual([
+      ".other { color: blue; }",
+    ]);
+  });
+
+  it("does not confuse a nested rule path with its root suffix", async () => {
+    const text = [
+      "@media (min-width: 40rem) {",
+      "  .first { color: black; }",
+      "  .nested { color: red; }",
+      "}",
+      ".root { color: blue; }",
+    ].join("\n");
+    const target = cssTarget(
+      "selected",
+      ".browser-serialized-selector",
+      "/dist/app.css",
+    );
+    target.facts[0]!.metadata.rulePath = ".0.1";
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".nested { color: red; }",
+    ]);
+  });
+
   it("does not match an ambiguous or different active CSS source", async () => {
     const ambiguous = await resolveCss(
       ".card {}",

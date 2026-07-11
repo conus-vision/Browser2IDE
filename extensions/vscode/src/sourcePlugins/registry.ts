@@ -1,12 +1,14 @@
 import {
   SOURCE_PLUGIN_API_VERSION,
   type Disposable,
+  type PluginDiagnostic,
   type SelectionSnapshot,
   type SourceDocument,
   type SourceMatch,
   type SourcePlugin,
   type SourceWorkspace,
 } from "@browser2ide/plugin-api";
+import { JsonObjectSchema } from "@browser2ide/protocol";
 import type {
   ResolvedPluginDiagnostic,
   ResolvedSourceMatch,
@@ -160,21 +162,16 @@ export class SourcePluginRegistry {
       if (outcome.kind === "exception") {
         return diagnosticResolution(plugin.id, {
           code: "plugin.exception",
-          message: messageOf(outcome.error),
+          message: "Source plugin failed while resolving the active document",
           severity: "error",
         });
       }
 
-      return {
-        matches: outcome.result.matches.map((match) => ({
-          ...match,
-          pluginId: plugin.id,
-        })),
-        diagnostics: (outcome.result.diagnostics ?? []).map((diagnostic) => ({
-          ...diagnostic,
-          pluginId: plugin.id,
-        })),
-      };
+      try {
+        return normalizePluginResult(plugin.id, outcome.result);
+      } catch {
+        return invalidResultResolution(plugin.id);
+      }
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       signal.removeEventListener("abort", abort);
@@ -262,14 +259,14 @@ function deduplicateMatches(
 ): readonly ResolvedSourceMatch[] {
   const unique = new Map<string, ResolvedSourceMatch>();
   for (const match of matches) {
-    const key = [
+    const key = JSON.stringify([
       match.range.start.line,
       match.range.start.character,
       match.range.end.line,
       match.range.end.character,
       match.kind,
       match.relation,
-    ].join(":");
+    ]);
     const existing = unique.get(key);
     if (!existing || compareMatches(match, existing) < 0) {
       unique.set(key, match);
@@ -321,6 +318,95 @@ function diagnosticResolution(
   };
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function normalizePluginResult(
+  pluginId: string,
+  value: unknown,
+): PluginResolution {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.matches) ||
+    (value.diagnostics !== undefined && !Array.isArray(value.diagnostics))
+  ) {
+    return invalidResultResolution(pluginId);
+  }
+
+  if (!value.matches.every(isSourceMatch)) {
+    return invalidResultResolution(pluginId);
+  }
+  const diagnostics = value.diagnostics ?? [];
+  if (!diagnostics.every(isPluginDiagnostic)) {
+    return invalidResultResolution(pluginId);
+  }
+
+  return {
+    matches: value.matches.map((match) => ({ ...match, pluginId })),
+    diagnostics: diagnostics.map((diagnostic) => ({
+      ...diagnostic,
+      pluginId,
+    })),
+  };
+}
+
+function invalidResultResolution(pluginId: string): PluginResolution {
+  return diagnosticResolution(pluginId, {
+    code: "plugin.invalidResult",
+    message: "Source plugin returned an invalid result",
+    severity: "warning",
+  });
+}
+
+function isSourceMatch(value: unknown): value is SourceMatch {
+  if (!isRecord(value)) return false;
+  return (
+    (value.targetRole === "selected" || value.targetRole === "parent") &&
+    isSourceRange(value.range) &&
+    typeof value.label === "string" &&
+    typeof value.kind === "string" &&
+    typeof value.relation === "string" &&
+    isConfidence(value.confidence) &&
+    isOptionalJsonObject(value.metadata)
+  );
+}
+
+function isPluginDiagnostic(value: unknown): value is PluginDiagnostic {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.code === "string" &&
+    typeof value.message === "string" &&
+    (value.severity === "info" ||
+      value.severity === "warning" ||
+      value.severity === "error") &&
+    isOptionalJsonObject(value.metadata)
+  );
+}
+
+function isSourceRange(value: unknown): value is SourceMatch["range"] {
+  return isRecord(value) &&
+    isSourcePosition(value.start) &&
+    isSourcePosition(value.end);
+}
+
+function isSourcePosition(value: unknown): value is {
+  readonly line: number;
+  readonly character: number;
+} {
+  return isRecord(value) &&
+    typeof value.line === "number" &&
+    typeof value.character === "number";
+}
+
+function isConfidence(value: unknown): value is SourceMatch["confidence"] {
+  return value === "exact" ||
+    value === "sourcemap" ||
+    value === "instrumented" ||
+    value === "heuristic" ||
+    value === "unknown";
+}
+
+function isOptionalJsonObject(value: unknown): boolean {
+  return value === undefined || JsonObjectSchema.safeParse(value).success;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

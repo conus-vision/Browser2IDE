@@ -52,7 +52,7 @@ presentation.
           "property": "display",
           "value": "grid",
           "metadata": {
-            "stylesheetUrl": "http://127.0.0.1:4173/app.css"
+            "sourceUrl": "http://127.0.0.1:4173/app.css"
           }
         }
       ],

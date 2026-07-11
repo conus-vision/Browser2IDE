@@ -75,20 +75,12 @@ export function findMatchingCssRules(
   fact: CssRuleFact,
   document: SourceDocument,
 ): StylesheetRule[] {
-  const selector = normalizeSelector(fact.selector);
-  const media = factMedia(fact);
-  const candidates = rules.filter(
-    (rule) =>
-      rule.normalizedSelector === selector &&
-      (media === undefined || sameMedia(rule.media, media)),
-  );
-
   if (fact.source) {
     const offset = document.offsetAt({
       line: fact.source.line - 1,
       character: fact.source.column - 1,
     });
-    const containing = candidates.filter(
+    const containing = rules.filter(
       (rule) => rule.startOffset <= offset && offset < rule.endOffset,
     );
     const smallest = smallestRule(containing);
@@ -97,13 +89,25 @@ export function findMatchingCssRules(
 
   const rulePath = fact.metadata.rulePath;
   if (typeof rulePath === "string" && rulePath.length > 0) {
-    const byPath = candidates.filter(
-      (rule) => rulePath === rule.path || rulePath.endsWith(`.${rule.path}`),
+    const normalizedPath = rulePath.startsWith(".")
+      ? rulePath.slice(1)
+      : rulePath;
+    const exactPath = rules.filter((rule) => normalizedPath === rule.path);
+    if (exactPath.length > 0) return exactPath;
+
+    const suffixPath = rules.filter((rule) =>
+      normalizedPath.endsWith(`.${rule.path}`)
     );
-    if (byPath.length > 0) return byPath;
+    if (suffixPath.length === 1) return suffixPath;
   }
 
-  return candidates;
+  const selector = normalizeSelector(fact.selector);
+  const media = factMedia(fact);
+  return rules.filter(
+    (rule) =>
+      rule.normalizedSelector === selector &&
+      (media === undefined || sameMedia(rule.media, media)),
+  );
 }
 
 export function smallestContainingRule(

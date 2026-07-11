@@ -85,8 +85,10 @@ describe("ScssSourcePlugin", () => {
 
   it.each([
     ["missing", "scss.sourceMapMissing"],
+    ["unreadable", "scss.sourceMapReadFailed"],
     ["invalid", "scss.sourceMapInvalid"],
     ["unmapped", "scss.mappingMissing"],
+    ["source-not-found", "scss.originalSourceNotFound"],
   ] as const)(
     "returns diagnostics and no heuristic for a %s map",
     async (kind, code) => {
@@ -95,6 +97,57 @@ describe("ScssSourcePlugin", () => {
       expect(result.diagnostics?.map((entry) => entry.code)).toContain(code);
     },
   );
+
+  it("stops after an aborted generated CSS read", async () => {
+    const activeUri = "file:///workspace/src/card.scss";
+    const generatedUri = "file:///workspace/dist/app.css";
+    const mapUri = `${generatedUri}.map`;
+    const reads: string[] = [];
+    let finishGeneratedRead: ((value: string) => void) | undefined;
+    const controller = new AbortController();
+    const plugin = new ScssSourcePlugin();
+    const pending = plugin.resolve({
+      selection: selection([
+        cssTarget("selected", ".card", "/dist/app.css"),
+      ]),
+      document: document(activeUri, ".card {}"),
+      workspace: {
+        ...memoryWorkspace({
+          [activeUri]: ".card {}",
+          [generatedUri]: "",
+          [mapUri]: JSON.stringify({
+            version: 3,
+            file: "app.css",
+            sources: ["../src/card.scss"],
+            names: [],
+            mappings: "AAAA",
+          }),
+        }),
+        async readText(uri) {
+          reads.push(uri);
+          if (uri === generatedUri) {
+            return new Promise((resolve) => {
+              finishGeneratedRead = resolve;
+            });
+          }
+          if (uri === mapUri) return "{}";
+          throw new Error(`Unexpected read: ${uri}`);
+        },
+      },
+      signal: controller.signal,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    controller.abort();
+    finishGeneratedRead?.(
+      ".card {}\n/*# sourceMappingURL=app.css.map */",
+    );
+    const result = await pending;
+
+    expect(reads).toEqual([generatedUri]);
+    expect(result).toEqual({ matches: [], diagnostics: [] });
+  });
 });
 
 async function fixtureFiles(): Promise<Record<string, string>> {
@@ -112,7 +165,7 @@ async function fixtureFiles(): Promise<Record<string, string>> {
 }
 
 async function resolveBrokenMap(
-  kind: "missing" | "invalid" | "unmapped",
+  kind: "missing" | "unreadable" | "invalid" | "unmapped" | "source-not-found",
 ) {
   const activeUri = "file:///workspace/src/card.scss";
   const generatedUri = "file:///workspace/dist/app.css";
@@ -120,9 +173,11 @@ async function resolveBrokenMap(
   const map = {
     version: 3,
     file: "app.css",
-    sources: ["../src/card.scss"],
+    sources: [kind === "source-not-found"
+      ? "../src/missing.scss"
+      : "../src/card.scss"],
     names: [],
-    mappings: "",
+    mappings: kind === "unmapped" ? "" : "AAAA",
   };
   const directive = kind === "missing"
     ? ""
@@ -135,7 +190,7 @@ async function resolveBrokenMap(
       [generatedUri]: `.card {}${directive}`,
       ...(kind === "invalid"
         ? { [mapUri]: "{invalid" }
-        : kind === "unmapped"
+        : kind === "unmapped" || kind === "source-not-found"
           ? { [mapUri]: JSON.stringify(map) }
           : {}),
     },

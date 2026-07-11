@@ -20,7 +20,7 @@ describe("DiagnosticsTracker", () => {
       clientState: "connected",
       url: "ws://127.0.0.1:48735",
       sessionId: "session-1",
-      pairingCode: "123456",
+      pairingAvailable: true,
       pairingExpiresAt: new Date("2026-07-10T15:02:00.000Z"),
       lastInspectAt: now,
       targetsReceived: 2,
@@ -47,11 +47,12 @@ describe("DiagnosticsTracker", () => {
 
     expect(lines).toEqual([
       "bridge=running client=connected url=ws://127.0.0.1:48735 session=session-1",
-      "pairing=123456 expires=2026-07-10T15:02:00.000Z",
+      "pairing=available expires=2026-07-10T15:02:00.000Z",
       expect.stringMatching(/^lastInspect=.+ targets=2 facts=3$/),
       "sources matches=2 pluginDiagnostics=1",
       "protocolError=none",
     ]);
+    expect(lines.join("\n")).not.toContain("123456");
   });
 });
 

@@ -81,6 +81,47 @@ describe("SourcePluginRegistry", () => {
       "plugin.invalidRange",
       "plugin.timeout",
     ]);
+    expect(result.diagnostics.find((entry) => entry.code === "plugin.exception"))
+      .toMatchObject({
+        message: "Source plugin failed while resolving the active document",
+      });
+    expect(result.diagnostics.map((entry) => entry.message).join(" ")).not
+      .toContain("fixture failure");
+  });
+
+  it("isolates malformed runtime results from external plugins", async () => {
+    const registry = new SourcePluginRegistry();
+    registry.register(malformedPlugin("undefined-result", undefined));
+    registry.register(malformedPlugin("invalid-match", { matches: [null] }));
+    registry.register(malformedPlugin("invalid-diagnostic", {
+      matches: [],
+      diagnostics: [null],
+    }));
+    registry.register(plugin({
+      id: "valid",
+      matches: [match("selected", range(0, 0, 0, 8), "exact")],
+    }));
+
+    const result = await resolveCss(registry);
+
+    expect(result.matches.map((entry) => entry.pluginId)).toEqual(["valid"]);
+    expect(result.diagnostics.map((entry) => [entry.pluginId, entry.code]))
+      .toEqual([
+        ["undefined-result", "plugin.invalidResult"],
+        ["invalid-match", "plugin.invalidResult"],
+        ["invalid-diagnostic", "plugin.invalidResult"],
+      ]);
+  });
+
+  it("does not collide when match kind or relation contains colons", async () => {
+    const registry = registryWithMatches([
+      { ...match("selected", range(0, 0, 0, 8), "exact"), kind: "a:b", relation: "c" },
+      { ...match("selected", range(0, 0, 0, 8), "exact"), kind: "a", relation: "b:c" },
+    ]);
+
+    const result = await resolveCss(registry);
+
+    expect(result.matches).toHaveLength(2);
   });
 
   it("rejects incompatible and duplicate registrations and emits changes", () => {
@@ -166,6 +207,15 @@ function neverSettlingPlugin(id: string): SourcePlugin {
   return {
     ...plugin({ id }),
     resolve: () => new Promise(() => undefined),
+  };
+}
+
+function malformedPlugin(id: string, result: unknown): SourcePlugin {
+  return {
+    ...plugin({ id }),
+    async resolve() {
+      return result as never;
+    },
   };
 }
 

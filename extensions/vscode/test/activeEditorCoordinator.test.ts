@@ -61,17 +61,88 @@ describe("ActiveEditorCoordinator", () => {
     ]);
   });
 
-  it("clears without an active editor and re-resolves on plugin changes", async () => {
+  it("clears and aborts immediately before a replacement selection settles", async () => {
+    const harness = deferredCoordinatorHarness();
+    harness.coordinator.select(inspectMessage("old"));
+    harness.resolve("old", resolution("old"));
+    await harness.flush();
+    const clearCalls = harness.clearCalls;
+
+    harness.coordinator.select(inspectMessage("new"));
+
+    expect(harness.signals.get("old")?.aborted).toBe(true);
+    expect(harness.clearCalls).toBe(clearCalls + 1);
+    expect(harness.published.map((entry) => entry.selectionMessageId)).toEqual([
+      "old",
+    ]);
+
+    harness.resolve("new", resolution("new"));
+    await harness.flush();
+    expect(harness.published.map((entry) => entry.selectionMessageId)).toEqual([
+      "old",
+      "new",
+    ]);
+  });
+
+  it("invalidates immediately while debouncing active document resolution", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = deferredCoordinatorHarness();
+      harness.coordinator.select(inspectMessage("inspect-1"));
+      const clearCalls = harness.clearCalls;
+
+      harness.changeDocumentVersion(2);
+
+      expect(harness.clearCalls).toBe(clearCalls + 1);
+      expect(harness.signals.get("inspect-1")?.aborted).toBe(true);
+      expect(harness.resolveCalls).toHaveLength(1);
+
+      harness.resolve(
+        "inspect-1",
+        resolution("inspect-1", harness.resolveCalls[0]!.document),
+      );
+      await harness.flush();
+      expect(harness.published).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(149);
+      expect(harness.resolveCalls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(harness.resolveCalls.map((call) => call.document.version)).toEqual([
+        1,
+        2,
+      ]);
+      expect(harness.published).toEqual([]);
+
+      harness.resolve(
+        "inspect-1",
+        resolution("inspect-1", harness.resolveCalls[1]!.document),
+      );
+      await harness.flush();
+      expect(harness.published.map((entry) => entry.documentVersion)).toEqual([
+        2,
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears on selection, editor, plugin, and explicit-clear triggers", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.select(inspectMessage("inspect-1"));
+    expect(harness.clearCalls).toBe(1);
     await harness.flush();
     harness.changeActiveEditor(undefined);
+    expect(harness.clearCalls).toBe(2);
     await harness.flush();
     harness.changeActiveEditor(editor("file:///src/app.css", "css", 1));
+    expect(harness.clearCalls).toBe(3);
     harness.emitPluginChange();
+    expect(harness.clearCalls).toBe(4);
+    await harness.flush();
+    harness.coordinator.clearSelection();
+    expect(harness.clearCalls).toBe(5);
     await harness.flush();
 
-    expect(harness.clearCalls).toBe(1);
     expect(harness.resolveCalls).toHaveLength(3);
   });
 
@@ -187,35 +258,68 @@ function coordinatorHarness() {
 }
 
 function deferredCoordinatorHarness() {
+  let activeEditor: ActiveEditorLike | undefined = editor(
+    "file:///src/app.css",
+    "css",
+    1,
+  );
+  const documentListeners = new Set<(document: SourceDocumentLike) => void>();
   const pending = new Map<
     string,
     (resolution: SourceResolution) => void
   >();
   const signals = new Map<string, AbortSignal>();
+  const resolveCalls: Array<{
+    selection: SelectionSnapshot;
+    document: SourceDocument;
+    signal: AbortSignal;
+  }> = [];
   const published: SourceResolution[] = [];
+  let clearCalls = 0;
   const registry: SourcePluginRegistryLike = {
     onDidChange: () => disposable(() => undefined),
-    resolve(selection, _document, _workspace, signal) {
+    resolve(selection, document, _workspace, signal) {
       signals.set(selection.messageId, signal);
+      resolveCalls.push({ selection, document, signal });
       return new Promise((resolve) => pending.set(selection.messageId, resolve));
     },
   };
   const coordinator = new ActiveEditorCoordinator({
     host: {
-      getActiveEditor: () => editor("file:///src/app.css", "css", 1),
+      getActiveEditor: () => activeEditor,
       onDidChangeActiveEditor: () => disposable(() => undefined),
-      onDidChangeTextDocument: () => disposable(() => undefined),
+      onDidChangeTextDocument(listener) {
+        documentListeners.add(listener);
+        return disposable(() => documentListeners.delete(listener));
+      },
     },
     registry,
     workspace: workspace(),
     store: new SelectionStore(),
     publish: (_editor, result) => published.push(result),
-    clear: () => undefined,
+    clear: () => {
+      clearCalls += 1;
+    },
   });
   return {
     coordinator,
     published,
     signals,
+    resolveCalls,
+    get clearCalls() {
+      return clearCalls;
+    },
+    changeDocumentVersion(version: number) {
+      if (!activeEditor) return;
+      activeEditor = editor(
+        activeEditor.document.uri.toString(),
+        activeEditor.document.languageId,
+        version,
+      );
+      for (const listener of documentListeners) {
+        listener(activeEditor.document);
+      }
+    },
     resolve(messageId: string, result: SourceResolution) {
       pending.get(messageId)?.(result);
     },

@@ -76,6 +76,27 @@ describe("SourceMapLoader", () => {
     expect(invalid.diagnostics[0]?.code).toBe("scss.sourceMapInvalid");
     expect(last.mapUri).toBe("file:///workspace/dist/valid.map");
   });
+
+  it("aborts an external map read without parsing a late result", async () => {
+    const controller = new AbortController();
+    let finishRead: ((value: string) => void) | undefined;
+    const workspace = memoryWorkspace({});
+    workspace.readText = () => new Promise((resolve) => {
+      finishRead = resolve;
+    });
+    const pending = new SourceMapLoader().load(
+      "file:///workspace/dist/app.css",
+      "a{}\n/*# sourceMappingURL=app.css.map */",
+      workspace,
+      controller.signal,
+    );
+    await Promise.resolve();
+
+    controller.abort();
+    finishRead?.(JSON.stringify(rawMap));
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
 });
 
 function memoryWorkspace(

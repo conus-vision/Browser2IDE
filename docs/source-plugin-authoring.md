@@ -24,9 +24,11 @@ identifier is `browser2ide.browser2ide-vscode`.
 }
 ```
 
-Add a compatible `@browser2ide/plugin-api` package to the extension and keep
-`vscode` external when bundling. The API package contains plain TypeScript
-contracts and can be imported by tests without starting VS Code.
+During repository development, depend on `@browser2ide/plugin-api` with
+`workspace:*`. After the first package release, use its published compatible
+semver range. Keep `vscode` external when bundling. The API package contains
+plain TypeScript contracts and can be imported by tests without starting VS
+Code.
 
 ## Register A Plugin
 
@@ -298,6 +300,23 @@ reliably from final DOM alone. Component ownership, compilation, loops,
 conditionals, hooks, and server rendering erase source identity. Exact-looking
 DOM-only matches must remain `heuristic`; use source maps or instrumentation for
 stronger confidence.
+
+## Versioning And Distribution
+
+The repository's `0.1.0` `@browser2ide/plugin-api` and
+`@browser2ide/protocol` packages are currently private workspace packages. The
+fixture proves the cross-extension runtime boundary, but an independently
+published Marketplace plugin cannot consume them from npm yet.
+
+Before third-party distribution, Browser2IDE will publish both packages
+together, replace internal `workspace:*` references with compatible semver
+ranges in the published manifests, and document the supported core extension
+version. Package semver describes source/package compatibility;
+`SOURCE_PLUGIN_API_VERSION` is the runtime compatibility gate. A breaking
+contract change increments both the package major version and the runtime API
+version. External plugins must check the runtime version before calling
+`registerSourcePlugin` and should declare the narrowest package range they have
+tested.
 
 ## Testing
 

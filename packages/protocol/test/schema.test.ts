@@ -269,6 +269,42 @@ describe("Browser2IDE protocol schemas", () => {
   });
 
   it.each([
+    ["missing namespace", "react"],
+    ["uppercase segment", "React.component"],
+    ["empty segment", "react..component"],
+    ["leading dot", ".react.component"],
+    ["trailing dot", "react.component."],
+    ["overlength name", `react.${"x".repeat(123)}`],
+  ])("rejects a plugin fact with %s", (_name, type) => {
+    expect(() =>
+      parseMessage(inspectMessage([
+        target("selected", 0, ".card", [{
+          type,
+          payload: {},
+          metadata: {},
+        }]),
+      ])),
+    ).toThrow();
+  });
+
+  it.each([
+    ["undefined", { value: undefined }],
+    ["function", { value: () => undefined }],
+    ["NaN", { value: Number.NaN }],
+    ["Infinity", { value: Number.POSITIVE_INFINITY }],
+  ])("rejects a plugin fact with %s in its payload", (_name, payload) => {
+    expect(() =>
+      parseMessage(inspectMessage([
+        target("selected", 0, ".card", [{
+          type: "react.component",
+          payload,
+          metadata: {},
+        }]),
+      ])),
+    ).toThrow();
+  });
+
+  it.each([
     ["no selected target", [target("parent", 1, ".layout", runtimeFacts)]],
     [
       "duplicate selected targets",

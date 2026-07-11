@@ -23,7 +23,9 @@ export class SourceMapLoader {
     generatedUri: string,
     generatedText: string,
     workspace: SourceWorkspace,
+    signal?: AbortSignal,
   ): Promise<SourceMapLoadResult> {
+    throwIfAborted(signal);
     const reference = lastSourceMapReference(generatedText);
     if (!reference) {
       return failed("scss.sourceMapMissing", "SCSS source map was not found");
@@ -32,6 +34,7 @@ export class SourceMapLoader {
     let mapUri: string;
     let rawJson: string;
     try {
+      throwIfAborted(signal);
       if (reference.startsWith("data:")) {
         mapUri = `${generatedUri}#inline-source-map`;
         rawJson = decodeDataUrl(reference);
@@ -39,25 +42,31 @@ export class SourceMapLoader {
         mapUri = workspace.resolveRelativeUri(generatedUri, reference);
         rawJson = await workspace.readText(mapUri);
       }
+      throwIfAborted(signal);
     } catch (error) {
+      if (signal?.aborted) throw abortError();
       return failed(
-        "scss.sourceMapMissing",
+        "scss.sourceMapReadFailed",
         `SCSS source map could not be read: ${messageOf(error)}`,
       );
     }
 
+    throwIfAborted(signal);
     const cacheKey = `${mapUri}:${createHash("sha256").update(rawJson).digest("hex")}`;
     const cached = this.cache.get(cacheKey);
     if (cached) return { mapUri, rawMap: cached, diagnostics: [] };
 
     try {
+      throwIfAborted(signal);
       const parsed = JSON.parse(rawJson) as unknown;
+      throwIfAborted(signal);
       if (!isRawSourceMap(parsed)) {
         throw new Error("source map has an invalid shape");
       }
       this.cache.set(cacheKey, parsed);
       return { mapUri, rawMap: parsed, diagnostics: [] };
     } catch (error) {
+      if (signal?.aborted) throw abortError();
       return failed(
         "scss.sourceMapInvalid",
         `SCSS source map is invalid: ${messageOf(error)}`,
@@ -114,4 +123,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function abortError(): Error {
+  const error = new Error("Source map loading was aborted");
+  error.name = "AbortError";
+  return error;
 }

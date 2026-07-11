@@ -45,6 +45,7 @@ export class ScssSourcePlugin implements SourcePlugin {
   public async resolve(
     context: SourcePluginContext,
   ): Promise<SourcePluginResult> {
+    if (context.signal.aborted) return abortedResult();
     let original;
     try {
       original = this.ast.parseDocument(context.document, "scss");
@@ -58,6 +59,7 @@ export class ScssSourcePlugin implements SourcePlugin {
         )],
       };
     }
+    if (context.signal.aborted) return abortedResult();
 
     const matches: SourceMatch[] = [];
     const diagnostics: PluginDiagnostic[] = [];
@@ -67,6 +69,7 @@ export class ScssSourcePlugin implements SourcePlugin {
         entry.sourceUrl,
         context.selection.context.url,
       );
+      if (context.signal.aborted) break;
       if (generatedResolution.status === "ambiguous") {
         diagnostics.push(diagnostic(
           "scss.generatedSourceAmbiguous",
@@ -74,6 +77,7 @@ export class ScssSourcePlugin implements SourcePlugin {
         ));
       }
       for (const generatedUri of generatedResolution.uris) {
+        if (context.signal.aborted) break;
         await this.resolveGenerated(
           context,
           entry,
@@ -84,6 +88,8 @@ export class ScssSourcePlugin implements SourcePlugin {
         );
       }
     }
+
+    if (context.signal.aborted) return abortedResult();
 
     return {
       matches: deduplicate(matches).sort(compareByRange),
@@ -99,12 +105,16 @@ export class ScssSourcePlugin implements SourcePlugin {
     matches: SourceMatch[],
     diagnostics: PluginDiagnostic[],
   ): Promise<void> {
+    if (context.signal.aborted) return;
     let generatedText: string;
     let generated;
     try {
       generatedText = await context.workspace.readText(generatedUri);
+      if (context.signal.aborted) return;
       generated = this.ast.parseText(generatedUri, "css", generatedText);
+      if (context.signal.aborted) return;
     } catch (error) {
+      if (context.signal.aborted) return;
       diagnostics.push(diagnostic(
         "scss.generatedReadFailed",
         `Generated CSS could not be read or parsed: ${messageOf(error)}`,
@@ -113,11 +123,24 @@ export class ScssSourcePlugin implements SourcePlugin {
       return;
     }
 
-    const mapResult = await this.maps.load(
-      generatedUri,
-      generatedText,
-      context.workspace,
-    );
+    let mapResult: Awaited<ReturnType<SourceMapLoader["load"]>>;
+    try {
+      mapResult = await this.maps.load(
+        generatedUri,
+        generatedText,
+        context.workspace,
+        context.signal,
+      );
+    } catch (error) {
+      if (context.signal.aborted) return;
+      diagnostics.push(diagnostic(
+        "scss.sourceMapReadFailed",
+        `SCSS source map could not be loaded: ${messageOf(error)}`,
+        "error",
+      ));
+      return;
+    }
+    if (context.signal.aborted) return;
     if (!mapResult.rawMap || !mapResult.mapUri) {
       diagnostics.push(...mapResult.diagnostics);
       return;
@@ -130,16 +153,23 @@ export class ScssSourcePlugin implements SourcePlugin {
     );
     let mapped: readonly (MappedPosition | undefined)[];
     try {
-      mapped = await mapGeneratedStarts(mapResult.rawMap, generatedRules);
+      mapped = await mapGeneratedStarts(
+        mapResult.rawMap,
+        generatedRules,
+        context.signal,
+      );
     } catch (error) {
+      if (context.signal.aborted) return;
       diagnostics.push(diagnostic(
         "scss.sourceMapInvalid",
         `SCSS source map is invalid: ${messageOf(error)}`,
       ));
       return;
     }
+    if (context.signal.aborted) return;
 
     for (const [index, generatedRule] of generatedRules.entries()) {
+      if (context.signal.aborted) return;
       const position = mapped[index];
       if (!position) {
         diagnostics.push(mappingMissingDiagnostic(entry.fact.selector));
@@ -149,10 +179,18 @@ export class ScssSourcePlugin implements SourcePlugin {
         position.source,
         mapResult.mapUri,
       );
+      if (context.signal.aborted) return;
       if (sourceResolution.status === "ambiguous") {
         diagnostics.push(diagnostic(
           "scss.sourceAmbiguous",
           `Mapped SCSS source is ambiguous: ${position.source}`,
+        ));
+        continue;
+      }
+      if (sourceResolution.status === "not-found") {
+        diagnostics.push(diagnostic(
+          "scss.originalSourceNotFound",
+          `Mapped SCSS source is not in the workspace: ${position.source}`,
         ));
         continue;
       }
@@ -182,9 +220,14 @@ export class ScssSourcePlugin implements SourcePlugin {
 async function mapGeneratedStarts(
   rawMap: LoadedRawSourceMap,
   rules: readonly StylesheetRule[],
+  signal: AbortSignal,
 ): Promise<readonly (MappedPosition | undefined)[]> {
-  return SourceMapConsumer.with(rawMap as RawSourceMap, null, (consumer) =>
-    rules.map((rule) => {
+  if (signal.aborted) throw abortError();
+  const mapped = await SourceMapConsumer.with(
+    rawMap as RawSourceMap,
+    null,
+    (consumer) => rules.map((rule) => {
+      if (signal.aborted) throw abortError();
       const mapped = consumer.originalPositionFor({
         line: rule.range.start.line + 1,
         column: rule.range.start.character,
@@ -199,6 +242,8 @@ async function mapGeneratedStarts(
       };
     }),
   );
+  if (signal.aborted) throw abortError();
+  return mapped;
 }
 
 function sourceMappedMatch(
@@ -267,4 +312,14 @@ function compareByRange(left: SourceMatch, right: SourceMatch): number {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function abortedResult(): SourcePluginResult {
+  return { matches: [], diagnostics: [] };
+}
+
+function abortError(): Error {
+  const error = new Error("SCSS source resolution was aborted");
+  error.name = "AbortError";
+  return error;
 }

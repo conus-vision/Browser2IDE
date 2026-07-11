@@ -100,6 +100,7 @@ export class ActiveEditorCoordinator implements Disposable {
       return;
     }
     this.clearEditTimer();
+    this.invalidateCurrent();
     this.editTimer = setTimeout(() => {
       this.editTimer = undefined;
       void this.resolveCurrent();
@@ -108,22 +109,28 @@ export class ActiveEditorCoordinator implements Disposable {
 
   private resolveImmediately(): void {
     this.clearEditTimer();
+    this.invalidateCurrent();
     void this.resolveCurrent();
+  }
+
+  private invalidateCurrent(): void {
+    this.abort?.abort();
+    this.abort = undefined;
+    this.generation += 1;
+    this.options.clear();
   }
 
   private async resolveCurrent(): Promise<void> {
     if (this.disposed) return;
     const selection = this.options.store.current();
     const editor = this.options.host.getActiveEditor();
-    this.abort?.abort();
-    const abort = new AbortController();
-    this.abort = abort;
-    const generation = ++this.generation;
     if (!selection || !editor) {
-      this.options.clear();
       return;
     }
 
+    const abort = new AbortController();
+    this.abort = abort;
+    const generation = this.generation;
     const document = adaptSourceDocument(editor.document);
     try {
       const result = await this.options.registry.resolve(
@@ -148,7 +155,6 @@ export class ActiveEditorCoordinator implements Disposable {
       ) {
         return;
       }
-      this.options.clear();
       this.options.onError?.(error);
     }
   }

@@ -25,7 +25,7 @@ export interface DiagnosticsSnapshot {
   readonly clientState: ConnectionState;
   readonly url?: string;
   readonly sessionId: string;
-  readonly pairingCode?: string;
+  readonly pairingAvailable: boolean;
   readonly pairingExpiresAt?: Date;
   readonly lastInspectAt?: Date;
   readonly targetsReceived: number;
@@ -81,7 +81,7 @@ export class DiagnosticsTracker {
       clientState,
       url: bridge.url,
       sessionId: bridge.sessionId,
-      pairingCode: bridge.pairingCode,
+      pairingAvailable: bridge.pairingCode !== undefined,
       pairingExpiresAt: bridge.pairingExpiresAt,
       lastInspectAt: this.lastInspectAt,
       targetsReceived: this.targetsReceived,
@@ -101,7 +101,7 @@ export function writeBridgeDiagnostics(
     `bridge=${snapshot.bridgeState} client=${snapshot.clientState} url=${snapshot.url ?? "unavailable"} session=${snapshot.sessionId}`,
   );
   output.appendLine(
-    `pairing=${snapshot.pairingCode ?? "unavailable"} expires=${formatDate(snapshot.pairingExpiresAt)}`,
+    `pairing=${snapshot.pairingAvailable ? "available" : "unavailable"} expires=${formatDate(snapshot.pairingExpiresAt)}`,
   );
   output.appendLine(
     `lastInspect=${formatDate(snapshot.lastInspectAt)} targets=${snapshot.targetsReceived} facts=${snapshot.factsReceived}`,
