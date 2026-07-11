@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseMessage } from "../src/index.js";
 
+const bridgeInstanceId = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
+
 const source = {
   role: "browser",
   id: "browser-tab-1",
@@ -68,9 +70,9 @@ function target(
 
 function inspectMessage(targets: readonly unknown[]) {
   return {
-    protocolVersion: 2,
+    protocolVersion: 3,
     type: "inspect",
-    messageId: "inspect-v2",
+    messageId: "inspect-v3",
     sessionId: "session-1",
     source,
     targets,
@@ -84,11 +86,12 @@ describe("Browser2IDE protocol schemas", () => {
     [
       "hello",
       {
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "hello",
         messageId: "msg-hello",
         sessionId: "session-1",
         authToken: "token-1",
+        bridgeInstanceId,
         source,
         capabilities: ["inspect", "references"],
         metadata: {
@@ -97,32 +100,54 @@ describe("Browser2IDE protocol schemas", () => {
       },
     ],
     [
-      "pairRequest",
+      "linkRequest",
       {
-        protocolVersion: 2,
-        type: "pairRequest",
-        messageId: "msg-pair-request",
-        pairingCode: "123456",
+        protocolVersion: 3,
+        type: "linkRequest",
+        messageId: "msg-link-request",
+        pin: "07",
         source,
         metadata: {},
       },
     ],
     [
-      "pairAccepted",
+      "linkAccepted",
       {
-        protocolVersion: 2,
-        type: "pairAccepted",
-        messageId: "msg-pair-accepted",
+        protocolVersion: 3,
+        type: "linkAccepted",
+        messageId: "msg-link-accepted",
         sessionId: "session-1",
-        authToken: "token-1",
+        bridgeInstanceId,
+        authToken: "a".repeat(64),
         expiresAt: "2026-07-09T15:00:00.000Z",
+        metadata: {},
+      },
+    ],
+    [
+      "authenticated",
+      {
+        protocolVersion: 3,
+        type: "authenticated",
+        messageId: "msg-authenticated",
+        sessionId: "session-1",
+        bridgeInstanceId,
+        metadata: {},
+      },
+    ],
+    [
+      "unlink",
+      {
+        protocolVersion: 3,
+        type: "unlink",
+        messageId: "msg-unlink",
+        sessionId: "session-1",
         metadata: {},
       },
     ],
     [
       "inspect",
       {
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "inspect",
         messageId: "msg-inspect",
         sessionId: "session-1",
@@ -162,7 +187,7 @@ describe("Browser2IDE protocol schemas", () => {
     [
       "references",
       {
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "references",
         messageId: "msg-references",
         subject: {
@@ -176,7 +201,7 @@ describe("Browser2IDE protocol schemas", () => {
     [
       "openSource command",
       {
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "command",
         messageId: "msg-open-source-command",
         command: "openSource",
@@ -192,7 +217,7 @@ describe("Browser2IDE protocol schemas", () => {
     [
       "highlightElement command",
       {
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "command",
         messageId: "msg-highlight-element-command",
         command: "highlightElement",
@@ -208,7 +233,7 @@ describe("Browser2IDE protocol schemas", () => {
     [
       "error",
       {
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "error",
         messageId: "msg-error",
         code: "resolver.fileNotFound",
@@ -222,7 +247,7 @@ describe("Browser2IDE protocol schemas", () => {
     [
       "ping",
       {
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "ping",
         messageId: "msg-ping",
         sentAt: "2026-07-09T14:00:00.000Z",
@@ -232,7 +257,7 @@ describe("Browser2IDE protocol schemas", () => {
     [
       "pong",
       {
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "pong",
         messageId: "msg-pong",
         pingMessageId: "msg-ping",
@@ -242,6 +267,34 @@ describe("Browser2IDE protocol schemas", () => {
     ],
   ])("parses a valid %s message", (_name, message) => {
     expect(parseMessage(message)).toEqual(message);
+  });
+
+  it.each(["7", "007", "aa"])("rejects invalid PIN %s", (pin) => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 3,
+        type: "linkRequest",
+        messageId: "msg-invalid-pin",
+        pin,
+        source,
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects hello without a bridge instance", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 3,
+        type: "hello",
+        messageId: "msg-hello-no-instance",
+        sessionId: "session-1",
+        authToken: "token-1",
+        source,
+        capabilities: ["inspect"],
+        metadata: {},
+      }),
+    ).toThrow();
   });
 
   it("parses selected and immediate-parent inspect targets", () => {
@@ -324,10 +377,10 @@ describe("Browser2IDE protocol schemas", () => {
     expect(() => parseMessage(inspectMessage(targets))).toThrow();
   });
 
-  it("rejects protocol v1", () => {
+  it("rejects protocol v2", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 1,
+        protocolVersion: 2,
         type: "ping",
         messageId: "old-ping",
         sentAt: "2026-07-11T00:00:00.000Z",
@@ -336,14 +389,45 @@ describe("Browser2IDE protocol schemas", () => {
     ).toThrow();
   });
 
+  it("rejects a protocol-v3 legacy pairRequest", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 3,
+        type: "pairRequest",
+        messageId: "msg-legacy-pair-request",
+        pairingCode: "123456",
+        source,
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a protocol-v3 legacy pairAccepted", () => {
+    expect(() =>
+      parseMessage({
+        protocolVersion: 3,
+        type: "pairAccepted",
+        messageId: "msg-legacy-pair-accepted",
+        sessionId: "session-1",
+        authToken: "token-1",
+        expiresAt: "2026-07-09T15:00:00.000Z",
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
   it("accepts only the structured Browser2IDE error vocabulary", () => {
     const codes = [
-      "pairing.invalidCode",
-      "pairing.expiredCode",
-      "auth.invalidSessionToken",
+      "link.invalidCode",
+      "link.unreachable",
+      "link.rejected",
+      "link.rateLimited",
+      "auth.tokenRejected",
+      "auth.instanceChanged",
       "protocol.invalidMessage",
       "bridge.noIdeClient",
       "bridge.noBrowserClient",
+      "bridge.offline",
       "resolver.fileNotFound",
       "resolver.sourceMapFailed",
       "browser.stylesheetInaccessible",
@@ -352,7 +436,7 @@ describe("Browser2IDE protocol schemas", () => {
     for (const code of codes) {
       expect(
         parseMessage({
-          protocolVersion: 2,
+          protocolVersion: 3,
           type: "error",
           messageId: `error-${code}`,
           code,
@@ -364,7 +448,7 @@ describe("Browser2IDE protocol schemas", () => {
 
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "error",
         messageId: "error-unknown",
         code: "UNKNOWN_ERROR",
@@ -377,7 +461,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects inspect messages with facts nested inside the subject", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "inspect",
         messageId: "msg-inspect-nested-facts",
         sessionId: "session-1",
@@ -407,7 +491,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects unsupported protocol versions", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 3,
+        protocolVersion: 4,
         type: "ping",
         messageId: "msg-ping",
         sentAt: "2026-07-09T14:00:00.000Z",
@@ -419,7 +503,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects messages with no type", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         messageId: "msg-missing-type",
         metadata: {},
       }),
@@ -429,7 +513,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects hello messages without session auth", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "hello",
         messageId: "msg-hello-no-auth",
         source,
@@ -442,7 +526,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects source locations with zero-based positions", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "references",
         messageId: "msg-bad-location",
         subject: {
@@ -466,7 +550,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects source locations with reversed ranges", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "references",
         messageId: "msg-reversed-location",
         subject: {
@@ -491,7 +575,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects source locations with only one end position", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "references",
         messageId: "msg-missing-end-pair",
         subject: {
@@ -518,7 +602,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects unsupported command names", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "command",
         messageId: "msg-unknown-command",
         command: "unknownCommand",
@@ -533,7 +617,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects openSource commands with invalid source positions", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "command",
         messageId: "msg-invalid-open-source",
         command: "openSource",
@@ -552,7 +636,7 @@ describe("Browser2IDE protocol schemas", () => {
   it("rejects unknown top-level fields while preserving metadata entries", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: 3,
         type: "ping",
         messageId: "msg-extra-top-level",
         sentAt: "2026-07-09T14:00:00.000Z",
@@ -564,7 +648,7 @@ describe("Browser2IDE protocol schemas", () => {
     ).toThrow();
 
     const message = {
-      protocolVersion: 2,
+      protocolVersion: 3,
       type: "ping",
       messageId: "msg-extra-metadata",
       sentAt: "2026-07-09T14:00:00.000Z",

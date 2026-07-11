@@ -4,14 +4,14 @@ export const ProtocolCapability = {
   Inspect: "inspect",
   References: "references",
   OpenSource: "openSource",
-  Pairing: "pairing",
+  Link: "link",
 } as const;
 
 export const ProtocolCapabilitySchema = z.enum([
   ProtocolCapability.Inspect,
   ProtocolCapability.References,
   ProtocolCapability.OpenSource,
-  ProtocolCapability.Pairing,
+  ProtocolCapability.Link,
 ]);
 
 export type ProtocolCapability =

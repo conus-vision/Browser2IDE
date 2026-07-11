@@ -7,7 +7,7 @@ import {
 import { ProtocolCapabilitySchema } from "./capabilities.js";
 import { JsonObjectSchema } from "./json.js";
 
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 
 const baseMessageSchema = z
   .object({
@@ -18,6 +18,8 @@ const baseMessageSchema = z
   .strict();
 
 export const ClientRoleSchema = z.enum(["browser", "ide", "simulator"]);
+
+export const BridgeInstanceIdSchema = z.string().uuid();
 
 export const ClientSourceSchema = z
   .object({
@@ -109,25 +111,45 @@ export const HelloMessageSchema = baseMessageSchema
     type: z.literal("hello"),
     sessionId: z.string().min(1),
     authToken: z.string().min(1),
+    bridgeInstanceId: BridgeInstanceIdSchema,
     source: ClientSourceSchema,
     capabilities: z.array(ProtocolCapabilitySchema),
   })
   .strict();
 
-export const PairRequestMessageSchema = baseMessageSchema
+export const LinkRequestMessageSchema = baseMessageSchema
   .extend({
-    type: z.literal("pairRequest"),
-    pairingCode: z.string().min(1),
-    source: ClientSourceSchema,
+    type: z.literal("linkRequest"),
+    pin: z.string().regex(/^\d{2}$/),
+    source: ClientSourceSchema.refine(
+      (source) => source.role === "browser" || source.role === "simulator",
+      "link requests require a browser or simulator source",
+    ),
   })
   .strict();
 
-export const PairAcceptedMessageSchema = baseMessageSchema
+export const LinkAcceptedMessageSchema = baseMessageSchema
   .extend({
-    type: z.literal("pairAccepted"),
+    type: z.literal("linkAccepted"),
     sessionId: z.string().min(1),
-    authToken: z.string().min(1),
+    bridgeInstanceId: BridgeInstanceIdSchema,
+    authToken: z.string().min(32),
     expiresAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
+
+export const AuthenticatedMessageSchema = baseMessageSchema
+  .extend({
+    type: z.literal("authenticated"),
+    sessionId: z.string().min(1),
+    bridgeInstanceId: BridgeInstanceIdSchema,
+  })
+  .strict();
+
+export const UnlinkMessageSchema = baseMessageSchema
+  .extend({
+    type: z.literal("unlink"),
+    sessionId: z.string().min(1),
   })
   .strict();
 
@@ -205,12 +227,16 @@ export const CommandMessageSchema = z.discriminatedUnion("command", [
 ]);
 
 export const ProtocolErrorCodeSchema = z.enum([
-  "pairing.invalidCode",
-  "pairing.expiredCode",
-  "auth.invalidSessionToken",
+  "link.invalidCode",
+  "link.unreachable",
+  "link.rejected",
+  "link.rateLimited",
+  "auth.tokenRejected",
+  "auth.instanceChanged",
   "protocol.invalidMessage",
   "bridge.noIdeClient",
   "bridge.noBrowserClient",
+  "bridge.offline",
   "resolver.fileNotFound",
   "resolver.sourceMapFailed",
   "browser.stylesheetInaccessible",
@@ -242,8 +268,10 @@ export const PongMessageSchema = baseMessageSchema
 
 export const Browser2IdeMessageSchema = z.union([
   HelloMessageSchema,
-  PairRequestMessageSchema,
-  PairAcceptedMessageSchema,
+  LinkRequestMessageSchema,
+  LinkAcceptedMessageSchema,
+  AuthenticatedMessageSchema,
+  UnlinkMessageSchema,
   InspectMessageSchema,
   ReferencesMessageSchema,
   CommandMessageSchema,
@@ -253,6 +281,7 @@ export const Browser2IdeMessageSchema = z.union([
 ]);
 
 export type ClientRole = z.infer<typeof ClientRoleSchema>;
+export type BridgeInstanceId = z.infer<typeof BridgeInstanceIdSchema>;
 export type ClientSource = z.infer<typeof ClientSourceSchema>;
 export type InspectSubject = z.infer<typeof InspectSubjectSchema>;
 export type InspectContext = z.infer<typeof InspectContextSchema>;
@@ -262,8 +291,12 @@ export type PluginRuntimeFact = z.infer<typeof PluginRuntimeFactSchema>;
 export type CssRuleFact = z.infer<typeof CssRuleFactSchema>;
 export type DomAttributeFact = z.infer<typeof DomAttributeFactSchema>;
 export type HelloMessage = z.infer<typeof HelloMessageSchema>;
-export type PairRequestMessage = z.infer<typeof PairRequestMessageSchema>;
-export type PairAcceptedMessage = z.infer<typeof PairAcceptedMessageSchema>;
+export type LinkRequestMessage = z.infer<typeof LinkRequestMessageSchema>;
+export type LinkAcceptedMessage = z.infer<typeof LinkAcceptedMessageSchema>;
+export type AuthenticatedMessage = z.infer<
+  typeof AuthenticatedMessageSchema
+>;
+export type UnlinkMessage = z.infer<typeof UnlinkMessageSchema>;
 export type InspectMessage = z.infer<typeof InspectMessageSchema>;
 export type ReferencesMessage = z.infer<typeof ReferencesMessageSchema>;
 export type OpenSourceCommandMessage = z.infer<
