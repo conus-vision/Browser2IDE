@@ -4,12 +4,13 @@ import type { ClientRole } from "@browser2ide/protocol";
 export interface AuthorizedToken {
   readonly sessionId: string;
   readonly role: ClientRole;
+  readonly bridgeInstanceId: string;
   readonly value: string;
   readonly expiresAt: Date;
 }
 
 const TOKEN_BYTES = 32;
-const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 export function tokensEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
@@ -25,16 +26,27 @@ export function tokensEqual(left: string, right: string): boolean {
 
 export function createAuthorizedToken(
   sessionId: string,
-  roleOrNow: ClientRole | Date = "browser",
-  maybeNow = new Date(),
+  role: ClientRole,
+  bridgeInstanceId: string,
+  now = new Date(),
 ): AuthorizedToken {
-  const role = roleOrNow instanceof Date ? "browser" : roleOrNow;
-  const now = roleOrNow instanceof Date ? roleOrNow : maybeNow;
+  const issuedAt = finiteDateTime(now, "Token issue time");
+  const expiresAt = new Date(issuedAt + TOKEN_TTL_MS);
+  finiteDateTime(expiresAt, "Token expiration");
 
   return {
     sessionId,
     role,
+    bridgeInstanceId,
     value: randomBytes(TOKEN_BYTES).toString("hex"),
-    expiresAt: new Date(now.getTime() + TOKEN_TTL_MS),
+    expiresAt,
   };
+}
+
+function finiteDateTime(date: Date, description: string): number {
+  const time = date.getTime();
+  if (!Number.isFinite(time)) {
+    throw new Error(`${description} must be a valid Date`);
+  }
+  return time;
 }

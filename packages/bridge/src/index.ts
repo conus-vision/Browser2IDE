@@ -12,6 +12,12 @@ export {
   type PairingStoreOptions,
 } from "./pairing.js";
 export {
+  LinkAuthenticator,
+  type LinkAttempt,
+  type LinkAuthenticatorOptions,
+  type TokenValidation,
+} from "./linkAuthenticator.js";
+export {
   ClientRegistry,
   type BridgeConnection,
   type ClientRegistration,
