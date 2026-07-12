@@ -6,9 +6,15 @@ export interface PanelErrorSummary {
   readonly message: string;
 }
 
+export interface PanelLinkDetails {
+  readonly url: string;
+  readonly sessionId: string;
+  readonly bridgeInstanceId: string;
+}
+
 export interface PanelDiagnosticsSnapshot {
   readonly connectionState: BrowserConnectionState;
-  readonly paired: boolean;
+  readonly link?: PanelLinkDetails;
   readonly lastMessageSentAt?: Date;
   readonly lastError?: PanelErrorSummary;
   readonly inaccessibleStylesheetCount: number;
@@ -17,7 +23,7 @@ export interface PanelDiagnosticsSnapshot {
 
 export class PanelDiagnostics {
   private connectionState: BrowserConnectionState = "disconnected";
-  private paired = false;
+  private link: PanelLinkDetails | undefined;
   private lastMessageSentAt: Date | undefined;
   private lastError: PanelErrorSummary | undefined;
   private inaccessibleStylesheetCount = 0;
@@ -27,8 +33,8 @@ export class PanelDiagnostics {
     this.connectionState = state;
   }
 
-  public setPaired(paired: boolean): void {
-    this.paired = paired;
+  public setLink(link: PanelLinkDetails | undefined): void {
+    this.link = link ? { ...link } : undefined;
   }
 
   public recordSelection(
@@ -48,17 +54,45 @@ export class PanelDiagnostics {
   }
 
   public recordError(error: PanelErrorSummary): void {
-    this.lastError = { ...error };
+    this.lastError = {
+      ...error,
+      message: sanitizedErrorMessage(error),
+    };
+  }
+
+  public reset(): void {
+    this.connectionState = "disconnected";
+    this.link = undefined;
+    this.lastMessageSentAt = undefined;
+    this.lastError = undefined;
+    this.inaccessibleStylesheetCount = 0;
+    this.matchedCssFactCount = 0;
   }
 
   public snapshot(): PanelDiagnosticsSnapshot {
     return {
       connectionState: this.connectionState,
-      paired: this.paired,
+      link: this.link,
       lastMessageSentAt: this.lastMessageSentAt,
       lastError: this.lastError,
       inaccessibleStylesheetCount: this.inaccessibleStylesheetCount,
       matchedCssFactCount: this.matchedCssFactCount,
     };
   }
+}
+
+function sanitizedErrorMessage(error: PanelErrorSummary): string {
+  if (
+    error.code === "auth.instanceChanged" ||
+    error.code === "auth.tokenRejected"
+  ) {
+    return "Saved link is no longer valid";
+  }
+  if (error.code === "link.rateLimited") {
+    return "Link requests are temporarily rate-limited";
+  }
+  if (error.code?.startsWith("link.")) {
+    return "Link request was rejected";
+  }
+  return error.message;
 }

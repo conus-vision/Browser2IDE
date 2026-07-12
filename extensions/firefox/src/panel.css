@@ -12,7 +12,11 @@
 
 body {
   margin: 0;
-  min-width: 320px;
+  min-width: 240px;
+}
+
+[hidden] {
+  display: none !important;
 }
 
 .panel-header,
@@ -59,14 +63,24 @@ h2 {
   color: #2e8b57;
 }
 
+.status[data-state="linking"],
+.status[data-state="reconnecting"] {
+  color: #1769aa;
+}
+
+.status[data-state="rate-limited"] {
+  color: #9b6200;
+}
+
 .status[data-state="error"] {
   color: #c43b35;
 }
 
-.settings-grid {
+.link-controls {
   display: grid;
-  grid-template-columns: minmax(110px, 1fr) minmax(110px, 1fr);
+  grid-template-columns: minmax(110px, 1fr) auto;
   gap: 8px;
+  align-items: end;
 }
 
 .field {
@@ -76,12 +90,7 @@ h2 {
   color: color-mix(in srgb, CanvasText 72%, transparent);
 }
 
-.field-wide {
-  grid-column: 1 / -1;
-}
-
-input[type="text"],
-input[type="url"] {
+input[type="text"] {
   width: 100%;
   min-height: 26px;
   padding: 4px 7px;
@@ -100,11 +109,11 @@ button:focus-visible {
 
 .commands {
   gap: 6px;
-  margin-top: 9px;
+  flex-wrap: wrap;
 }
 
 button {
-  min-width: 72px;
+  min-width: 64px;
   min-height: 27px;
   padding: 4px 10px;
   border: 1px solid color-mix(in srgb, CanvasText 28%, transparent);
@@ -177,12 +186,12 @@ input:disabled {
   background: color-mix(in srgb, CanvasText 5%, transparent);
 }
 
-@media (max-width: 420px) {
-  .settings-grid {
+@media (max-width: 360px) {
+  .link-controls {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .field-wide {
-    grid-column: auto;
+  .commands button {
+    flex: 1 1 0;
   }
 }

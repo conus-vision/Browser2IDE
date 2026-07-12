@@ -12,37 +12,30 @@
         <img src="./browser2ide.svg" alt="" width="20" height="20" />
         <h1>Browser2IDE</h1>
       </div>
-      <output id="connection-status" class="status" data-state="disconnected">
-        Disconnected
+      <output id="connection-status" class="status" data-state="not-linked">
+        Not linked
       </output>
     </header>
 
     <main>
-      <section class="connection" aria-label="Bridge connection">
-        <div class="settings-grid">
-          <label class="field field-wide">
-            <span>Bridge URL</span>
-            <input id="bridge-url" type="url" spellcheck="false" />
-          </label>
+      <section class="connection" aria-label="Bridge link">
+        <form id="link-form" class="link-controls">
           <label class="field">
-            <span>Session</span>
-            <input id="session-id" type="text" spellcheck="false" />
-          </label>
-          <label class="field">
-            <span>Pairing code</span>
+            <span>Link code</span>
             <input
-              id="pairing-code"
+              id="link-code"
               type="text"
               inputmode="numeric"
-              autocomplete="one-time-code"
-              maxlength="6"
+              autocomplete="off"
+              maxlength="9"
+              spellcheck="false"
             />
           </label>
-        </div>
-        <div class="commands">
-          <button id="pair-button" type="button" disabled>Pair</button>
-          <button id="connect-button" type="button" disabled>Connect</button>
-        </div>
+          <div class="commands">
+            <button id="link-button" type="submit" disabled>Link</button>
+            <button id="unlink-button" type="button" disabled>Unlink</button>
+          </div>
+        </form>
       </section>
 
       <section class="inspect-toolbar" aria-label="Inspect mode">
@@ -60,8 +53,20 @@
       <section class="diagnostics" aria-labelledby="diagnostics-title">
         <h2 id="diagnostics-title">Diagnostics</h2>
         <dl>
-          <dt>Pairing</dt>
-          <dd><output id="pairing-status">Unpaired</output></dd>
+          <dt>Link</dt>
+          <dd><output id="link-status">Not linked</output></dd>
+          <dt data-link-detail hidden>Endpoint</dt>
+          <dd data-link-detail hidden>
+            <output id="linked-endpoint">None</output>
+          </dd>
+          <dt data-link-detail hidden>Session</dt>
+          <dd data-link-detail hidden>
+            <output id="linked-session">None</output>
+          </dd>
+          <dt data-link-detail hidden>Bridge instance</dt>
+          <dd data-link-detail hidden>
+            <output id="bridge-instance">None</output>
+          </dd>
           <dt>Last message</dt>
           <dd><output id="last-message">None</output></dd>
           <dt>Matched CSS facts</dt>
