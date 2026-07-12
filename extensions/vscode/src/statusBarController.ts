@@ -2,8 +2,8 @@ import type { BridgeSnapshot } from "./bridgeManager.js";
 
 export interface StatusBarItemLike {
   text: string;
-  tooltip?: string;
-  command?: string;
+  tooltip?: string | object;
+  command?: string | object;
   show(): void;
   dispose(): void;
 }

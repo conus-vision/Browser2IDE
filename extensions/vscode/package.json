@@ -9,6 +9,9 @@
     "vscode": "^1.85.0"
   },
   "main": "./dist/extension.cjs",
+  "extensionKind": [
+    "ui"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -23,12 +26,8 @@
         "title": "Browser2IDE: Stop"
       },
       {
-        "command": "browser2ide.showPairingCode",
-        "title": "Browser2IDE: Show Pairing Code"
-      },
-      {
-        "command": "browser2ide.resetPairing",
-        "title": "Browser2IDE: Reset Pairing"
+        "command": "browser2ide.copyLinkCode",
+        "title": "Browser2IDE: Copy Link Code"
       },
       {
         "command": "browser2ide.openDiagnostics",
@@ -97,14 +96,6 @@
     "configuration": {
       "title": "Browser2IDE",
       "properties": {
-        "browser2ide.bridgeUrl": {
-          "type": "string",
-          "default": "ws://127.0.0.1:48735"
-        },
-        "browser2ide.bridgePort": {
-          "type": "number",
-          "default": 48735
-        },
         "browser2ide.sessionId": {
           "type": "string",
           "default": "default"

@@ -8,6 +8,8 @@ describe("VS Code extension manifest", () => {
     ) as {
       type: string;
       main: string;
+      activationEvents: string[];
+      extensionKind: string[];
       contributes: {
         commands: Array<{ command: string }>;
         configuration: { properties: Record<string, { default: unknown }> };
@@ -25,25 +27,19 @@ describe("VS Code extension manifest", () => {
     expect(manifest.type).toBe("module");
     expect(manifest.main).toBe("./dist/extension.cjs");
     expect((manifest as { publisher?: string }).publisher).toBe("browser2ide");
+    expect(manifest.activationEvents).toContain("onStartupFinished");
+    expect(manifest.extensionKind).toEqual(["ui"]);
 
     expect(manifest.contributes.commands.map(({ command }) => command)).toEqual([
       "browser2ide.start",
       "browser2ide.stop",
-      "browser2ide.showPairingCode",
-      "browser2ide.resetPairing",
+      "browser2ide.copyLinkCode",
       "browser2ide.openDiagnostics",
       "browser2ide.revealSourceMatch",
     ]);
-    expect(manifest.contributes.configuration.properties).toMatchObject({
-      "browser2ide.bridgeUrl": { default: "ws://127.0.0.1:48735" },
-      "browser2ide.bridgePort": { default: 48_735 },
-      "browser2ide.sessionId": { default: "default" },
+    expect(manifest.contributes.configuration.properties).toEqual({
+      "browser2ide.sessionId": { type: "string", default: "default" },
     });
-    expect(Object.keys(manifest.contributes.configuration.properties)).toEqual([
-      "browser2ide.bridgeUrl",
-      "browser2ide.bridgePort",
-      "browser2ide.sessionId",
-    ]);
 
     expect(manifest.contributes.viewsContainers.activitybar).toContainEqual({
       id: "browser2ide",

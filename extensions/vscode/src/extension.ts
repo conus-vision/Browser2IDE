@@ -7,18 +7,21 @@ import {
   DiagnosticsTracker,
   writeBridgeDiagnostics,
 } from "./diagnostics.js";
-import { showPairingCode } from "./pairing.js";
 import {
   createPresenterRuntime,
   type PresenterEditorLike,
   type PresenterRuntime,
   type PresenterRuntimeHost,
 } from "./presenter/runtime.js";
+import {
+  ExtensionRuntimeController,
+  registerRuntimeCommands,
+} from "./runtimeController.js";
+import { StatusBarController } from "./statusBarController.js";
 
 let manager: BridgeManager | undefined;
-let client: BridgeClient | undefined;
+let runtimeController: ExtensionRuntimeController | undefined;
 let clientState: ConnectionState = "disconnected";
-let statusBar: vscode.StatusBarItem | undefined;
 let output: vscode.OutputChannel | undefined;
 let presenterRuntime: PresenterRuntime | undefined;
 let diagnostics: DiagnosticsTracker | undefined;
@@ -27,9 +30,6 @@ export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<Browser2IDEApi> {
   output = vscode.window.createOutputChannel("Browser2IDE");
-  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
-  statusBar.show();
-  updateStatus("disconnected");
   diagnostics = new DiagnosticsTracker();
 
   const runtime = createPresenterRuntime({
@@ -41,82 +41,75 @@ export async function activate(
   const configuration = readBridgeConfiguration(
     vscode.workspace.getConfiguration("browser2ide"),
   );
-  manager = new BridgeManager({ configuration, secrets: context.secrets });
+  manager = new BridgeManager({ configuration });
 
-  const start = async (): Promise<void> => {
-    await manager?.start();
-    const snapshot = manager?.snapshot();
-    const token = manager?.getIdeToken();
-    if (!snapshot?.url || !token || client) return;
+  const primaryStatus = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    100,
+  );
+  const toggleStatus = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    99,
+  );
+  const status = new StatusBarController({
+    primary: primaryStatus,
+    toggle: toggleStatus,
+  });
+  const controller = new ExtensionRuntimeController({
+    manager,
+    status,
+    createClient(options) {
+      const nextClient = new BridgeClient(options);
+      nextClient.onConnectionStateChanged((state) => {
+        clientState = state;
+      });
+      nextClient.onProtocolError((message) => {
+        const safeMessage = {
+          ...message,
+          message: `Bridge reported ${message.code}`,
+          details: {},
+        };
+        diagnostics?.recordProtocolError(safeMessage);
+        output?.appendLine(`protocol error ${message.code}`);
+      });
+      nextClient.onInspect((message) => {
+        diagnostics?.recordInspect(message);
+        output?.appendLine(`inspect ${message.messageId}`);
+        runtime.select(message);
+      });
+      return {
+        connect: () => nextClient.connect(),
+        dispose() {
+          runtime.clear();
+          nextClient.dispose();
+        },
+      };
+    },
+    writeClipboard: (value) => vscode.env.clipboard.writeText(value),
+    showInformationMessage: (message) =>
+      vscode.window.showInformationMessage(message),
+    showWarningMessage: (message) => vscode.window.showWarningMessage(message),
+  });
+  runtimeController = controller;
 
-    client = new BridgeClient({
-      url: snapshot.url,
-      sessionId: snapshot.sessionId,
-      authToken: token,
-    });
-    client.onConnectionStateChanged((state) => {
-      clientState = state;
-      updateStatus(state);
-    });
-    client.onProtocolError((message) => {
-      diagnostics?.recordProtocolError(message);
-      output?.appendLine(`protocol error ${message.code}: ${message.message}`);
-    });
-    client.onInspect((message) => {
-      diagnostics?.recordInspect(message);
-      output?.appendLine(`inspect ${message.messageId}`);
-      runtime.select(message);
-    });
-    client.connect();
-  };
+  const runtimeCommands = registerRuntimeCommands(
+    {
+      registerCommand: (command, callback) =>
+        vscode.commands.registerCommand(command, callback),
+      reportError: reportRuntimeError,
+    },
+    controller,
+  );
 
   context.subscriptions.push(
     output,
-    statusBar,
     runtime,
-    vscode.commands.registerCommand("browser2ide.start", async () => {
-      try {
-        await start();
-      } catch (error) {
-        reportError(error);
-      }
-    }),
-    vscode.commands.registerCommand("browser2ide.stop", async () => {
-      runtime.clear();
-      client?.dispose();
-      client = undefined;
-      await manager?.stop();
-      clientState = "disconnected";
-      updateStatus(clientState);
-    }),
-    vscode.commands.registerCommand("browser2ide.showPairingCode", async () => {
-      await showPairingCode({
-        async refreshPairing() {
-          try {
-            await start();
-          } catch (error) {
-            reportError(error);
-            throw error;
-          }
-        },
-        getPairing() {
-          const snapshot = manager?.snapshot();
-          return {
-            code: snapshot?.pairingCode,
-            expiresAt: snapshot?.pairingExpiresAt,
-          };
-        },
-        writeClipboard: (value) => vscode.env.clipboard.writeText(value),
-        showInputBox: (options) => vscode.window.showInputBox(options),
-        showErrorMessage: (message) => vscode.window.showErrorMessage(message),
-      });
-    }),
-    vscode.commands.registerCommand("browser2ide.resetPairing", async () => {
-      await manager?.resetPairing();
-      void vscode.window.showInformationMessage(
-        "Browser2IDE pairing has been reset.",
-      );
-    }),
+    runtimeCommands,
+    {
+      dispose() {
+        void controller.dispose().catch(reportRuntimeError);
+      },
+    },
     vscode.commands.registerCommand("browser2ide.openDiagnostics", () => {
       if (output && manager && diagnostics) {
         writeBridgeDiagnostics(
@@ -128,40 +121,35 @@ export async function activate(
     }),
   );
 
-  try {
-    await start();
-  } catch (error) {
-    reportError(error);
-  }
+  void controller.start().catch(reportRuntimeError);
 
   return runtime.api;
 }
 
 export async function deactivate(): Promise<void> {
+  const controller = runtimeController;
+  runtimeController = undefined;
+  if (controller) {
+    await controller.dispose().catch(reportRuntimeError);
+  } else {
+    await manager?.stop().catch(reportRuntimeError);
+  }
   presenterRuntime?.dispose();
   presenterRuntime = undefined;
   diagnostics = undefined;
-  client?.dispose();
-  client = undefined;
-  await manager?.stop();
   manager = undefined;
-  statusBar?.dispose();
   output?.dispose();
+  output = undefined;
+  clientState = "disconnected";
 }
 
-function updateStatus(state: ConnectionState): void {
-  if (!statusBar) return;
-  statusBar.text = {
-    disconnected: "Browser2IDE: Offline",
-    connecting: "Browser2IDE: Connecting",
-    connected: "Browser2IDE: Connected",
-    error: "Browser2IDE: Error",
-  }[state];
-}
-
-function reportError(error: unknown): void {
+function reportRuntimeError(error: unknown): void {
   clientState = "error";
-  updateStatus(clientState);
+  const code = errorCode(error);
+  output?.appendLine(`Browser2IDE operation failed${code ? ` (${code})` : ""}`);
+}
+
+function reportPresenterError(error: unknown): void {
   output?.appendLine(
     error instanceof Error ? error.stack ?? error.message : String(error),
   );
@@ -212,8 +200,16 @@ function createPresenterHost(): PresenterRuntimeHost {
       const position = new vscode.Position(start.line, start.character);
       vscodeEditor(editor).selection = new vscode.Selection(position, position);
     },
-    reportError,
+    reportError: reportPresenterError,
   };
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && /^[A-Z0-9_]+$/.test(code)
+    ? code
+    : undefined;
 }
 
 type VsCodePresenterEditor = PresenterEditorLike & {
