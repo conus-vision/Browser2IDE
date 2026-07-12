@@ -24,9 +24,10 @@ export interface DiagnosticsSnapshot {
   readonly bridgeState: BridgeManagerState;
   readonly clientState: ConnectionState;
   readonly url?: string;
+  readonly port?: number;
   readonly sessionId: string;
-  readonly pairingAvailable: boolean;
-  readonly pairingExpiresAt?: Date;
+  readonly bridgeInstanceId?: string;
+  readonly linkedBrowserCount: number;
   readonly lastInspectAt?: Date;
   readonly targetsReceived: number;
   readonly factsReceived: number;
@@ -79,16 +80,23 @@ export class DiagnosticsTracker {
     return {
       bridgeState: bridge.state,
       clientState,
-      url: bridge.url,
+      ...(bridge.url === undefined ? {} : { url: bridge.url }),
+      ...(bridge.port === undefined ? {} : { port: bridge.port }),
       sessionId: bridge.sessionId,
-      pairingAvailable: bridge.pairingCode !== undefined,
-      pairingExpiresAt: bridge.pairingExpiresAt,
-      lastInspectAt: this.lastInspectAt,
+      ...(bridge.bridgeInstanceId === undefined
+        ? {}
+        : { bridgeInstanceId: bridge.bridgeInstanceId }),
+      linkedBrowserCount: bridge.linkedBrowserCount,
+      ...(this.lastInspectAt === undefined
+        ? {}
+        : { lastInspectAt: new Date(this.lastInspectAt.getTime()) }),
       targetsReceived: this.targetsReceived,
       factsReceived: this.factsReceived,
       matchesResolved: this.matchesResolved,
       pluginDiagnostics: this.pluginDiagnostics,
-      lastProtocolError: this.lastProtocolError,
+      ...(this.lastProtocolError === undefined
+        ? {}
+        : { lastProtocolError: { ...this.lastProtocolError } }),
     };
   }
 }
@@ -98,10 +106,7 @@ export function writeBridgeDiagnostics(
   snapshot: DiagnosticsSnapshot,
 ): void {
   output.appendLine(
-    `bridge=${snapshot.bridgeState} client=${snapshot.clientState} url=${snapshot.url ?? "unavailable"} session=${snapshot.sessionId}`,
-  );
-  output.appendLine(
-    `pairing=${snapshot.pairingAvailable ? "available" : "unavailable"} expires=${formatDate(snapshot.pairingExpiresAt)}`,
+    `bridge=${snapshot.bridgeState} client=${snapshot.clientState} url=${snapshot.url ?? "unavailable"} port=${snapshot.port ?? "unavailable"} session=${snapshot.sessionId} instance=${snapshot.bridgeInstanceId ?? "unavailable"} browsers=${snapshot.linkedBrowserCount}`,
   );
   output.appendLine(
     `lastInspect=${formatDate(snapshot.lastInspectAt)} targets=${snapshot.targetsReceived} facts=${snapshot.factsReceived}`,

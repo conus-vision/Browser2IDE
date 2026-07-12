@@ -1,259 +1,636 @@
 import { describe, expect, it } from "vitest";
-import type { PairingStore } from "@browser2ide/bridge";
-import { BridgeClient } from "../src/bridgeClient.js";
-import { BridgeManager } from "../src/bridgeManager.js";
+import {
+  LinkAuthenticator,
+  type BridgeServerOptions,
+  type LinkAuthenticatorOptions,
+} from "@browser2ide/bridge";
+import {
+  BridgeManager,
+  MANAGED_PORT_COUNT,
+  MANAGED_PORT_START,
+} from "../src/bridgeManager.js";
 
-class MemorySecrets {
-  async get(): Promise<string | undefined> {
-    return undefined;
-  }
-
-  async store(): Promise<void> {}
-
-  async delete(): Promise<void> {}
-}
-
-class DeferredSecrets extends MemorySecrets {
-  readonly operations: string[] = [];
-  private releaseStore: (() => void) | undefined;
-  private markStoreStarted: () => void = () => undefined;
-  readonly storeStarted = new Promise<void>((resolve) => {
-    this.markStoreStarted = resolve;
-  });
-
-  override async store(): Promise<void> {
-    this.operations.push("store:start");
-    this.markStoreStarted();
-    await new Promise<void>((resolve) => {
-      this.releaseStore = resolve;
-    });
-    this.operations.push("store:end");
-  }
-
-  override async delete(): Promise<void> {
-    this.operations.push("delete");
-  }
-
-  finishStore(): void {
-    this.releaseStore?.();
-  }
-}
+const SESSION_ID = "session-1";
+const INSTANCE_A = "11111111-1111-4111-8111-111111111111";
+const INSTANCE_B = "22222222-2222-4222-8222-222222222222";
 
 describe("BridgeManager", () => {
-  it("uses the configured port, falls back after EADDRINUSE, exposes state, and stops cleanly", async () => {
+  it("tries exactly 100 managed ports and succeeds at 48834 with one authenticator", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+    ]);
     const attempts: number[] = [];
-    const hosts: Array<string | undefined> = [];
-    let pairingCodeCalls = 0;
-    let stopCalls = 0;
+    const attemptedAuthenticators: Array<LinkAuthenticator | undefined> = [];
+    const bridges: FakeBridge[] = [];
     const manager = new BridgeManager({
-      configuration: {
-        bridgeUrl: "ws://localhost:48735",
-        bridgePort: 48_735,
-        sessionId: "session-1",
-      },
-      secrets: new MemorySecrets(),
-      createBridge: ({ host, port }) => {
-        hosts.push(host);
-        attempts.push(port);
-        if (port === 48_735) {
-          const error = new Error("address in use") as NodeJS.ErrnoException;
-          error.code = "EADDRINUSE";
-          throw error;
-        }
-
-        return {
-          pairingStore: { revokeTokens: () => undefined },
-          async start() {},
-          async stop() {
-            stopCalls += 1;
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        attempts.push(requiredPort(options));
+        attemptedAuthenticators.push(options.authenticator);
+        const bridge = new FakeBridge(options, {
+          start: () => {
+            if (requiredPort(options) < 48_834) {
+              throw errno("EADDRINUSE");
+            }
           },
-          createPairingCode: () => ({
-            code: String(123456 + pairingCodeCalls++),
-            sessionId: "session-1",
-            expiresAt: new Date(Date.now() + 120_000),
-          }),
-          getUrl: () => `ws://127.0.0.1:${port}`,
-        };
+        });
+        bridges.push(bridge);
+        return bridge;
       },
     });
 
-    await Promise.all([manager.start(), manager.start()]);
+    expect(MANAGED_PORT_START).toBe(48_735);
+    expect(MANAGED_PORT_COUNT).toBe(100);
 
-    expect(attempts).toEqual([48_735, 48_736]);
-    expect(hosts).toEqual(["localhost", "localhost"]);
-    expect(manager.snapshot()).toMatchObject({
+    await manager.start();
+
+    expect(attempts).toEqual(managedPorts());
+    expect(bridges).toHaveLength(100);
+    expect(new Set(attemptedAuthenticators)).toEqual(
+      new Set([authenticators.created[0]]),
+    );
+    expect(manager.snapshot()).toEqual({
       state: "running",
-      url: "ws://127.0.0.1:48736",
-      sessionId: "session-1",
-      pairingCode: "123456",
+      url: "ws://127.0.0.1:48834",
+      port: 48_834,
+      pin: "07",
+      linkCode: "4883407",
+      bridgeInstanceId: INSTANCE_A,
+      sessionId: SESSION_ID,
+      linkedBrowserCount: 0,
     });
+
+    const credentials = manager.getIdeCredentials();
+    expect(credentials).toEqual({
+      sessionId: SESSION_ID,
+      bridgeInstanceId: INSTANCE_A,
+      authToken: authenticators.created[0]?.issuedTokens[0]?.value,
+    });
+    expect(
+      authenticators.created[0]?.validateToken(
+        SESSION_ID,
+        "ide",
+        credentials?.authToken ?? "",
+        INSTANCE_A,
+      ),
+    ).toBe("accepted");
 
     await manager.start();
-    expect(attempts).toEqual([48_735, 48_736]);
-    expect(manager.snapshot().pairingCode).toBe("123457");
-
-    await Promise.all([manager.stop(), manager.stop()]);
-    expect(stopCalls).toBe(1);
-    expect(manager.snapshot().state).toBe("stopped");
-  });
-
-  it("connects a managed bridge to its role-bound IDE client", async () => {
-    const manager = new BridgeManager({
-      configuration: {
-        bridgeUrl: "ws://127.0.0.1:48735",
-        bridgePort: 0,
-        sessionId: "integration-session",
-      },
-      secrets: new MemorySecrets(),
-    });
-    await manager.start();
-
-    const snapshot = manager.snapshot();
-    const token = manager.getIdeToken();
-    if (!snapshot.url || !token) {
-      throw new Error("Expected a managed bridge URL and IDE token");
-    }
-
-    const client = new BridgeClient({
-      url: snapshot.url,
-      sessionId: snapshot.sessionId,
-      authToken: token,
-    });
-    let connected = false;
-    client.onConnectionStateChanged((state) => {
-      connected = state === "connected";
-    });
-    client.connect();
-
-    await eventually(() => expect(connected).toBe(true));
-    client.disconnect();
+    expect(attempts).toHaveLength(100);
+    expect(authenticators.created).toHaveLength(1);
     await manager.stop();
   });
 
-  it("waits for a pending stop before a new start opens another bridge", async () => {
-    const attempts: number[] = [];
-    let releaseStop: (() => void) | undefined;
-    let markStopStarted: (() => void) | undefined;
-    const stopStarted = new Promise<void>((resolve) => {
-      markStopStarted = resolve;
-    });
-    const stopFinished = new Promise<void>((resolve) => {
-      releaseStop = resolve;
-    });
+  it("stops each occupied-port bridge before trying the next port", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+    ]);
+    const events: string[] = [];
+    const bridges: FakeBridge[] = [];
+    const successfulPort = MANAGED_PORT_START + 2;
     const manager = new BridgeManager({
-      configuration: {
-        bridgeUrl: "ws://127.0.0.1:48735",
-        bridgePort: 48_735,
-        sessionId: "session-1",
-      },
-      secrets: new MemorySecrets(),
-      createBridge: ({ port }) => {
-        attempts.push(port);
-        return {
-          pairingStore: { revokeTokens: () => undefined },
-          async start() {},
-          async stop() {
-            markStopStarted?.();
-            await stopFinished;
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        const port = requiredPort(options);
+        const bridge = new FakeBridge(options, {
+          start: () => {
+            events.push(`start:${port}`);
+            if (port < successfulPort) {
+              throw errno("EADDRINUSE");
+            }
           },
-          createPairingCode: () => ({
-            code: "123456",
-            sessionId: "session-1",
-            expiresAt: new Date(Date.now() + 120_000),
-          }),
-          getUrl: () => `ws://127.0.0.1:${port}`,
-        };
+          stop: () => {
+            events.push(`stop:${port}`);
+            if (port < successfulPort) {
+              throw new Error("cleanup failed");
+            }
+          },
+        });
+        bridges.push(bridge);
+        return bridge;
+      },
+    });
+
+    await manager.start();
+
+    expect(events).toEqual([
+      `start:${MANAGED_PORT_START}`,
+      `stop:${MANAGED_PORT_START}`,
+      `start:${MANAGED_PORT_START + 1}`,
+      `stop:${MANAGED_PORT_START + 1}`,
+      `start:${successfulPort}`,
+    ]);
+    expect(bridges.map((bridge) => bridge.stopCalls)).toEqual([1, 1, 0]);
+
+    await manager.stop();
+    expect(bridges.map((bridge) => bridge.stopCalls)).toEqual([1, 1, 1]);
+  });
+
+  it("fails after all 100 ports are occupied and retries with fresh link credentials", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+      { bridgeInstanceId: INSTANCE_B, pin: "08" },
+    ]);
+    const attempts: number[] = [];
+    const bridges: FakeBridge[] = [];
+    let portsOccupied = true;
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        attempts.push(requiredPort(options));
+        const bridge = new FakeBridge(options, {
+          start: () => {
+            if (portsOccupied) {
+              throw errno("EADDRINUSE");
+            }
+          },
+          stop: () => {
+            if (portsOccupied) {
+              throw new Error("cleanup failed");
+            }
+          },
+        });
+        bridges.push(bridge);
+        return bridge;
+      },
+    });
+
+    await expect(manager.start()).rejects.toMatchObject({ code: "EADDRINUSE" });
+
+    expect(attempts).toEqual(managedPorts());
+    expect(bridges).toHaveLength(MANAGED_PORT_COUNT);
+    expect(bridges.map((bridge) => bridge.stopCalls)).toEqual(
+      Array.from({ length: MANAGED_PORT_COUNT }, () => 1),
+    );
+    expect(manager.snapshot()).toEqual({
+      state: "error",
+      sessionId: SESSION_ID,
+      linkedBrowserCount: 0,
+    });
+    expect(manager.getIdeCredentials()).toBeUndefined();
+    expect(authenticators.created).toHaveLength(1);
+    const failedToken = authenticators.created[0]?.issuedTokens[0];
+    expect(failedToken).toBeDefined();
+    expect(
+      authenticators.created[0]?.validateToken(
+        SESSION_ID,
+        "ide",
+        failedToken?.value ?? "",
+        INSTANCE_A,
+      ),
+    ).toBe("rejected");
+
+    portsOccupied = false;
+    await manager.start();
+
+    expect(attempts).toEqual([...managedPorts(), MANAGED_PORT_START]);
+    expect(authenticators.created).toHaveLength(2);
+    expect(manager.snapshot()).toMatchObject({
+      state: "running",
+      port: MANAGED_PORT_START,
+      pin: "08",
+      linkCode: "4873508",
+      bridgeInstanceId: INSTANCE_B,
+    });
+    const retryCredentials = manager.getIdeCredentials();
+    expect(retryCredentials).toMatchObject({
+      sessionId: SESSION_ID,
+      bridgeInstanceId: INSTANCE_B,
+    });
+    expect(retryCredentials?.authToken).not.toBe(failedToken?.value);
+    await manager.stop();
+  });
+
+  it("aborts immediately on a non-EADDRINUSE start error", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+    ]);
+    const attempts: number[] = [];
+    let bridge: FakeBridge | undefined;
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        attempts.push(requiredPort(options));
+        bridge = new FakeBridge(options, {
+          start: () => {
+            throw errno("EACCES");
+          },
+          stop: () => {
+            throw new Error("cleanup failed");
+          },
+        });
+        return bridge;
+      },
+    });
+
+    await expect(manager.start()).rejects.toMatchObject({ code: "EACCES" });
+
+    expect(attempts).toEqual([MANAGED_PORT_START]);
+    expect(bridge?.stopCalls).toBe(1);
+    expect(manager.snapshot()).toEqual({
+      state: "error",
+      sessionId: SESSION_ID,
+      linkedBrowserCount: 0,
+    });
+    expect(manager.getIdeCredentials()).toBeUndefined();
+    const issuedToken = authenticators.created[0]?.issuedTokens[0];
+    expect(
+      authenticators.created[0]?.validateToken(
+        SESSION_ID,
+        "ide",
+        issuedToken?.value ?? "",
+        INSTANCE_A,
+      ),
+    ).toBe("rejected");
+  });
+
+  it("creates a new server, identity, PIN, and token after a successful stop", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+      { bridgeInstanceId: INSTANCE_B, pin: "08" },
+    ]);
+    const bridges: FakeBridge[] = [];
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        const bridge = new FakeBridge(options);
+        bridges.push(bridge);
+        return bridge;
+      },
+    });
+
+    await manager.start();
+    const firstCredentials = manager.getIdeCredentials();
+    expect(manager.snapshot().linkCode).toBe("4873507");
+
+    await manager.stop();
+
+    expect(bridges[0]?.stopCalls).toBe(1);
+    expect(bridges[0]?.listenerDisposeCalls).toBe(1);
+    expect(manager.snapshot()).toEqual({
+      state: "stopped",
+      sessionId: SESSION_ID,
+      linkedBrowserCount: 0,
+    });
+    expect(manager.getIdeCredentials()).toBeUndefined();
+    expect(
+      authenticators.created[0]?.validateToken(
+        SESSION_ID,
+        "ide",
+        firstCredentials?.authToken ?? "",
+        INSTANCE_A,
+      ),
+    ).toBe("rejected");
+
+    await manager.start();
+    const secondCredentials = manager.getIdeCredentials();
+
+    expect(bridges).toHaveLength(2);
+    expect(bridges[1]).not.toBe(bridges[0]);
+    expect(requiredPort(bridges[1]!.options)).toBe(MANAGED_PORT_START);
+    expect(authenticators.created[1]).not.toBe(authenticators.created[0]);
+    expect(manager.snapshot()).toMatchObject({
+      state: "running",
+      port: MANAGED_PORT_START,
+      pin: "08",
+      linkCode: "4873508",
+      bridgeInstanceId: INSTANCE_B,
+    });
+    expect(secondCredentials?.authToken).not.toBe(firstCredentials?.authToken);
+    await manager.stop();
+  });
+
+  it("coalesces concurrent starts and queues stop until a pending start finishes", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+    ]);
+    const startGate = deferred();
+    const bridges: FakeBridge[] = [];
+    const states: string[] = [];
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        const bridge = new FakeBridge(options, { start: () => startGate.promise });
+        bridges.push(bridge);
+        return bridge;
+      },
+    });
+    manager.onStateChanged((snapshot) => states.push(snapshot.state));
+
+    const firstStart = manager.start();
+    const secondStart = manager.start();
+
+    expect(secondStart).toBe(firstStart);
+    await eventually(() => expect(manager.snapshot().state).toBe("starting"));
+    expect(bridges).toHaveLength(1);
+    expect(bridges[0]?.startCalls).toBe(1);
+
+    const stopping = manager.stop();
+    startGate.resolve();
+    await Promise.all([firstStart, secondStart, stopping]);
+
+    expect(bridges[0]?.stopCalls).toBe(1);
+    expect(states).toEqual(["starting", "running", "stopping", "stopped"]);
+    expect(manager.snapshot().state).toBe("stopped");
+    expect(manager.getIdeCredentials()).toBeUndefined();
+  });
+
+  it("waits for a pending stop before starting a fresh server", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+      { bridgeInstanceId: INSTANCE_B, pin: "08" },
+    ]);
+    const stopGate = deferred();
+    const bridges: FakeBridge[] = [];
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        const bridge = new FakeBridge(options, {
+          stop: bridges.length === 0 ? () => stopGate.promise : undefined,
+        });
+        bridges.push(bridge);
+        return bridge;
       },
     });
     await manager.start();
 
     const stopping = manager.stop();
-    await stopStarted;
+    await eventually(() => expect(manager.snapshot().state).toBe("stopping"));
     const restarting = manager.start();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(attempts).toEqual([48_735]);
-
-    releaseStop?.();
-    await Promise.all([stopping, restarting]);
-    expect(attempts).toEqual([48_735, 48_735]);
-    expect(manager.snapshot().state).toBe("running");
-    await manager.stop();
-  });
-
-  it("waits for token persistence before reset deletes stored tokens", async () => {
-    const secrets = new DeferredSecrets();
-    let pairingStore: PairingStore | undefined;
-    const manager = new BridgeManager({
-      configuration: {
-        bridgeUrl: "ws://127.0.0.1:48735",
-        bridgePort: 48_735,
-        sessionId: "session-1",
-      },
-      secrets,
-      createBridge: (options) => {
-        pairingStore = options.pairingStore;
-        if (!pairingStore) {
-          throw new Error("Expected PairingStore");
-        }
-
-        return {
-          pairingStore,
-          async start() {},
-          async stop() {},
-          createPairingCode: (sessionId) => pairingStore!.createPairingCode(sessionId),
-          getUrl: () => "ws://127.0.0.1:48735",
-        };
-      },
-    });
-    await manager.start();
-
-    const pairing = pairingStore!.createPairingCode("session-1");
-    pairingStore!.acceptPairRequest(pairing.code, "browser");
-    await secrets.storeStarted;
-
-    const resetting = manager.resetPairing();
     await Promise.resolve();
-    expect(secrets.operations).toEqual(["store:start"]);
+    expect(bridges).toHaveLength(1);
 
-    secrets.finishStore();
-    await resetting;
-    expect(secrets.operations).toEqual(["store:start", "store:end", "delete"]);
+    stopGate.resolve();
+    await Promise.all([stopping, restarting]);
+
+    expect(bridges).toHaveLength(2);
+    expect(manager.snapshot()).toMatchObject({
+      state: "running",
+      bridgeInstanceId: INSTANCE_B,
+      linkCode: "4873508",
+    });
     await manager.stop();
   });
 
-  it("keeps checking localhost ports until the next one is available", async () => {
-    const attempts: number[] = [];
+  it("clears credentials and settles stopped when the server stop fails", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+    ]);
+    let bridge: FakeBridge | undefined;
     const manager = new BridgeManager({
-      configuration: {
-        bridgeUrl: "ws://127.0.0.1:48735",
-        bridgePort: 48_735,
-        sessionId: "session-1",
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        bridge = new FakeBridge(options, {
+          stop: () => {
+            throw new Error("stop failed");
+          },
+        });
+        return bridge;
       },
-      secrets: new MemorySecrets(),
-      createBridge: ({ port, pairingStore }) => {
-        attempts.push(port);
-        if (port < 48_746) {
-          const error = new Error("address in use") as NodeJS.ErrnoException;
-          error.code = "EADDRINUSE";
-          throw error;
-        }
+    });
+    await manager.start();
+    const credentials = manager.getIdeCredentials();
 
-        return {
-          pairingStore: pairingStore!,
-          async start() {},
-          async stop() {},
-          createPairingCode: (sessionId) => pairingStore!.createPairingCode(sessionId),
-          getUrl: () => `ws://127.0.0.1:${port}`,
-        };
+    await expect(manager.stop()).rejects.toThrow("stop failed");
+
+    expect(bridge?.listenerDisposeCalls).toBe(1);
+    expect(manager.snapshot()).toEqual({
+      state: "stopped",
+      sessionId: SESSION_ID,
+      linkedBrowserCount: 0,
+    });
+    expect(manager.getIdeCredentials()).toBeUndefined();
+    expect(
+      authenticators.created[0]?.validateToken(
+        SESSION_ID,
+        "ide",
+        credentials?.authToken ?? "",
+        INSTANCE_A,
+      ),
+    ).toBe("rejected");
+
+    await manager.stop();
+  });
+
+  it("notifies isolated state listeners for browser counts and honors disposal", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+    ]);
+    let bridge: FakeBridge | undefined;
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => {
+        bridge = new FakeBridge(options);
+        return bridge;
       },
+    });
+    let throwingCalls = 0;
+    const throwing = manager.onStateChanged(() => {
+      throwingCalls += 1;
+      throw new Error("listener failed");
+    });
+    const browserCounts: number[] = [];
+    const observing = manager.onStateChanged((snapshot) => {
+      if (snapshot.state === "running") {
+        browserCounts.push(snapshot.linkedBrowserCount);
+      }
     });
 
     await manager.start();
-    expect(attempts).toHaveLength(12);
-    expect(manager.snapshot().url).toBe("ws://127.0.0.1:48746");
+    browserCounts.length = 0;
+    const callsAfterStart = throwingCalls;
+
+    bridge?.emitCounts({ browser: 1, ide: 1 });
+    bridge?.emitCounts({ browser: 0, ide: 1 });
+
+    expect(browserCounts).toEqual([1, 0]);
+    expect(throwingCalls).toBe(callsAfterStart + 2);
+
+    observing.dispose();
+    throwing.dispose();
+    bridge?.emitCounts({ browser: 2, ide: 0 });
+    expect(browserCounts).toEqual([1, 0]);
+    expect(throwingCalls).toBe(callsAfterStart + 2);
+    expect(manager.snapshot().linkedBrowserCount).toBe(2);
+    await manager.stop();
+  });
+
+  it("returns defensive snapshots and IDE credential objects without leaking tokens", async () => {
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+    ]);
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+      createBridge: (options) => new FakeBridge(options),
+    });
+    await manager.start();
+
+    const snapshot = manager.snapshot();
+    const credentials = manager.getIdeCredentials();
+    expect(credentials).toBeDefined();
+    expect(JSON.stringify(snapshot)).not.toContain(credentials?.authToken);
+    expect(snapshot).not.toHaveProperty("authToken");
+
+    Reflect.set(snapshot, "state", "error");
+    Reflect.set(snapshot, "pin", "99");
+    if (credentials) {
+      Reflect.set(credentials, "authToken", "mutated-token");
+    }
+
+    expect(manager.snapshot()).not.toBe(snapshot);
+    expect(manager.snapshot()).toMatchObject({ state: "running", pin: "07" });
+    expect(manager.getIdeCredentials()).not.toBe(credentials);
+    expect(manager.getIdeCredentials()?.authToken).toBe(
+      authenticators.created[0]?.issuedTokens[0]?.value,
+    );
     await manager.stop();
   });
 });
+
+interface DeterministicIdentity {
+  readonly bridgeInstanceId: string;
+  readonly pin: string;
+}
+
+class RecordingAuthenticator extends LinkAuthenticator {
+  readonly issuedTokens: Array<
+    ReturnType<LinkAuthenticator["issueTrustedToken"]>
+  > = [];
+
+  override issueTrustedToken(role: "ide") {
+    const token = super.issueTrustedToken(role);
+    this.issuedTokens.push(token);
+    return token;
+  }
+}
+
+function deterministicAuthenticators(
+  identities: readonly DeterministicIdentity[],
+): {
+  readonly created: RecordingAuthenticator[];
+  readonly create: (options: LinkAuthenticatorOptions) => LinkAuthenticator;
+} {
+  const created: RecordingAuthenticator[] = [];
+  return {
+    created,
+    create(options) {
+      const identity = identities[created.length];
+      if (!identity) {
+        throw new Error("Missing deterministic authenticator identity");
+      }
+      const authenticator = new RecordingAuthenticator({
+        ...options,
+        ...identity,
+      });
+      created.push(authenticator);
+      return authenticator;
+    },
+  };
+}
+
+interface FakeBridgeHandlers {
+  readonly start?: () => void | Promise<void>;
+  readonly stop?: () => void | Promise<void>;
+}
+
+class FakeBridge {
+  private countListener:
+    | ((counts: { readonly browser: number; readonly ide: number }) => void)
+    | undefined;
+  startCalls = 0;
+  stopCalls = 0;
+  listenerDisposeCalls = 0;
+
+  constructor(
+    readonly options: BridgeServerOptions,
+    private readonly handlers: FakeBridgeHandlers = {},
+  ) {}
+
+  async start(): Promise<void> {
+    this.startCalls += 1;
+    await this.handlers.start?.();
+  }
+
+  async stop(): Promise<void> {
+    this.stopCalls += 1;
+    await this.handlers.stop?.();
+  }
+
+  getUrl(): string {
+    return `ws://${this.options.host}:${requiredPort(this.options)}`;
+  }
+
+  getLinkInfo(): { readonly bridgeInstanceId: string; readonly pin: string } {
+    if (!this.options.authenticator) {
+      throw new Error("Expected a managed authenticator");
+    }
+    return this.options.authenticator.linkInfo();
+  }
+
+  onClientCountChanged(
+    listener: (counts: { readonly browser: number; readonly ide: number }) => void,
+  ): { dispose(): void } {
+    this.countListener = listener;
+    let disposed = false;
+    return {
+      dispose: () => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        this.listenerDisposeCalls += 1;
+        if (this.countListener === listener) {
+          this.countListener = undefined;
+        }
+      },
+    };
+  }
+
+  emitCounts(counts: { readonly browser: number; readonly ide: number }): void {
+    this.countListener?.({ ...counts });
+  }
+}
+
+function requiredPort(options: BridgeServerOptions): number {
+  if (options.port === undefined) {
+    throw new Error("Expected an explicit managed port");
+  }
+  return options.port;
+}
+
+function managedPorts(): number[] {
+  return Array.from(
+    { length: MANAGED_PORT_COUNT },
+    (_, index) => MANAGED_PORT_START + index,
+  );
+}
+
+function errno(code: string): NodeJS.ErrnoException {
+  const error = new Error(code) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
+function deferred(): {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+} {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 async function eventually(assertion: () => void): Promise<void> {
   const startedAt = Date.now();
@@ -265,7 +642,7 @@ async function eventually(assertion: () => void): Promise<void> {
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
   }
 

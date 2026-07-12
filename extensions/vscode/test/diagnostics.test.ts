@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
-import type { ErrorMessage, InspectMessage } from "@browser2ide/protocol";
+import {
+  PROTOCOL_VERSION,
+  type ErrorMessage,
+  type InspectMessage,
+} from "@browser2ide/protocol";
 import {
   DiagnosticsTracker,
   writeBridgeDiagnostics,
 } from "../src/diagnostics.js";
+import type { BridgeSnapshot } from "../src/bridgeManager.js";
 import type { SourceResolution } from "../src/sourcePlugins/types.js";
 
+const INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
+
 describe("DiagnosticsTracker", () => {
-  it("tracks targets, facts, active matches, plugin diagnostics, and protocol errors", () => {
+  it("tracks bridge identity, browser count, source activity, and protocol errors", () => {
     const now = new Date("2026-07-10T15:00:00.000Z");
     const tracker = new DiagnosticsTracker({ now: () => now });
 
@@ -19,9 +26,10 @@ describe("DiagnosticsTracker", () => {
       bridgeState: "running",
       clientState: "connected",
       url: "ws://127.0.0.1:48735",
+      port: 48_735,
       sessionId: "session-1",
-      pairingAvailable: true,
-      pairingExpiresAt: new Date("2026-07-10T15:02:00.000Z"),
+      bridgeInstanceId: INSTANCE_ID,
+      linkedBrowserCount: 1,
       lastInspectAt: now,
       targetsReceived: 2,
       factsReceived: 3,
@@ -46,19 +54,51 @@ describe("DiagnosticsTracker", () => {
     );
 
     expect(lines).toEqual([
-      "bridge=running client=connected url=ws://127.0.0.1:48735 session=session-1",
-      "pairing=available expires=2026-07-10T15:02:00.000Z",
+      `bridge=running client=connected url=ws://127.0.0.1:48735 port=48735 session=session-1 instance=${INSTANCE_ID} browsers=1`,
       expect.stringMatching(/^lastInspect=.+ targets=2 facts=3$/),
       "sources matches=2 pluginDiagnostics=1",
       "protocolError=none",
     ]);
-    expect(lines.join("\n")).not.toContain("123456");
+  });
+
+  it("whitelists diagnostics so link secrets and token-like values are absent", () => {
+    const tracker = new DiagnosticsTracker();
+    const bridge = {
+      ...bridgeSnapshot(),
+      pin: "97",
+      linkCode: "4873597",
+      authToken: "diagnostic-auth-token-secret",
+      browserToken: "diagnostic-browser-token-secret",
+    } as BridgeSnapshot & {
+      readonly authToken: string;
+      readonly browserToken: string;
+    };
+
+    const diagnostics = tracker.snapshot(bridge, "connected");
+    const serialized = JSON.stringify(diagnostics);
+
+    expect(diagnostics).not.toHaveProperty("pin");
+    expect(diagnostics).not.toHaveProperty("linkCode");
+    expect(diagnostics).not.toHaveProperty("authToken");
+    expect(diagnostics).not.toHaveProperty("browserToken");
+    expect(serialized).not.toContain("4873597");
+    expect(serialized).not.toContain("diagnostic-auth-token-secret");
+    expect(serialized).not.toContain("diagnostic-browser-token-secret");
+    expect(serialized).not.toMatch(/"(?:pin|linkCode|authToken|browserToken)"/);
+
+    const lines: string[] = [];
+    writeBridgeDiagnostics(
+      { appendLine: (value) => lines.push(value), show() {} },
+      diagnostics,
+    );
+    expect(lines.join("\n")).not.toContain("4873597");
+    expect(lines.join("\n")).not.toMatch(/auth-token|browser-token/i);
   });
 });
 
 function inspectMessage(): InspectMessage {
   return {
-    protocolVersion: 2,
+    protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
     messageId: "inspect-1",
     sessionId: "session-1",
@@ -141,7 +181,7 @@ function domFact() {
 
 function protocolError(): ErrorMessage {
   return {
-    protocolVersion: 2,
+    protocolVersion: PROTOCOL_VERSION,
     type: "error",
     messageId: "error-1",
     code: "bridge.noBrowserClient",
@@ -150,12 +190,15 @@ function protocolError(): ErrorMessage {
   };
 }
 
-function bridgeSnapshot() {
+function bridgeSnapshot(): BridgeSnapshot {
   return {
-    state: "running" as const,
+    state: "running",
     url: "ws://127.0.0.1:48735",
-    pairingCode: "123456",
-    pairingExpiresAt: new Date("2026-07-10T15:02:00.000Z"),
+    port: 48_735,
+    pin: "07",
+    linkCode: "4873507",
+    bridgeInstanceId: INSTANCE_ID,
     sessionId: "session-1",
+    linkedBrowserCount: 1,
   };
 }

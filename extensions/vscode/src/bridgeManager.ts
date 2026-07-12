@@ -1,214 +1,318 @@
-import { createAuthorizedToken, createBridgeServer, PairingStore } from "@browser2ide/bridge";
-import type {
-  AuthorizedToken,
-  BridgeServer,
-  BridgeServerOptions,
-  PairingCode,
+import {
+  LinkAuthenticator,
+  createBridgeServer,
+  type BridgeServer,
+  type BridgeServerOptions,
+  type LinkAuthenticatorOptions,
 } from "@browser2ide/bridge";
 import type { BridgeConfiguration } from "./config.js";
-import {
-  PairingState,
-  type SecretStorageLike,
-  loadBrowserTokens,
-  resetBrowserTokens,
-  storeBrowserToken,
-} from "./pairing.js";
 
-export type BridgeManagerState = "stopped" | "starting" | "running" | "stopping" | "error";
+export const MANAGED_PORT_START = 48_735;
+export const MANAGED_PORT_COUNT = 100;
+
+export type BridgeManagerState =
+  | "stopped"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "error";
 
 export interface BridgeSnapshot {
   readonly state: BridgeManagerState;
   readonly url?: string;
-  readonly pairingCode?: string;
-  readonly pairingExpiresAt?: Date;
+  readonly port?: number;
+  readonly pin?: string;
+  readonly linkCode?: string;
+  readonly bridgeInstanceId?: string;
   readonly sessionId: string;
+  readonly linkedBrowserCount: number;
+}
+
+export interface IdeCredentials {
+  readonly sessionId: string;
+  readonly bridgeInstanceId: string;
+  readonly authToken: string;
 }
 
 type ManagedBridge = Pick<
   BridgeServer,
-  "start" | "stop" | "createPairingCode" | "getUrl" | "pairingStore"
+  "start" | "stop" | "getUrl" | "getLinkInfo" | "onClientCountChanged"
 >;
+
+interface DisposableLike {
+  dispose(): void;
+}
 
 export interface BridgeManagerOptions {
   readonly configuration: BridgeConfiguration;
-  readonly secrets: SecretStorageLike;
+  readonly createAuthenticator?: (
+    options: LinkAuthenticatorOptions,
+  ) => LinkAuthenticator;
   readonly createBridge?: (options: BridgeServerOptions) => ManagedBridge;
-  readonly maxPortAttempts?: number;
 }
 
 export class BridgeManager {
-  private readonly pairingState = new PairingState();
+  private readonly createAuthenticator: (
+    options: LinkAuthenticatorOptions,
+  ) => LinkAuthenticator;
   private readonly createBridge: (options: BridgeServerOptions) => ManagedBridge;
-  private readonly maxPortAttempts: number;
+  private readonly stateListeners = new Set<(snapshot: BridgeSnapshot) => void>();
   private bridge: ManagedBridge | undefined;
-  private ideToken: AuthorizedToken | undefined;
+  private authenticator: LinkAuthenticator | undefined;
+  private clientCountSubscription: DisposableLike | undefined;
+  private credentials: IdeCredentials | undefined;
   private state: BridgeManagerState = "stopped";
+  private url: string | undefined;
+  private port: number | undefined;
+  private pin: string | undefined;
+  private linkCode: string | undefined;
+  private bridgeInstanceId: string | undefined;
+  private linkedBrowserCount = 0;
   private startPromise: Promise<void> | undefined;
   private stopPromise: Promise<void> | undefined;
-  private tokenPersistence: Promise<void> = Promise.resolve();
-  private stopRequested = false;
+  private operationTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: BridgeManagerOptions) {
+    this.createAuthenticator =
+      options.createAuthenticator ??
+      ((authenticatorOptions) => new LinkAuthenticator(authenticatorOptions));
     this.createBridge = options.createBridge ?? createBridgeServer;
-    this.maxPortAttempts =
-      options.maxPortAttempts ?? Math.max(1, 65_536 - options.configuration.bridgePort);
   }
 
   start(): Promise<void> {
     if (this.stopPromise) {
-      return this.stopPromise.then(() => this.start());
+      const pendingStop = this.stopPromise;
+      return pendingStop.catch(() => undefined).then(() => this.start());
     }
     if (this.state === "running") {
-      if (this.bridge) {
-        this.pairingState.set(
-          this.bridge.createPairingCode(this.options.configuration.sessionId),
-        );
-      }
       return Promise.resolve();
     }
     if (this.startPromise) {
       return this.startPromise;
     }
 
-    this.stopRequested = false;
-    this.startPromise = this.startBridge().finally(() => {
-      this.startPromise = undefined;
+    const operation = this.operationTail.then(async () => {
+      if (this.state !== "running") {
+        await this.startBridge();
+      }
     });
-    return this.startPromise;
+    let tracked: Promise<void>;
+    tracked = operation.finally(() => {
+      if (this.startPromise === tracked) {
+        this.startPromise = undefined;
+      }
+    });
+    this.startPromise = tracked;
+    this.operationTail = tracked.catch(() => undefined);
+    return tracked;
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
     if (this.stopPromise) {
       return this.stopPromise;
     }
+    if (!this.startPromise && this.state === "stopped") {
+      return Promise.resolve();
+    }
 
-    this.stopRequested = true;
-    this.stopPromise = this.stopBridge().finally(() => {
-      this.stopPromise = undefined;
+    const operation = this.operationTail.then(async () => {
+      if (this.state !== "stopped") {
+        await this.stopBridge();
+      }
     });
-    return this.stopPromise;
-  }
-
-  async resetPairing(): Promise<void> {
-    this.bridge?.pairingStore.revokeTokens(this.options.configuration.sessionId, "browser");
-    await this.enqueueTokenOperation(() =>
-      resetBrowserTokens(this.options.secrets, this.options.configuration.sessionId),
-    );
+    let tracked: Promise<void>;
+    tracked = operation.finally(() => {
+      if (this.stopPromise === tracked) {
+        this.stopPromise = undefined;
+      }
+    });
+    this.stopPromise = tracked;
+    this.operationTail = tracked.catch(() => undefined);
+    return tracked;
   }
 
   snapshot(): BridgeSnapshot {
-    const pairing = this.pairingState.current();
     return {
       state: this.state,
-      url: this.bridge?.getUrl(),
-      pairingCode: pairing?.code,
-      pairingExpiresAt: pairing?.expiresAt,
+      ...(this.url === undefined ? {} : { url: this.url }),
+      ...(this.port === undefined ? {} : { port: this.port }),
+      ...(this.pin === undefined ? {} : { pin: this.pin }),
+      ...(this.linkCode === undefined ? {} : { linkCode: this.linkCode }),
+      ...(this.bridgeInstanceId === undefined
+        ? {}
+        : { bridgeInstanceId: this.bridgeInstanceId }),
       sessionId: this.options.configuration.sessionId,
+      linkedBrowserCount: this.linkedBrowserCount,
     };
   }
 
-  getIdeToken(): string | undefined {
-    return this.ideToken?.value;
+  getIdeCredentials(): IdeCredentials | undefined {
+    if (this.state !== "running" || !this.credentials) {
+      return undefined;
+    }
+    return { ...this.credentials };
+  }
+
+  onStateChanged(
+    listener: (snapshot: BridgeSnapshot) => void,
+  ): DisposableLike {
+    this.stateListeners.add(listener);
+    return {
+      dispose: () => {
+        this.stateListeners.delete(listener);
+      },
+    };
   }
 
   private async startBridge(): Promise<void> {
-    this.state = "starting";
-    const { configuration, secrets } = this.options;
-    const browserTokens = await loadBrowserTokens(secrets, configuration.sessionId);
-    const ideToken = createAuthorizedToken(configuration.sessionId, "ide");
-    const pairingStore = new PairingStore({
-      authorizedTokens: [...browserTokens, ideToken],
-      onTokenCreated: (token) => {
-        if (token.role === "browser") {
-          void this.enqueueTokenOperation(() => storeBrowserToken(secrets, token));
-        }
-      },
-    });
+    this.transitionTo("starting");
+    let authenticator: LinkAuthenticator | undefined;
+    let startedBridge: ManagedBridge | undefined;
 
     try {
-      const bridge = await this.startOnAvailablePort(pairingStore);
-      if (this.stopRequested) {
-        await bridge.stop();
-        this.state = "stopped";
-        return;
-      }
+      const sessionId = this.options.configuration.sessionId;
+      authenticator = this.createAuthenticator({ sessionId });
+      const ideToken = authenticator.issueTrustedToken("ide");
+      const started = await this.startOnAvailablePort(authenticator);
+      startedBridge = started.bridge;
+      const linkInfo = started.bridge.getLinkInfo();
 
-      this.bridge = bridge;
-      this.ideToken = ideToken;
-      this.pairingState.set(bridge.createPairingCode(configuration.sessionId));
-      this.state = "running";
+      this.bridge = started.bridge;
+      this.authenticator = authenticator;
+      this.url = started.bridge.getUrl();
+      this.port = started.port;
+      this.pin = linkInfo.pin;
+      this.linkCode = `${String(started.port).padStart(5, "0")}${linkInfo.pin}`;
+      this.bridgeInstanceId = linkInfo.bridgeInstanceId;
+      this.linkedBrowserCount = 0;
+      this.credentials = {
+        sessionId: ideToken.sessionId,
+        bridgeInstanceId: ideToken.bridgeInstanceId,
+        authToken: ideToken.value,
+      };
+      this.clientCountSubscription = started.bridge.onClientCountChanged(
+        (counts) => {
+          if (this.bridge !== started.bridge) {
+            return;
+          }
+          this.linkedBrowserCount = counts.browser;
+          this.notifyStateListeners();
+        },
+      );
+      this.transitionTo("running");
     } catch (error) {
-      this.state = "error";
+      this.disposeClientCountSubscription();
+      if (startedBridge) {
+        await startedBridge.stop().catch(() => undefined);
+      }
+      try {
+        authenticator?.revokeAll();
+      } finally {
+        this.clearRuntime();
+        this.transitionTo("error");
+      }
       throw error;
     }
   }
 
-  private async startOnAvailablePort(pairingStore: PairingStore): Promise<ManagedBridge> {
-    const { bridgePort, bridgeUrl, sessionId } = this.options.configuration;
-    const host = resolveLoopbackHost(bridgeUrl);
-    let lastError: unknown;
+  private async startOnAvailablePort(
+    authenticator: LinkAuthenticator,
+  ): Promise<{ readonly bridge: ManagedBridge; readonly port: number }> {
+    let lastError: NodeJS.ErrnoException | undefined;
 
-    for (let attempt = 0; attempt < this.maxPortAttempts; attempt += 1) {
+    for (let offset = 0; offset < MANAGED_PORT_COUNT; offset += 1) {
+      const port = MANAGED_PORT_START + offset;
+      let bridge: ManagedBridge | undefined;
       try {
-        const bridge = this.createBridge({
-          host,
-          port: bridgePort + attempt,
-          sessionId,
-          pairingStore,
+        bridge = this.createBridge({
+          host: "127.0.0.1",
+          port,
+          sessionId: this.options.configuration.sessionId,
+          authenticator,
         });
         await bridge.start();
-        return bridge;
+        return { bridge, port };
       } catch (error) {
-        lastError = error;
+        await bridge?.stop().catch(() => undefined);
         if (!isAddressInUse(error)) {
           throw error;
         }
+        lastError = error;
       }
     }
 
-    throw lastError ?? new Error("Unable to start Browser2IDE bridge");
+    throw lastError ?? addressInUseError();
   }
 
   private async stopBridge(): Promise<void> {
-    this.state = "stopping";
-    await this.startPromise?.catch(() => undefined);
+    this.transitionTo("stopping");
     const bridge = this.bridge;
-    this.bridge = undefined;
-    this.ideToken = undefined;
-    this.pairingState.clear();
-    await bridge?.stop();
-    await this.tokenPersistence.catch(() => undefined);
-    this.state = "stopped";
+    const authenticator = this.authenticator;
+    this.disposeClientCountSubscription();
+
+    try {
+      await bridge?.stop();
+    } finally {
+      try {
+        authenticator?.revokeAll();
+      } finally {
+        this.clearRuntime();
+        this.transitionTo("stopped");
+      }
+    }
   }
 
-  private enqueueTokenOperation(operation: () => Promise<void>): Promise<void> {
-    const queued = this.tokenPersistence.catch(() => undefined).then(operation);
-    void queued.catch(() => undefined);
-    this.tokenPersistence = queued;
-    return queued;
+  private transitionTo(state: BridgeManagerState): void {
+    if (this.state === state) {
+      return;
+    }
+    this.state = state;
+    this.notifyStateListeners();
+  }
+
+  private notifyStateListeners(): void {
+    for (const listener of [...this.stateListeners]) {
+      try {
+        listener(this.snapshot());
+      } catch {
+        // A listener cannot interrupt lifecycle or other listeners.
+      }
+    }
+  }
+
+  private disposeClientCountSubscription(): void {
+    const subscription = this.clientCountSubscription;
+    this.clientCountSubscription = undefined;
+    try {
+      subscription?.dispose();
+    } catch {
+      // Server shutdown and credential revocation must still run.
+    }
+  }
+
+  private clearRuntime(): void {
+    this.bridge = undefined;
+    this.authenticator = undefined;
+    this.credentials = undefined;
+    this.url = undefined;
+    this.port = undefined;
+    this.pin = undefined;
+    this.linkCode = undefined;
+    this.bridgeInstanceId = undefined;
+    this.linkedBrowserCount = 0;
   }
 }
 
 function isAddressInUse(error: unknown): error is NodeJS.ErrnoException {
-  return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EADDRINUSE");
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      (error as NodeJS.ErrnoException).code === "EADDRINUSE",
+  );
 }
 
-function resolveLoopbackHost(value: string): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error(`Invalid Browser2IDE bridge URL: ${value}`);
-  }
-
-  if (url.protocol !== "ws:") {
-    throw new Error("Browser2IDE managed bridge URL must use ws://");
-  }
-
-  const host = url.hostname === "[::1]" ? "::1" : url.hostname;
-  if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
-    throw new Error("Browser2IDE managed bridge must use a loopback host");
-  }
-
-  return host;
+function addressInUseError(): NodeJS.ErrnoException {
+  const error = new Error("All Browser2IDE managed ports are in use") as NodeJS.ErrnoException;
+  error.code = "EADDRINUSE";
+  return error;
 }
