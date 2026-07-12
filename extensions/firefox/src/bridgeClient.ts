@@ -18,13 +18,15 @@ export class BrowserProtocolError extends Error {
 
 export interface BrowserCredentials {
   readonly sessionId: string;
+  readonly bridgeInstanceId: string;
   readonly authToken: string;
 }
 
 export type BrowserConnectionState =
   | "disconnected"
   | "connecting"
-  | "pairing"
+  | "linking"
+  | "reconnecting"
   | "connected"
   | "error";
 
@@ -43,6 +45,11 @@ export interface BrowserBridgeClientOptions {
   readonly socketFactory?: (url: string) => BrowserSocket;
   readonly messageId?: () => string;
   readonly now?: () => Date;
+  readonly setTimeout?: (
+    callback: () => void,
+    delay: number,
+  ) => ReturnType<typeof setTimeout>;
+  readonly clearTimeout?: (timer: ReturnType<typeof setTimeout>) => void;
   readonly onCredentials?: (credentials: BrowserCredentials) => void;
   readonly onStateChanged?: (state: BrowserConnectionState) => void;
   readonly onError?: (error: Error) => void;
@@ -54,15 +61,23 @@ export type InspectPayload = Pick<
 >;
 
 type ConnectionIntent =
-  | { readonly kind: "pair"; readonly pairingCode: string }
+  | { readonly kind: "link"; readonly pin: string }
   | { readonly kind: "credentials"; readonly credentials: BrowserCredentials };
 
 export class BrowserBridgeClient {
   private readonly socketFactory: (url: string) => BrowserSocket;
   private readonly messageId: () => string;
   private readonly now: () => Date;
+  private readonly scheduleTimer: NonNullable<BrowserBridgeClientOptions["setTimeout"]>;
+  private readonly cancelTimer: NonNullable<BrowserBridgeClientOptions["clearTimeout"]>;
   private socket: BrowserSocket | undefined;
+  private connectionIntent: ConnectionIntent | undefined;
   private credentials: BrowserCredentials | undefined;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconnectAttempts = 0;
+  private reconnectEnabled = false;
+  private authenticated = false;
+  private pendingCredentialNotification = false;
   private state: BrowserConnectionState = "disconnected";
 
   public constructor(private readonly options: BrowserBridgeClientOptions) {
@@ -70,29 +85,58 @@ export class BrowserBridgeClient {
       options.socketFactory ?? ((url) => new WebSocket(url) as BrowserSocket);
     this.messageId = options.messageId ?? defaultMessageId;
     this.now = options.now ?? (() => new Date());
+    this.scheduleTimer = options.setTimeout ?? setTimeout;
+    this.cancelTimer = options.clearTimeout ?? clearTimeout;
   }
 
-  public pair(pairingCode: string): void {
-    this.open({ kind: "pair", pairingCode });
+  public link(pin: string): void {
+    this.start({ kind: "link", pin });
   }
 
   public connect(credentials: BrowserCredentials): void {
-    this.open({ kind: "credentials", credentials });
+    this.start({ kind: "credentials", credentials });
   }
 
   public disconnect(): void {
+    this.reconnectEnabled = false;
+    if (this.reconnectTimer !== undefined) {
+      this.cancelTimer(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     const socket = this.socket;
     this.socket = undefined;
     if (socket) {
       this.detach(socket);
       socket.close();
     }
+    this.connectionIntent = undefined;
     this.credentials = undefined;
+    this.authenticated = false;
+    this.pendingCredentialNotification = false;
+    this.reconnectAttempts = 0;
     this.setState("disconnected");
   }
 
+  public unlink(): void {
+    if (this.socket && this.credentials && this.authenticated) {
+      this.send({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "unlink",
+        messageId: this.messageId(),
+        sessionId: this.credentials.sessionId,
+        metadata: {},
+      });
+    }
+    this.disconnect();
+  }
+
   public sendInspect(payload: InspectPayload): boolean {
-    if (!this.socket || !this.credentials || this.state !== "connected") {
+    if (
+      !this.socket ||
+      !this.credentials ||
+      !this.authenticated ||
+      this.state !== "connected"
+    ) {
       return false;
     }
     this.send({
@@ -112,11 +156,33 @@ export class BrowserBridgeClient {
     return true;
   }
 
-  private open(intent: ConnectionIntent): void {
-    if (this.socket) {
-      this.disconnect();
+  private start(intent: ConnectionIntent): void {
+    this.reconnectEnabled = false;
+    if (this.reconnectTimer !== undefined) {
+      this.cancelTimer(this.reconnectTimer);
+      this.reconnectTimer = undefined;
     }
-    this.setState("connecting");
+    const previousSocket = this.socket;
+    this.socket = undefined;
+    if (previousSocket) {
+      this.detach(previousSocket);
+      previousSocket.close();
+    }
+    this.connectionIntent = intent;
+    this.credentials = intent.kind === "credentials" ? intent.credentials : undefined;
+    this.authenticated = false;
+    this.pendingCredentialNotification = false;
+    this.reconnectAttempts = 0;
+    this.reconnectEnabled = true;
+    this.openSocket(false);
+  }
+
+  private openSocket(reconnecting: boolean): void {
+    const intent = this.connectionIntent;
+    if (!intent || !this.reconnectEnabled) {
+      return;
+    }
+    this.setState(reconnecting ? "reconnecting" : "connecting");
     const socket = this.socketFactory(this.options.url);
     this.socket = socket;
     socket.onopen = () => {
@@ -124,13 +190,13 @@ export class BrowserBridgeClient {
         return;
       }
       socket.onopen = null;
-      if (intent.kind === "pair") {
-        this.setState("pairing");
+      if (intent.kind === "link") {
+        this.setState("linking");
         this.send({
           protocolVersion: PROTOCOL_VERSION,
-          type: "pairRequest",
+          type: "linkRequest",
           messageId: this.messageId(),
-          pairingCode: intent.pairingCode,
+          pin: intent.pin,
           source: {
             role: "browser",
             id: this.options.sourceId,
@@ -144,16 +210,12 @@ export class BrowserBridgeClient {
       this.sendHello();
     };
     socket.onmessage = (event) => this.handleMessage(socket, event.data);
-    socket.onerror = () => this.fail(new Error("WebSocket connection failed"));
-    socket.onclose = () => {
-      if (this.socket !== socket) {
-        return;
+    socket.onerror = () => {
+      if (this.socket === socket) {
+        this.fail(new Error("WebSocket connection failed"));
       }
-      this.socket = undefined;
-      this.credentials = undefined;
-      this.detach(socket);
-      this.setState("disconnected");
     };
+    socket.onclose = () => this.handleClose(socket);
   }
 
   private handleMessage(socket: BrowserSocket, data: unknown): void {
@@ -183,16 +245,51 @@ export class BrowserBridgeClient {
       return;
     }
     const message = parsed.data;
-    if (message.type === "pairAccepted") {
-      this.credentials = {
+    if (message.type === "linkAccepted") {
+      if (this.connectionIntent?.kind !== "link") {
+        this.stopForProtocolError(
+          new BrowserProtocolError(
+            "protocol.invalidMessage",
+            "Bridge sent an unexpected link response",
+          ),
+        );
+        return;
+      }
+      const credentials: BrowserCredentials = {
         sessionId: message.sessionId,
+        bridgeInstanceId: message.bridgeInstanceId,
         authToken: message.authToken,
       };
-      this.options.onCredentials?.(this.credentials);
+      this.credentials = credentials;
+      this.connectionIntent = { kind: "credentials", credentials };
+      this.pendingCredentialNotification = true;
       this.sendHello();
       return;
     }
-    if (message.type === "ping") {
+    if (message.type === "authenticated") {
+      if (
+        !this.credentials ||
+        message.sessionId !== this.credentials.sessionId ||
+        message.bridgeInstanceId !== this.credentials.bridgeInstanceId
+      ) {
+        this.stopForProtocolError(
+          new BrowserProtocolError(
+            "protocol.invalidMessage",
+            "Bridge authenticated an unexpected identity",
+          ),
+        );
+        return;
+      }
+      this.authenticated = true;
+      this.reconnectAttempts = 0;
+      if (this.pendingCredentialNotification) {
+        this.pendingCredentialNotification = false;
+        this.options.onCredentials?.(this.credentials);
+      }
+      this.setState("connected");
+      return;
+    }
+    if (message.type === "ping" && this.authenticated) {
       this.send({
         protocolVersion: PROTOCOL_VERSION,
         type: "pong",
@@ -204,6 +301,17 @@ export class BrowserBridgeClient {
       return;
     }
     if (message.type === "error") {
+      if (
+        message.code === "auth.instanceChanged" ||
+        message.code === "auth.tokenRejected"
+      ) {
+        this.stopForProtocolError(sanitizedAuthError(message.code));
+        return;
+      }
+      if (this.connectionIntent?.kind === "link") {
+        this.stopForProtocolError(sanitizedLinkError(message.code));
+        return;
+      }
       this.fail(new BrowserProtocolError(message.code, message.message));
     }
   }
@@ -218,15 +326,15 @@ export class BrowserBridgeClient {
       messageId: this.messageId(),
       sessionId: this.credentials.sessionId,
       authToken: this.credentials.authToken,
+      bridgeInstanceId: this.credentials.bridgeInstanceId,
       source: {
         role: "browser",
         id: this.options.sourceId,
         metadata: {},
       },
-      capabilities: ["inspect", "pairing"],
+      capabilities: ["inspect", "link"],
       metadata: {},
     });
-    this.setState("connected");
   }
 
   private send(message: unknown): void {
@@ -236,6 +344,47 @@ export class BrowserBridgeClient {
   private fail(error: Error): void {
     this.setState("error");
     this.options.onError?.(error);
+  }
+
+  private stopForProtocolError(error: BrowserProtocolError): void {
+    this.reconnectEnabled = false;
+    if (this.reconnectTimer !== undefined) {
+      this.cancelTimer(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.connectionIntent = undefined;
+    this.credentials = undefined;
+    this.authenticated = false;
+    this.pendingCredentialNotification = false;
+
+    const socket = this.socket;
+    this.socket = undefined;
+    if (socket) {
+      this.detach(socket);
+      socket.close();
+    }
+    this.fail(error);
+  }
+
+  private handleClose(socket: BrowserSocket): void {
+    if (this.socket !== socket) {
+      return;
+    }
+    this.socket = undefined;
+    this.authenticated = false;
+    this.detach(socket);
+    if (!this.reconnectEnabled || !this.connectionIntent) {
+      this.setState("disconnected");
+      return;
+    }
+
+    this.setState("reconnecting");
+    const delay = Math.min(1_000 * 2 ** this.reconnectAttempts, 5_000);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = this.scheduleTimer(() => {
+      this.reconnectTimer = undefined;
+      this.openSocket(true);
+    }, delay);
   }
 
   private setState(state: BrowserConnectionState): void {
@@ -323,4 +472,22 @@ export class InspectPublisher {
 function defaultMessageId(): string {
   return globalThis.crypto?.randomUUID?.() ??
     `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function sanitizedAuthError(
+  code: "auth.instanceChanged" | "auth.tokenRejected",
+): BrowserProtocolError {
+  const message =
+    code === "auth.instanceChanged"
+      ? "Bridge instance changed; link again"
+      : "Bridge authentication was rejected; link again";
+  return new BrowserProtocolError(code, message);
+}
+
+function sanitizedLinkError(code: ProtocolErrorCode): BrowserProtocolError {
+  const message =
+    code === "link.rateLimited"
+      ? "Link request rate limited"
+      : "Link request rejected";
+  return new BrowserProtocolError(code, message);
 }

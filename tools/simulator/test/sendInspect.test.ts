@@ -1,35 +1,35 @@
-import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { describe, expect, it } from "vitest";
-import WebSocket from "ws";
-import {
-  createAuthorizedToken,
-  createBridgeServer,
-  PairingStore,
-} from "@browser2ide/bridge";
+import WebSocket, { WebSocketServer, type RawData } from "ws";
 import {
   Browser2IdeMessageSchema,
-  type Browser2IdeMessage,
-  type PairAcceptedMessage,
+  PROTOCOL_VERSION,
 } from "@browser2ide/protocol";
 import inspectCardFixture from "../fixtures/inspect-card.json";
 import {
   buildInspectMessage,
+  parseLinkCode,
   parseSendArgs,
   sendInspect,
 } from "../src/sendInspect.js";
 
+const SESSION_ID = "session-1";
+const INSTANCE_ID = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
+const OTHER_INSTANCE_ID = "7bf95c9f-cf72-4831-bdf0-2a248253c617";
+const AUTH_TOKEN = "a".repeat(64);
+
 describe("inspect-card fixture", () => {
   it("builds a valid inspect message with the required card facts", () => {
     const message = buildInspectMessage(inspectCardFixture, {
-      sessionId: "session-1",
+      sessionId: SESSION_ID,
       sourceId: "simulator-test",
     });
 
     expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
     expect(message).toMatchObject({
-      protocolVersion: 2,
+      protocolVersion: PROTOCOL_VERSION,
       type: "inspect",
-      sessionId: "session-1",
+      sessionId: SESSION_ID,
       source: { role: "simulator", id: "simulator-test", metadata: {} },
       targets: [
         {
@@ -70,221 +70,365 @@ describe("inspect-card fixture", () => {
   });
 });
 
-describe("sendInspect CLI parsing", () => {
-  it("requires a session id when auth-token mode is used", () => {
-    expect(() =>
-      parseSendArgs(["send", "--auth-token", "token-1", "--fixture", "inspect-card"]),
-    ).toThrow("--session-id is required when --auth-token is supplied");
+describe("parseLinkCode", () => {
+  it.each(["48735 07", "48735-07", "4873507"])(
+    "parses %s without losing a leading-zero PIN",
+    (value) => {
+      expect(parseLinkCode(value)).toEqual({
+        url: "ws://127.0.0.1:48735",
+        pin: "07",
+      });
+    },
+  );
+
+  it.each(["487350", "48735070", "48735A7", "48735_7"])(
+    "rejects malformed code %s",
+    (value) => {
+      expect(() => parseLinkCode(value)).toThrow("seven digits");
+    },
+  );
+
+  it.each(["0999907", "6553607"])("rejects invalid port code %s", (value) => {
+    expect(() => parseLinkCode(value)).toThrow("invalid port");
   });
 
-  it("parses the documented pairing-code command", () => {
+  it.each([
+    ["1000007", "ws://127.0.0.1:10000"],
+    ["6553507", "ws://127.0.0.1:65535"],
+  ])("accepts boundary port code %s", (value, url) => {
+    expect(parseLinkCode(value)).toEqual({ url, pin: "07" });
+  });
+});
+
+describe("sendInspect CLI parsing", () => {
+  it("parses the documented link-code command", () => {
     expect(
       parseSendArgs([
         "send",
         "--",
-        "--pairing-code",
-        "123456",
+        "--link-code",
+        "48735-07",
         "--fixture",
         "inspect-card",
       ]),
     ).toMatchObject({
       command: "send",
-      pairingCode: "123456",
+      linkCode: "48735-07",
       fixture: "inspect-card",
-      url: "ws://127.0.0.1:48735",
+      sourceId: "browser2ide-simulator",
     });
+  });
+
+  it("rejects the removed legacy code flag", () => {
+    expect(() =>
+      parseSendArgs([
+        "send",
+        "--pairing-code",
+        "4873507",
+        "--fixture",
+        "inspect-card",
+      ]),
+    ).toThrow("Unknown option: --pairing-code");
+  });
+
+  it("parses complete explicit token credentials", () => {
+    expect(
+      parseSendArgs([
+        "send",
+        "--url",
+        "ws://127.0.0.1:48735",
+        "--session-id",
+        SESSION_ID,
+        "--bridge-instance-id",
+        INSTANCE_ID,
+        "--auth-token",
+        AUTH_TOKEN,
+        "--fixture",
+        "inspect-card",
+      ]),
+    ).toMatchObject({
+      command: "send",
+      url: "ws://127.0.0.1:48735",
+      sessionId: SESSION_ID,
+      bridgeInstanceId: INSTANCE_ID,
+      authToken: AUTH_TOKEN,
+      fixture: "inspect-card",
+    });
+  });
+
+  it.each([
+    ["URL", ["--session-id", SESSION_ID, "--bridge-instance-id", INSTANCE_ID, "--auth-token", AUTH_TOKEN]],
+    ["session", ["--url", "ws://127.0.0.1:48735", "--bridge-instance-id", INSTANCE_ID, "--auth-token", AUTH_TOKEN]],
+    ["instance", ["--url", "ws://127.0.0.1:48735", "--session-id", SESSION_ID, "--auth-token", AUTH_TOKEN]],
+    ["token", ["--url", "ws://127.0.0.1:48735", "--session-id", SESSION_ID, "--bridge-instance-id", INSTANCE_ID]],
+  ])("rejects explicit token mode with a missing %s", (_field, flags) => {
+    expect(() =>
+      parseSendArgs(["send", ...flags, "--fixture", "inspect-card"]),
+    ).toThrow(
+      "Explicit token mode requires --url, --session-id, --bridge-instance-id, and --auth-token",
+    );
+  });
+
+  it("rejects mixed link-code and explicit token modes", () => {
+    expect(() =>
+      parseSendArgs([
+        "send",
+        "--link-code",
+        "4873507",
+        "--url",
+        "ws://127.0.0.1:48735",
+        "--session-id",
+        SESSION_ID,
+        "--bridge-instance-id",
+        INSTANCE_ID,
+        "--auth-token",
+        AUTH_TOKEN,
+        "--fixture",
+        "inspect-card",
+      ]),
+    ).toThrow("Use either --link-code or explicit token credentials, not both");
   });
 });
 
 describe("sendInspect", () => {
-  it("pairs with an in-process bridge and routes inspect to an IDE client", async () => {
-    const bridge = createBridgeServer({ port: 0, sessionId: "session-1" });
-    await bridge.start();
-
-    let ideSocket: WebSocket | undefined;
+  it("waits for link acceptance and matching authentication before inspect", async () => {
+    const bridge = await createBridgeHarness();
     try {
-      const pairing = bridge.createPairingCode("session-1");
-      ideSocket = await connect(bridge.getUrl());
-      const ideAccepted = await pairAndHelloIde(ideSocket, pairing.code);
-      const simulatorPairing = bridge.createPairingCode("session-1");
-      const routedMessage = nextProtocolMessage(ideSocket, (message) => {
-        return message.type === "inspect";
-      });
-
-      await sendInspect({
-        url: bridge.getUrl(),
-        pairingCode: simulatorPairing.code,
+      const sending = sendInspect({
+        linkCode: bridge.linkCode("07"),
         fixture: "inspect-card",
-        sourceId: "simulator-integration",
+        sourceId: "simulator-link",
       });
 
-      const routed = await routedMessage;
+      expect(await bridge.nextMessage()).toMatchObject({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "linkRequest",
+        pin: "07",
+        source: { role: "simulator", id: "simulator-link" },
+      });
+      await delay(15);
+      expect(bridge.pendingMessages()).toEqual([]);
 
-      expect(routed).toMatchObject({
+      await bridge.send(linkAccepted());
+      expect(await bridge.nextMessage()).toMatchObject({
+        type: "hello",
+        sessionId: SESSION_ID,
+        bridgeInstanceId: INSTANCE_ID,
+        authToken: AUTH_TOKEN,
+      });
+      await delay(15);
+      expect(bridge.pendingMessages()).toEqual([]);
+
+      await bridge.send(authenticated());
+      const inspect = await bridge.nextMessage();
+      expect(inspect).toMatchObject({
         type: "inspect",
-        sessionId: ideAccepted.sessionId,
-        source: { role: "simulator", id: "simulator-integration" },
+        sessionId: SESSION_ID,
+        source: { role: "simulator", id: "simulator-link" },
         targets: [{ subject: { selector: "div#hero.card.featured" } }],
       });
+
+      await expect(sending).resolves.toMatchObject({
+        type: "inspect",
+        sessionId: SESSION_ID,
+      });
     } finally {
-      if (ideSocket && ideSocket.readyState !== WebSocket.CLOSED) {
-        ideSocket.close();
-        await onceWithTimeout(ideSocket, "close", 250).catch(() => {
-          ideSocket?.terminate();
-        });
-      }
-      await bridge.stop();
+      await bridge.close();
     }
   });
 
-  it("uses an existing token when auth-token mode is selected", async () => {
-    const simulatorToken = createAuthorizedToken("session-1", "simulator");
-    const bridge = createBridgeServer({
-      port: 0,
-      sessionId: "session-1",
-      pairingStore: new PairingStore({ authorizedTokens: [simulatorToken] }),
-    });
-    await bridge.start();
-
-    let ideSocket: WebSocket | undefined;
+  it("keeps explicit token mode and waits for matching authentication", async () => {
+    const bridge = await createBridgeHarness();
     try {
-      const pairing = bridge.createPairingCode("session-1");
-      ideSocket = await connect(bridge.getUrl());
-      const ideAccepted = await pairAndHelloIde(ideSocket, pairing.code);
-      const routedMessage = nextProtocolMessage(ideSocket, (message) => {
-        return message.type === "inspect";
-      });
-
-      await sendInspect({
-        url: bridge.getUrl(),
-        authToken: simulatorToken.value,
-        sessionId: simulatorToken.sessionId,
+      const sending = sendInspect({
+        url: bridge.url,
+        sessionId: SESSION_ID,
+        bridgeInstanceId: INSTANCE_ID,
+        authToken: AUTH_TOKEN,
         fixture: "inspect-card",
-        sourceId: "simulator-auth",
+        sourceId: "simulator-token",
       });
 
-      const routed = await routedMessage;
+      expect(await bridge.nextMessage()).toMatchObject({
+        type: "hello",
+        sessionId: SESSION_ID,
+        bridgeInstanceId: INSTANCE_ID,
+        authToken: AUTH_TOKEN,
+      });
+      await delay(15);
+      expect(bridge.pendingMessages()).toEqual([]);
 
-      expect(routed).toMatchObject({
+      await bridge.send(authenticated());
+      expect(await bridge.nextMessage()).toMatchObject({
         type: "inspect",
-        sessionId: "session-1",
-        source: { role: "simulator", id: "simulator-auth" },
+        source: { role: "simulator", id: "simulator-token" },
       });
+      await expect(sending).resolves.toMatchObject({ type: "inspect" });
     } finally {
-      if (ideSocket && ideSocket.readyState !== WebSocket.CLOSED) {
-        ideSocket.close();
-        await onceWithTimeout(ideSocket, "close", 250).catch(() => {
-          ideSocket?.terminate();
-        });
-      }
-      await bridge.stop();
+      await bridge.close();
+    }
+  });
+
+  it("rejects mismatched authentication without sending inspect", async () => {
+    const bridge = await createBridgeHarness();
+    try {
+      const sending = sendInspect({
+        url: bridge.url,
+        sessionId: SESSION_ID,
+        bridgeInstanceId: INSTANCE_ID,
+        authToken: AUTH_TOKEN,
+        fixture: "inspect-card",
+      });
+
+      expect(await bridge.nextMessage()).toMatchObject({ type: "hello" });
+      await bridge.send(authenticated(SESSION_ID, OTHER_INSTANCE_ID));
+
+      await expect(sending).rejects.toThrow("authenticated a different session or bridge instance");
+      await delay(15);
+      expect(bridge.pendingMessages()).toEqual([]);
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("sanitizes authentication errors and never sends inspect", async () => {
+    const bridge = await createBridgeHarness();
+    try {
+      const sending = sendInspect({
+        linkCode: bridge.linkCode("07"),
+        fixture: "inspect-card",
+      });
+
+      expect(await bridge.nextMessage()).toMatchObject({ type: "linkRequest" });
+      await bridge.send(linkAccepted());
+      expect(await bridge.nextMessage()).toMatchObject({ type: "hello" });
+      await bridge.send({
+        protocolVersion: PROTOCOL_VERSION,
+        type: "error",
+        messageId: "auth-error-1",
+        code: "auth.tokenRejected",
+        message: `Rejected credential ${AUTH_TOKEN}`,
+        metadata: {},
+      });
+
+      const error = await sending.catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("auth.tokenRejected");
+      expect((error as Error).message).not.toContain(AUTH_TOKEN);
+      await delay(15);
+      expect(bridge.pendingMessages()).toEqual([]);
+    } finally {
+      await bridge.close();
     }
   });
 });
 
-async function pairAndHelloIde(
-  socket: WebSocket,
-  pairingCode: string,
-): Promise<PairAcceptedMessage> {
-  socket.send(
-    JSON.stringify({
-      protocolVersion: 2,
-      type: "pairRequest",
-      messageId: randomUUID(),
-      pairingCode,
-      source: { role: "ide", id: "ide-test", metadata: {} },
-      metadata: {},
-    }),
-  );
-
-  const accepted = (await nextProtocolMessage(
-    socket,
-    (message) => message.type === "pairAccepted",
-  )) as PairAcceptedMessage;
-
-  socket.send(
-    JSON.stringify({
-      protocolVersion: 2,
-      type: "hello",
-      messageId: randomUUID(),
-      sessionId: accepted.sessionId,
-      authToken: accepted.authToken,
-      source: { role: "ide", id: "ide-test", metadata: {} },
-      capabilities: ["references"],
-      metadata: {},
-    }),
-  );
-
-  return accepted;
+interface BridgeHarness {
+  readonly url: string;
+  linkCode(pin: string): string;
+  nextMessage(): Promise<Record<string, unknown>>;
+  pendingMessages(): readonly Record<string, unknown>[];
+  send(message: Record<string, unknown>): Promise<void>;
+  close(): Promise<void>;
 }
 
-async function connect(url: string): Promise<WebSocket> {
-  const socket = new WebSocket(url);
-  try {
-    await onceWithTimeout(socket, "open", 500);
-    return socket;
-  } catch (error) {
-    socket.terminate();
-    throw error;
-  }
-}
-
-async function nextProtocolMessage(
-  socket: WebSocket,
-  predicate: (message: Browser2IdeMessage) => boolean,
-): Promise<Browser2IdeMessage> {
-  const timeoutAt = Date.now() + 500;
-
-  while (Date.now() < timeoutAt) {
-    const remaining = timeoutAt - Date.now();
-    const [data] = await onceWithTimeout(socket, "message", remaining);
-    const message = Browser2IdeMessageSchema.parse(JSON.parse(data.toString()));
-    if (message.type === "ping") {
-      socket.send(
-        JSON.stringify({
-          protocolVersion: 2,
-          type: "pong",
-          messageId: randomUUID(),
-          pingMessageId: message.messageId,
-          sentAt: new Date().toISOString(),
-          metadata: {},
-        }),
-      );
-      continue;
-    }
-    if (predicate(message)) {
-      return message;
-    }
+async function createBridgeHarness(): Promise<BridgeHarness> {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string" || address.port < 10_000) {
+    await closeServer(server);
+    throw new Error("Expected a five-digit ephemeral test port");
   }
 
-  throw new Error("Timed out waiting for protocol message");
-}
-
-function onceWithTimeout(
-  socket: WebSocket,
-  event: "open" | "message" | "close",
-  timeoutMs: number,
-): Promise<any[]> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for ${event}`));
-    }, timeoutMs);
-    const onEvent = (...args: any[]) => {
-      cleanup();
-      resolve(args);
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.off(event, onEvent);
-      socket.off("error", onError);
-    };
-
-    socket.once(event, onEvent);
-    socket.once("error", onError);
+  const queued: Record<string, unknown>[] = [];
+  const waiters: Array<(message: Record<string, unknown>) => void> = [];
+  let resolveSocket!: (socket: WebSocket) => void;
+  const connected = new Promise<WebSocket>((resolve) => {
+    resolveSocket = resolve;
   });
+  server.on("connection", (socket) => {
+    socket.on("message", (data: RawData) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      const waiter = waiters.shift();
+      if (waiter) {
+        waiter(message);
+      } else {
+        queued.push(message);
+      }
+    });
+    resolveSocket(socket);
+  });
+
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    linkCode: (pin) => `${address.port}${pin}`,
+    nextMessage: () => {
+      const message = queued.shift();
+      if (message) {
+        return Promise.resolve(message);
+      }
+      return new Promise((resolve) => waiters.push(resolve));
+    },
+    pendingMessages: () => [...queued],
+    send: async (message) => {
+      const socket = await connected;
+      await new Promise<void>((resolve, reject) => {
+        socket.send(JSON.stringify(message), (error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    },
+    close: () => closeServer(server),
+  };
+}
+
+function linkAccepted() {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "linkAccepted",
+    messageId: "link-accepted-1",
+    sessionId: SESSION_ID,
+    bridgeInstanceId: INSTANCE_ID,
+    authToken: AUTH_TOKEN,
+    expiresAt: "2026-08-01T00:00:00.000Z",
+    metadata: {},
+  };
+}
+
+function authenticated(
+  sessionId = SESSION_ID,
+  bridgeInstanceId = INSTANCE_ID,
+) {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "authenticated",
+    messageId: "authenticated-1",
+    sessionId,
+    bridgeInstanceId,
+    metadata: {},
+  };
+}
+
+async function closeServer(server: WebSocketServer): Promise<void> {
+  for (const socket of server.clients) {
+    socket.terminate();
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

@@ -9,7 +9,12 @@ import {
   type InspectMessage,
 } from "@browser2ide/protocol";
 
-export type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+export type ConnectionState =
+  | "disconnected"
+  | "connecting"
+  | "reconnecting"
+  | "connected"
+  | "error";
 
 export interface SocketLike {
   onopen?: ((event: any) => void) | null;
@@ -23,6 +28,7 @@ export interface SocketLike {
 export interface BridgeClientOptions {
   readonly url: string;
   readonly sessionId: string;
+  readonly bridgeInstanceId: string;
   readonly authToken: string;
   readonly socketFactory?: (url: string) => SocketLike;
   readonly setTimeout?: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
@@ -42,6 +48,7 @@ export class BridgeClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempts = 0;
   private reconnectEnabled = false;
+  private terminalFailure = false;
   private state: ConnectionState = "disconnected";
 
   constructor(private readonly options: BridgeClientOptions) {
@@ -51,6 +58,9 @@ export class BridgeClient {
   }
 
   connect(): void {
+    if (this.terminalFailure) {
+      return;
+    }
     this.reconnectEnabled = true;
     if (!this.socket && !this.reconnectTimer) {
       this.openSocket();
@@ -104,15 +114,13 @@ export class BridgeClient {
   }
 
   private openSocket(): void {
-    this.setState("connecting");
+    this.setState(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
     const socket = this.socketFactory(this.options.url);
     this.socket = socket;
     socket.onopen = () => {
       if (this.socket !== socket) {
         return;
       }
-      this.reconnectAttempts = 0;
-      this.setState("connected");
       socket.send(
         JSON.stringify({
           protocolVersion: PROTOCOL_VERSION,
@@ -120,6 +128,7 @@ export class BridgeClient {
           messageId: randomUUID(),
           sessionId: this.options.sessionId,
           authToken: this.options.authToken,
+          bridgeInstanceId: this.options.bridgeInstanceId,
           source: { role: "ide", id: `vscode-${randomUUID()}`, metadata: {} },
           capabilities: ["references"],
           metadata: {},
@@ -132,6 +141,10 @@ export class BridgeClient {
   }
 
   private handleMessage(socket: SocketLike, data: unknown): void {
+    if (this.socket !== socket) {
+      return;
+    }
+
     const payload = typeof data === "string" ? data : data instanceof Buffer ? data.toString() : String(data);
     let raw: unknown;
     try {
@@ -151,15 +164,36 @@ export class BridgeClient {
       return;
     }
 
-    if (parsed.data.type === "inspect") {
+    if (parsed.data.type === "authenticated") {
+      if (
+        parsed.data.sessionId !== this.options.sessionId ||
+        parsed.data.bridgeInstanceId !== this.options.bridgeInstanceId
+      ) {
+        this.stopForProtocolError(
+          localProtocolError("Bridge authenticated an unexpected identity"),
+        );
+        return;
+      }
+      this.reconnectAttempts = 0;
+      this.setState("connected");
+      return;
+    }
+    if (parsed.data.type === "inspect" && this.state === "connected") {
       for (const listener of this.inspectListeners) {
         listener(parsed.data);
       }
     }
     if (parsed.data.type === "error") {
+      if (
+        parsed.data.code === "auth.instanceChanged" ||
+        parsed.data.code === "auth.tokenRejected"
+      ) {
+        this.stopForProtocolError(parsed.data);
+        return;
+      }
       this.emitProtocolError(parsed.data);
     }
-    if (parsed.data.type === "ping") {
+    if (parsed.data.type === "ping" && this.state === "connected") {
       socket.send(
         JSON.stringify({
           protocolVersion: PROTOCOL_VERSION,
@@ -185,7 +219,7 @@ export class BridgeClient {
       return;
     }
 
-    this.setState("error");
+    this.setState("reconnecting");
     const delay = Math.min(1_000 * 2 ** this.reconnectAttempts, 5_000);
     this.reconnectAttempts += 1;
     this.reconnectTimer = this.scheduleTimer(() => {
@@ -200,6 +234,24 @@ export class BridgeClient {
     for (const listener of this.protocolErrorListeners) {
       listener(message);
     }
+  }
+
+  private stopForProtocolError(message: ErrorMessage): void {
+    this.emitProtocolError(message);
+    this.terminalFailure = true;
+    this.reconnectEnabled = false;
+    if (this.reconnectTimer) {
+      this.cancelTimer(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+
+    const socket = this.socket;
+    this.socket = undefined;
+    if (socket) {
+      this.detachSocket(socket);
+      socket.close();
+    }
+    this.setState("error");
   }
 
   private setState(state: ConnectionState): void {

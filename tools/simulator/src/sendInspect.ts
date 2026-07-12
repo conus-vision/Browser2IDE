@@ -7,12 +7,12 @@ import {
   Browser2IdeMessageSchema,
   InspectMessageSchema,
   PROTOCOL_VERSION,
+  type AuthenticatedMessage,
   type Browser2IdeMessage,
   type InspectMessage,
-  type PairAcceptedMessage,
+  type LinkAcceptedMessage,
 } from "@browser2ide/protocol";
 
-const DEFAULT_URL = "ws://127.0.0.1:48735";
 const DEFAULT_SOURCE_ID = "browser2ide-simulator";
 const DEFAULT_TIMEOUT_MS = 2_000;
 
@@ -21,21 +21,55 @@ interface BuildInspectOptions {
   readonly sourceId: string;
 }
 
-export interface SendInspectOptions {
-  readonly url?: string;
-  readonly pairingCode?: string;
-  readonly authToken?: string;
-  readonly sessionId?: string;
+interface BaseSendInspectOptions {
   readonly fixture: string;
   readonly sourceId?: string;
   readonly timeoutMs?: number;
 }
 
-export interface ParsedSendArgs extends SendInspectOptions {
-  readonly command: "send";
-  readonly url: string;
-  readonly sourceId: string;
+interface LinkSendInspectOptions extends BaseSendInspectOptions {
+  readonly linkCode: string;
+  readonly url?: never;
+  readonly authToken?: never;
+  readonly sessionId?: never;
+  readonly bridgeInstanceId?: never;
 }
+
+interface TokenSendInspectOptions extends BaseSendInspectOptions {
+  readonly linkCode?: never;
+  readonly url: string;
+  readonly authToken: string;
+  readonly sessionId: string;
+  readonly bridgeInstanceId: string;
+}
+
+export type SendInspectOptions =
+  | LinkSendInspectOptions
+  | TokenSendInspectOptions;
+
+export type ParsedSendArgs =
+  | (LinkSendInspectOptions & {
+      readonly command: "send";
+      readonly sourceId: string;
+    })
+  | (TokenSendInspectOptions & {
+      readonly command: "send";
+      readonly sourceId: string;
+    });
+
+interface BridgeCredentials {
+  readonly sessionId: string;
+  readonly bridgeInstanceId: string;
+  readonly authToken: string;
+}
+
+type ConnectionMode =
+  | { readonly kind: "link"; readonly url: string; readonly pin: string }
+  | {
+      readonly kind: "credentials";
+      readonly url: string;
+      readonly credentials: BridgeCredentials;
+    };
 
 export function buildInspectMessage(
   fixture: unknown,
@@ -61,6 +95,18 @@ export function buildInspectMessage(
   });
 }
 
+export function parseLinkCode(value: string): { url: string; pin: string } {
+  const digits = value.replace(/[\s-]/g, "");
+  if (!/^\d{7}$/.test(digits)) {
+    throw new Error("Link code must contain seven digits");
+  }
+  const port = Number(digits.slice(0, 5));
+  if (port < 10_000 || port > 65_535) {
+    throw new Error("Link code contains an invalid port");
+  }
+  return { url: `ws://127.0.0.1:${port}`, pin: digits.slice(5) };
+}
+
 export function parseSendArgs(args: string[]): ParsedSendArgs {
   const [command, ...rawFlags] = args;
   if (command !== "send") {
@@ -70,10 +116,11 @@ export function parseSendArgs(args: string[]): ParsedSendArgs {
 
   const values = new Map<string, string>();
   const supportedFlags = new Set([
+    "--link-code",
     "--url",
-    "--pairing-code",
     "--auth-token",
     "--session-id",
+    "--bridge-instance-id",
     "--fixture",
     "--source-id",
   ]);
@@ -95,34 +142,52 @@ export function parseSendArgs(args: string[]): ParsedSendArgs {
     values.set(flag, value);
   }
 
-  const pairingCode = values.get("--pairing-code");
+  const linkCode = values.get("--link-code");
+  const url = values.get("--url");
   const authToken = values.get("--auth-token");
   const sessionId = values.get("--session-id");
+  const bridgeInstanceId = values.get("--bridge-instance-id");
   const fixture = values.get("--fixture");
-  const url = values.get("--url") ?? DEFAULT_URL;
   const sourceId = values.get("--source-id") ?? DEFAULT_SOURCE_ID;
+  const hasExplicitTokenField = Boolean(
+    url || authToken || sessionId || bridgeInstanceId,
+  );
 
   if (!fixture) {
     throw new Error("--fixture is required");
   }
-  if (pairingCode && authToken) {
-    throw new Error("Use either --pairing-code or --auth-token, not both");
+  if (linkCode && hasExplicitTokenField) {
+    throw new Error(
+      "Use either --link-code or explicit token credentials, not both",
+    );
   }
-  if (!pairingCode && !authToken) {
-    throw new Error("--pairing-code or --auth-token is required");
+  if (linkCode) {
+    parseLinkCode(linkCode);
+    return {
+      command: "send",
+      linkCode,
+      fixture,
+      sourceId,
+    };
   }
-  if (authToken && !sessionId) {
-    throw new Error("--session-id is required when --auth-token is supplied");
+  if (!hasExplicitTokenField) {
+    throw new Error(
+      "--link-code or complete explicit token credentials are required",
+    );
+  }
+  if (!url || !sessionId || !bridgeInstanceId || !authToken) {
+    throw new Error(
+      "Explicit token mode requires --url, --session-id, --bridge-instance-id, and --auth-token",
+    );
   }
 
   assertWebSocketUrl(url);
-
   return {
     command: "send",
     url,
-    pairingCode,
-    authToken,
     sessionId,
+    bridgeInstanceId,
+    authToken,
     fixture,
     sourceId,
   };
@@ -133,34 +198,19 @@ export async function sendInspect(
 ): Promise<InspectMessage> {
   validateSendOptions(options);
 
-  const url = options.url ?? DEFAULT_URL;
   const sourceId = options.sourceId ?? DEFAULT_SOURCE_ID;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fixture = await loadFixture(options.fixture);
-  const socket = await connect(url, timeoutMs);
+  const mode = resolveConnectionMode(options);
+  const socket = await connect(mode.url, timeoutMs);
 
   try {
-    const credentials = options.pairingCode
-      ? await pair(socket, options.pairingCode, sourceId, timeoutMs)
-      : {
-          sessionId: options.sessionId as string,
-          authToken: options.authToken as string,
-        };
+    const credentials =
+      mode.kind === "link"
+        ? await requestLink(socket, mode.pin, sourceId, timeoutMs)
+        : mode.credentials;
 
-    await sendProtocolMessage(socket, {
-      protocolVersion: PROTOCOL_VERSION,
-      type: "hello",
-      messageId: randomUUID(),
-      sessionId: credentials.sessionId,
-      authToken: credentials.authToken,
-      source: {
-        role: "simulator",
-        id: sourceId,
-        metadata: {},
-      },
-      capabilities: ["inspect"],
-      metadata: {},
-    });
+    await authenticate(socket, credentials, sourceId, timeoutMs);
 
     const inspect = buildInspectMessage(fixture, {
       sessionId: credentials.sessionId,
@@ -181,23 +231,23 @@ export async function runCli(args = process.argv.slice(2)): Promise<void> {
   );
 }
 
-async function pair(
+async function requestLink(
   socket: WebSocket,
-  pairingCode: string,
+  pin: string,
   sourceId: string,
   timeoutMs: number,
-): Promise<{ sessionId: string; authToken: string }> {
+): Promise<BridgeCredentials> {
   const accepted = waitForMessage(
     socket,
-    (message): message is PairAcceptedMessage => message.type === "pairAccepted",
+    (message): message is LinkAcceptedMessage => message.type === "linkAccepted",
     timeoutMs,
   );
 
   await sendProtocolMessage(socket, {
     protocolVersion: PROTOCOL_VERSION,
-    type: "pairRequest",
+    type: "linkRequest",
     messageId: randomUUID(),
-    pairingCode,
+    pin,
     source: {
       role: "simulator",
       id: sourceId,
@@ -209,8 +259,48 @@ async function pair(
   const response = await accepted;
   return {
     sessionId: response.sessionId,
+    bridgeInstanceId: response.bridgeInstanceId,
     authToken: response.authToken,
   };
+}
+
+async function authenticate(
+  socket: WebSocket,
+  credentials: BridgeCredentials,
+  sourceId: string,
+  timeoutMs: number,
+): Promise<void> {
+  const acknowledged = waitForMessage(
+    socket,
+    (message): message is AuthenticatedMessage => message.type === "authenticated",
+    timeoutMs,
+  );
+
+  await sendProtocolMessage(socket, {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "hello",
+    messageId: randomUUID(),
+    sessionId: credentials.sessionId,
+    authToken: credentials.authToken,
+    bridgeInstanceId: credentials.bridgeInstanceId,
+    source: {
+      role: "simulator",
+      id: sourceId,
+      metadata: {},
+    },
+    capabilities: ["inspect"],
+    metadata: {},
+  });
+
+  const response = await acknowledged;
+  if (
+    response.sessionId !== credentials.sessionId ||
+    response.bridgeInstanceId !== credentials.bridgeInstanceId
+  ) {
+    throw new Error(
+      "Bridge authenticated a different session or bridge instance",
+    );
+  }
 }
 
 async function loadFixture(name: string): Promise<unknown> {
@@ -228,14 +318,32 @@ async function loadFixture(name: string): Promise<unknown> {
 }
 
 function validateSendOptions(options: SendInspectOptions): void {
-  const hasPairingCode = Boolean(options.pairingCode);
-  const hasAuthToken = Boolean(options.authToken);
+  const linkCode = options.linkCode;
+  const hasExplicitTokenField = Boolean(
+    options.url ||
+      options.authToken ||
+      options.sessionId ||
+      options.bridgeInstanceId,
+  );
 
-  if (hasPairingCode === hasAuthToken) {
-    throw new Error("Provide exactly one of pairingCode or authToken");
+  if (linkCode && hasExplicitTokenField) {
+    throw new Error(
+      "Use either linkCode or explicit token credentials, not both",
+    );
   }
-  if (hasAuthToken && !options.sessionId) {
-    throw new Error("sessionId is required when authToken is supplied");
+  if (linkCode) {
+    parseLinkCode(linkCode);
+  } else if (
+    !options.url ||
+    !options.authToken ||
+    !options.sessionId ||
+    !options.bridgeInstanceId
+  ) {
+    throw new Error(
+      "Explicit token mode requires url, sessionId, bridgeInstanceId, and authToken",
+    );
+  } else {
+    assertWebSocketUrl(options.url);
   }
   if (!options.fixture) {
     throw new Error("fixture is required");
@@ -243,8 +351,6 @@ function validateSendOptions(options: SendInspectOptions): void {
   if (options.timeoutMs !== undefined && options.timeoutMs <= 0) {
     throw new Error("timeoutMs must be greater than zero");
   }
-
-  assertWebSocketUrl(options.url ?? DEFAULT_URL);
 }
 
 function assertWebSocketUrl(value: string): void {
@@ -327,7 +433,7 @@ function waitForMessage<T extends Browser2IdeMessage>(
 
       if (message.type === "error") {
         cleanup();
-        reject(new Error(`${message.code}: ${message.message}`));
+        reject(new Error(sanitizedBridgeError(message.code)));
         return;
       }
       if (predicate(message)) {
@@ -356,6 +462,13 @@ function waitForMessage<T extends Browser2IdeMessage>(
   });
 }
 
+function sanitizedBridgeError(code: string): string {
+  if (code === "auth.instanceChanged" || code === "auth.tokenRejected") {
+    return `${code}: Bridge authentication failed`;
+  }
+  return `${code}: Bridge rejected the request`;
+}
+
 async function closeSocket(socket: WebSocket, timeoutMs: number): Promise<void> {
   if (socket.readyState === WebSocket.CLOSED) {
     return;
@@ -380,6 +493,27 @@ async function closeSocket(socket: WebSocket, timeoutMs: number): Promise<void> 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isLinkMode(
+  options: SendInspectOptions,
+): options is LinkSendInspectOptions {
+  return typeof options.linkCode === "string";
+}
+
+function resolveConnectionMode(options: SendInspectOptions): ConnectionMode {
+  if (isLinkMode(options)) {
+    return { kind: "link", ...parseLinkCode(options.linkCode) };
+  }
+  return {
+    kind: "credentials",
+    url: options.url,
+    credentials: {
+      sessionId: options.sessionId,
+      bridgeInstanceId: options.bridgeInstanceId,
+      authToken: options.authToken,
+    },
+  };
 }
 
 if (fileURLToPath(import.meta.url) === process.argv[1]) {
