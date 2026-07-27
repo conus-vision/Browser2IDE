@@ -93,9 +93,10 @@ boundaries.
 
 ## Sensitive Output
 
-The visible status-bar code and the deliberate clipboard copy are the only
-user-facing exposures of the PIN. Link codes, PINs, and auth tokens must not
-appear in:
+The deliberate user-facing PIN exposures are the visible VS Code status-bar
+code, the clipboard copy, and the Firefox `Link code` field while linking. The
+Firefox field is cleared after successful authentication. Link codes, PINs,
+and auth tokens must not appear in:
 
 - VS Code diagnostics or output logs;
 - Firefox diagnostics or error text;

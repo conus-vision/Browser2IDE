@@ -102,7 +102,8 @@ The Firefox panel shows:
 - linked endpoint, session, and bridge instance;
 - selected-element summary;
 - matched CSS fact and inaccessible stylesheet counts;
-- last sent-message time and last sanitized error.
+- last sent-message time and last error. Protocol errors are displayed through
+  the panel's sanitized code-to-message mapping.
 
 Firefox diagnostics do not display the saved token, PIN, or link code.
 

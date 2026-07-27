@@ -6,9 +6,10 @@ resources. Browser2IDE product traffic remains WebSocket-only.
 
 Normal use with installed extensions is terminal-free: VS Code starts the
 bridge after startup, and the user links Firefox with the status-bar code. This
-contributor runbook intentionally uses an Extension Development Host,
-`web-ext`, and a local fixture because it verifies an uninstalled source
-checkout. Packaged-artifact installation is covered by the distribution
+runbook is contributor-only and intentionally uses an Extension Development
+Host, `web-ext`, and a local fixture because it verifies an uninstalled source
+checkout. Installed, terminal-free artifact verification is not performed
+here; it will be added and executed in Plan 3 as part of the distribution
 workflow.
 
 ## Prerequisites
