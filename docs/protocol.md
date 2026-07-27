@@ -1,20 +1,161 @@
 # Browser2IDE Protocol
 
 The Browser2IDE protocol carries runtime inspection evidence from browser
-adapters to IDE presenters through the local WebSocket bridge. Browser adapters
+adapters to IDE presenters through a local WebSocket bridge. Browser adapters
 collect facts; IDE source plugins resolve those facts because only the IDE has
 workspace access.
 
-## Version
+## Version And Envelope
 
-Every message uses `protocolVersion: 2`. Implementations reject unsupported
-versions instead of guessing or normalizing legacy shapes. Protocol v1 inspect
-messages with top-level `subject` and `facts` are not supported.
+The current protocol version is `3`. Every message is a strict object with:
+
+- `protocolVersion: 3`;
+- a non-empty `messageId`;
+- a message-specific `type`;
+- JSON-only `metadata`.
+
+Implementations reject unsupported versions, unknown fields, and invalid
+message shapes instead of guessing or normalizing them.
+
+## Bridge Identity And Link Code
+
+Every bridge start creates a new UUID `bridgeInstanceId`, a two-digit PIN, and
+a fresh in-memory token set. The VS Code extension binds the bridge to the
+first free port in the managed range `48735` through `48834`.
+
+The seven-digit link code is a user-interface encoding:
+
+```text
+48735 07 -> port 48735 + PIN 07 -> 4873507 on the clipboard
+```
+
+The grouped form is displayed for readability. The copied form contains only
+seven digits. A browser parses the first five digits as the port, connects to
+`ws://127.0.0.1:<port>`, and sends only the final two digits as the protocol
+PIN. The code is not a protocol message and is never used to scan ports or
+select an IDE automatically.
+
+## Link And Authentication
+
+A browser or simulator opens a WebSocket to the exact endpoint encoded in the
+link code and sends one `linkRequest` on that connection:
+
+```json
+{
+  "protocolVersion": 3,
+  "type": "linkRequest",
+  "messageId": "link-1",
+  "pin": "07",
+  "source": {
+    "role": "browser",
+    "id": "firefox-devtools",
+    "metadata": {}
+  },
+  "metadata": {}
+}
+```
+
+The bridge allows only one link attempt per WebSocket. A successful request
+receives the session, bridge instance, role-bound token, and token expiry:
+
+```json
+{
+  "protocolVersion": 3,
+  "type": "linkAccepted",
+  "messageId": "link-accepted-1",
+  "sessionId": "default",
+  "bridgeInstanceId": "2d7856f5-8218-4ba6-9f6c-7aa459333ee1",
+  "authToken": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "expiresAt": "2026-07-28T12:00:00.000Z",
+  "metadata": {}
+}
+```
+
+The client must then authenticate before it reports itself as connected:
+
+```json
+{
+  "protocolVersion": 3,
+  "type": "hello",
+  "messageId": "hello-1",
+  "sessionId": "default",
+  "authToken": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "bridgeInstanceId": "2d7856f5-8218-4ba6-9f6c-7aa459333ee1",
+  "source": {
+    "role": "browser",
+    "id": "firefox-devtools",
+    "metadata": {}
+  },
+  "capabilities": ["inspect", "link"],
+  "metadata": {}
+}
+```
+
+The bridge validates the session, client role, token, expiry, and instance
+identity, registers the client, and acknowledges the authenticated identity:
+
+```json
+{
+  "protocolVersion": 3,
+  "type": "authenticated",
+  "messageId": "authenticated-1",
+  "sessionId": "default",
+  "bridgeInstanceId": "2d7856f5-8218-4ba6-9f6c-7aa459333ee1",
+  "metadata": {}
+}
+```
+
+The Firefox client stores credentials only after this acknowledgement. It may
+then reconnect to the saved endpoint by sending `hello` with the saved session,
+instance, and token. It never searches the managed port range. A changed
+instance or rejected token invalidates the saved link and requires a new
+explicit code.
+
+The IDE client does not send `linkRequest`. Its trusted, role-bound token is
+created inside the VS Code extension for the current in-memory bridge instance,
+then it uses the same `hello` and `authenticated` exchange.
+
+Unauthenticated connections have ten seconds to complete the handshake.
+Malformed messages, repeated link requests, and invalid handshake order close
+the connection.
+
+## Unlink
+
+An authenticated client can explicitly remove its current link:
+
+```json
+{
+  "protocolVersion": 3,
+  "type": "unlink",
+  "messageId": "unlink-1",
+  "sessionId": "default",
+  "metadata": {}
+}
+```
+
+The bridge removes that connection, revokes its token, and closes the socket.
+The browser also removes its saved endpoint, session, instance, and token.
+Stopping the bridge revokes every token for that instance.
+
+## Link Failures
+
+The protocol uses generic link and authentication errors:
+
+- `link.invalidCode`: the user-facing code is malformed;
+- `link.unreachable`: the encoded localhost endpoint cannot be reached;
+- `link.rejected`: the bridge rejected a link request without disclosing
+  whether the PIN was wrong;
+- `link.rateLimited`: link requests are temporarily blocked;
+- `auth.tokenRejected`: the token, role, session, or expiry is invalid;
+- `auth.instanceChanged`: credentials belong to another bridge start.
+
+Five failed PIN attempts within the rolling failure window trigger one
+bridge-wide 60-second cooldown. Parallel sockets share that limit. A correct
+PIN also receives `link.rateLimited` while the cooldown is active.
 
 ## Inspect Targets
 
-An `inspect` message contains a `targets` array instead of one top-level
-subject:
+An `inspect` message contains a `targets` array:
 
 - exactly one `selected` target at `depth: 0` is required;
 - at most one `parent` target at `depth: 1` is allowed;
@@ -28,7 +169,7 @@ presentation.
 
 ```json
 {
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "type": "inspect",
   "messageId": "inspect-42",
   "sessionId": "default",
@@ -89,9 +230,8 @@ Future adapters and development instrumentation can send plugin facts with:
 - JSON-only `metadata`.
 
 Names must match the protocol namespace grammar; arbitrary single words and
-non-JSON values are rejected. The bridge message-size limit applies to the full
-message, so producers should send source identity rather than DOM text or
-framework state.
+non-JSON values are rejected. Producers should send source identity rather
+than DOM text or framework state.
 
 ## Source Positions
 
@@ -132,17 +272,15 @@ Resolved source matches use one confidence value:
 
 ## Message Families
 
-Protocol version 2 includes:
+Protocol version 3 includes:
 
-- Handshake messages that identify role, session, token, and capabilities.
-- Pairing messages that exchange a short-lived code for a session token.
-- Inspect messages that carry selected and optional immediate-parent targets.
-- Reference messages for source references sent back to a browser when needed.
-- Command messages such as source navigation or browser highlighting.
-- Structured errors for protocol, authentication, routing, browser, and
-  resolver failures.
-- Ping and pong messages for WebSocket health.
+- link and authenticated-handshake messages bound to one bridge instance;
+- inspect messages with selected and optional immediate-parent targets;
+- reference messages for source references sent back to a browser when needed;
+- command schemas such as source navigation or browser highlighting;
+- structured errors for link, authentication, routing, browser, and resolver
+  failures;
+- ping and pong messages for WebSocket health.
 
-Pairing is part of the WebSocket protocol, not an HTTP or out-of-band product
-API. Unsupported messages and invalid target/fact shapes are rejected at the
-protocol boundary.
+All product traffic remains on WebSocket. Unsupported messages and invalid
+target or fact shapes are rejected at the protocol boundary.
