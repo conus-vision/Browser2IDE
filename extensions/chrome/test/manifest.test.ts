@@ -29,12 +29,14 @@ describe("Chrome extension manifest", () => {
     expect(manifest.permissions).not.toEqual(
       expect.arrayContaining(["nativeMessaging", "debugger"]),
     );
-    expect(manifest.host_permissions).toEqual([
+    const hostPermissions = manifest.host_permissions as string[];
+    expect(hostPermissions).toEqual([
       "http://localhost/*",
       "http://127.0.0.1/*",
-      "ws://localhost/*",
-      "ws://127.0.0.1/*",
     ]);
+    expect(
+      hostPermissions.some((permission) => /^wss?:\/\//.test(permission)),
+    ).toBe(false);
     expect(manifest.optional_host_permissions).toEqual(["<all_urls>"]);
   });
 

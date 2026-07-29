@@ -10,9 +10,7 @@
   "permissions": ["activeTab", "clipboardRead", "scripting", "storage", "tabs"],
   "host_permissions": [
     "http://localhost/*",
-    "http://127.0.0.1/*",
-    "ws://localhost/*",
-    "ws://127.0.0.1/*"
+    "http://127.0.0.1/*"
   ],
   "optional_host_permissions": ["<all_urls>"],
   "content_security_policy": {
