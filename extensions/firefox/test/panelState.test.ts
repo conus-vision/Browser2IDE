@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   loadPanelSettings,
-  parseLinkCode,
   resetPanelSettings,
   savePanelSettings,
   type PanelStorage,
@@ -15,33 +14,6 @@ const COMPLETE_SETTINGS = {
     authToken: "browser-token",
   },
 } as const;
-
-describe("parseLinkCode", () => {
-  it.each(["4873507", "48735 07", "48735-07"])(
-    "normalizes %s and preserves a leading-zero PIN",
-    (value) => {
-      expect(parseLinkCode(value)).toEqual({
-        code: "4873507",
-        url: "ws://127.0.0.1:48735",
-        pin: "07",
-      });
-    },
-  );
-
-  it.each(["487350", "48735070", "48735a7", "４８７３５０７"])(
-    "rejects %s unless it contains exactly seven ASCII digits",
-    (value) => {
-      expect(() => parseLinkCode(value)).toThrow("seven digits");
-    },
-  );
-
-  it.each(["0999907", "6553607"])(
-    "rejects the out-of-range port in %s",
-    (value) => {
-      expect(() => parseLinkCode(value)).toThrow("port");
-    },
-  );
-});
 
 describe("panel persisted state", () => {
   it("stores and loads only a URL with complete authenticated credentials", async () => {

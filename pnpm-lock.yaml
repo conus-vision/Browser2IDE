@@ -129,6 +129,9 @@ importers:
       '@browser2ide/protocol':
         specifier: workspace:*
         version: link:../protocol
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
 
   packages/plugin-api:
     dependencies:

@@ -11,6 +11,11 @@ export type {
   InspectPayload,
   InspectPublisherOptions,
 } from "./bridgeClient.js";
+export { BrowserWindowLinkStore } from "./browserWindowLinkStore.js";
+export type {
+  BrowserWindowLink,
+  SessionStorage,
+} from "./browserWindowLinkStore.js";
 export { collectCssFacts } from "./collectCssFacts.js";
 export type {
   CssDocumentSource,
@@ -51,6 +56,8 @@ export type {
   InspectDocument,
   InspectModeOptions,
 } from "./inspectMode.js";
+export { parseLinkCode } from "./linkCode.js";
+export type { ParsedLinkCode } from "./linkCode.js";
 export { createInspectPayload } from "./inspectPayload.js";
 export type {
   InspectPayloadWithDiagnostics,

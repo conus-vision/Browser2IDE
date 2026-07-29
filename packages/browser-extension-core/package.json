@@ -19,6 +19,7 @@
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@browser2ide/protocol": "workspace:*"
+    "@browser2ide/protocol": "workspace:*",
+    "zod": "^3.25.76"
   }
 }

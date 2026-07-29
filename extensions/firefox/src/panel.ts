@@ -5,16 +5,16 @@ import {
   InspectPublisher,
   PanelDiagnostics,
   PanelInspectController,
+  parseLinkCode,
   type BrowserConnectionState,
   type BrowserCredentials,
   type InspectPayload,
+  type ParsedLinkCode,
 } from "@browser2ide/browser-extension-core";
 import {
   loadPanelSettings,
-  parseLinkCode,
   resetPanelSettings,
   savePanelSettings,
-  type ParsedLinkCode,
   type PanelSettings,
   type PanelStorage,
 } from "./panelState.js";

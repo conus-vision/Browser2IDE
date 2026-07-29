@@ -1,0 +1,153 @@
+import { describe, expect, it } from "vitest";
+import {
+  BrowserWindowLinkStore,
+  type BrowserWindowLink,
+  type SessionStorage,
+} from "../src/index.js";
+
+const INSTANCE_A = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
+const INSTANCE_B = "e76bb54e-f1fc-4d76-844c-554a283b5291";
+const AUTH_TOKEN = "a".repeat(32);
+
+describe("BrowserWindowLinkStore", () => {
+  it("isolates links by browser window", async () => {
+    const storage = new MemorySessionStorage();
+    const store = new BrowserWindowLinkStore(storage);
+    const first = link({ bridgeInstanceId: INSTANCE_A });
+    const second = link({
+      port: 48_736,
+      bridgeInstanceId: INSTANCE_B,
+      sessionId: "session-20",
+    });
+
+    await store.save(10, first);
+    await store.save(20, second);
+
+    await expect(store.load(10)).resolves.toEqual(first);
+    await expect(store.load(20)).resolves.toEqual(second);
+    expect(storage.values).toEqual({
+      "browser2ide.windowLink.10": first,
+      "browser2ide.windowLink.20": second,
+    });
+  });
+
+  it("never persists the PIN or raw link code", async () => {
+    const storage = new MemorySessionStorage();
+    const store = new BrowserWindowLinkStore(storage);
+
+    await store.save(10, link());
+
+    const serialized = JSON.stringify(storage.values);
+    expect(serialized).not.toContain("4873507");
+    expect(serialized).not.toContain("07");
+    expect(serialized).not.toContain('"pin"');
+    expect(serialized).not.toContain('"value"');
+    expect(serialized).not.toContain('"code"');
+  });
+
+  it.each([
+    ["remote URL", { url: "ws://192.0.2.10:48735" }],
+    ["mismatched URL port", { url: "ws://127.0.0.1:48736" }],
+    ["out-of-range port", { port: 65_536 }],
+    ["empty session ID", { sessionId: "" }],
+    ["invalid bridge instance ID", { bridgeInstanceId: "instance-a" }],
+    ["short auth token", { authToken: "short" }],
+    ["unknown field", { pin: "07" }],
+  ])("rejects a saved link with %s", async (_label, override) => {
+    const storage = new MemorySessionStorage();
+    const store = new BrowserWindowLinkStore(storage);
+    const candidate = { ...link(), ...override };
+
+    await expect(store.save(10, candidate)).rejects.toThrow();
+    expect(storage.values).toEqual({});
+  });
+
+  it.each([
+    ["remote URL", { url: "ws://example.test:48735" }],
+    ["mismatched URL port", { url: "ws://127.0.0.1:48736" }],
+    ["unknown field", { rawCode: "4873507" }],
+    ["short token", { authToken: "short" }],
+  ])("cleans up a loaded record with %s", async (_label, override) => {
+    const key = "browser2ide.windowLink.10";
+    const storage = new MemorySessionStorage({
+      [key]: { ...link(), ...override },
+      "browser2ide.windowLink.20": link({
+        port: 48_736,
+        bridgeInstanceId: INSTANCE_B,
+      }),
+    });
+    const store = new BrowserWindowLinkStore(storage);
+
+    await expect(store.load(10)).resolves.toBeUndefined();
+    expect(storage.removals).toEqual([key]);
+    expect(storage.values[key]).toBeUndefined();
+    expect(storage.values["browser2ide.windowLink.20"]).toBeDefined();
+  });
+
+  it("removes only the closed browser window link", async () => {
+    const storage = new MemorySessionStorage();
+    const store = new BrowserWindowLinkStore(storage);
+    await store.save(10, link());
+    await store.save(
+      20,
+      link({ port: 48_736, bridgeInstanceId: INSTANCE_B }),
+    );
+
+    await store.remove(10);
+
+    await expect(store.load(10)).resolves.toBeUndefined();
+    await expect(store.load(20)).resolves.toMatchObject({
+      bridgeInstanceId: INSTANCE_B,
+    });
+    expect(storage.removals).toEqual(["browser2ide.windowLink.10"]);
+  });
+
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid browser window ID %s",
+    async (windowId) => {
+      const storage = new MemorySessionStorage();
+      const store = new BrowserWindowLinkStore(storage);
+
+      await expect(store.load(windowId)).rejects.toThrow();
+      await expect(store.save(windowId, link())).rejects.toThrow();
+      await expect(store.remove(windowId)).rejects.toThrow();
+      expect(storage.values).toEqual({});
+      expect(storage.removals).toEqual([]);
+    },
+  );
+});
+
+class MemorySessionStorage implements SessionStorage {
+  public readonly values: Record<string, unknown>;
+  public readonly removals: string[] = [];
+
+  public constructor(initial: Record<string, unknown> = {}) {
+    this.values = { ...initial };
+  }
+
+  public async get(key: string): Promise<Record<string, unknown>> {
+    return { [key]: this.values[key] };
+  }
+
+  public async set(values: Record<string, unknown>): Promise<void> {
+    Object.assign(this.values, values);
+  }
+
+  public async remove(key: string): Promise<void> {
+    this.removals.push(key);
+    delete this.values[key];
+  }
+}
+
+function link(
+  override: Partial<BrowserWindowLink> = {},
+): BrowserWindowLink {
+  const port = override.port ?? 48_735;
+  return {
+    url: override.url ?? `ws://127.0.0.1:${port}`,
+    port,
+    sessionId: override.sessionId ?? "session-10",
+    bridgeInstanceId: override.bridgeInstanceId ?? INSTANCE_A,
+    authToken: override.authToken ?? AUTH_TOKEN,
+  };
+}

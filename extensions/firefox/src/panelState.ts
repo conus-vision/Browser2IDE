@@ -11,12 +11,6 @@ export interface PanelSettings {
   readonly credentials: BrowserCredentials;
 }
 
-export interface ParsedLinkCode {
-  readonly code: string;
-  readonly url: string;
-  readonly pin: string;
-}
-
 const BRIDGE_URL_KEY = "browser2ideBridgeUrl";
 const SESSION_ID_KEY = "browser2ideSessionId";
 const BRIDGE_INSTANCE_ID_KEY = "browser2ideBridgeInstanceId";
@@ -27,24 +21,6 @@ const KEYS = [
   BRIDGE_INSTANCE_ID_KEY,
   AUTH_TOKEN_KEY,
 ];
-
-export function parseLinkCode(value: string): ParsedLinkCode {
-  const code = value.replace(/[\s-]/g, "");
-  if (!/^[0-9]{7}$/.test(code)) {
-    throw new Error("Link code must contain seven digits");
-  }
-
-  const port = Number(code.slice(0, 5));
-  if (port < 10_000 || port > 65_535) {
-    throw new Error("Link code port must be between 10000 and 65535");
-  }
-
-  return {
-    code,
-    url: `ws://127.0.0.1:${port}`,
-    pin: code.slice(5),
-  };
-}
 
 export async function loadPanelSettings(
   storage: PanelStorage,
