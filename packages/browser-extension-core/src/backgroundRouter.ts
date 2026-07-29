@@ -85,7 +85,7 @@ interface ChannelBinding extends RegistrationIdentity {
 
 interface PendingRegistration extends RegistrationIdentity {
   readonly generation: number;
-  readonly lifecycleGeneration: number;
+  readonly disposeGeneration: number;
   promise: Promise<BackgroundRouteResult | undefined>;
 }
 
@@ -119,9 +119,10 @@ export class BackgroundRouter {
     PendingRegistration
   >();
   private readonly panelPorts = new Map<string, PanelPortRecord>();
+  private readonly removedWindows = new Set<number>();
   private readonly removeSubscriptions: Array<() => void> = [];
   private nextGeneration = 1;
-  private lifecycleGeneration = 1;
+  private disposeGeneration = 1;
   private disposed = false;
 
   public constructor(options: BackgroundRouterOptions) {
@@ -201,7 +202,7 @@ export class BackgroundRouter {
     if (this.disposed || !isBrowserId(windowId)) {
       return;
     }
-    this.lifecycleGeneration += 1;
+    this.removedWindows.add(windowId);
     const removedBindings = [...this.bindings.values()].filter(
       (binding) => binding.windowId === windowId,
     );
@@ -220,7 +221,7 @@ export class BackgroundRouter {
       return;
     }
     this.disposed = true;
-    this.lifecycleGeneration += 1;
+    this.disposeGeneration += 1;
 
     for (const removeSubscription of this.removeSubscriptions.splice(0)) {
       try {
@@ -236,6 +237,7 @@ export class BackgroundRouter {
     this.bindings.clear();
     this.channelByTab.clear();
     this.channelBySource.clear();
+    this.removedWindows.clear();
   }
 
   private attachSubscriptions(
@@ -274,7 +276,7 @@ export class BackgroundRouter {
     const pending: PendingRegistration = {
       ...identity,
       generation: this.allocateGeneration(),
-      lifecycleGeneration: this.lifecycleGeneration,
+      disposeGeneration: this.disposeGeneration,
       promise: Promise.resolve(undefined),
     };
     this.pendingRegistrations.set(identity.channel, pending);
@@ -296,7 +298,7 @@ export class BackgroundRouter {
         return undefined;
       }
       const resolved = resolvedTab(tab, pending.tabId);
-      if (!resolved) {
+      if (!resolved || this.removedWindows.has(resolved.windowId)) {
         return undefined;
       }
 
@@ -311,7 +313,7 @@ export class BackgroundRouter {
             tabId: pending.tabId,
             sourceId: pending.sourceId,
             windowId: resolved.windowId,
-            generation: this.allocateGeneration(),
+            generation: pending.generation,
           };
           this.bindings.set(replacement.channel, replacement);
           const port = this.panelPorts.get(replacement.channel);
@@ -323,16 +325,29 @@ export class BackgroundRouter {
       }
 
       const tabChannel = this.channelByTab.get(pending.tabId);
-      if (tabChannel && tabChannel !== pending.channel) {
-        const staleBinding = this.bindings.get(tabChannel);
-        if (!staleBinding || this.panelPorts.has(tabChannel)) {
-          return undefined;
-        }
-        this.removeBinding(staleBinding);
+      const supersededBinding =
+        tabChannel && tabChannel !== pending.channel
+          ? this.bindings.get(tabChannel)
+          : undefined;
+      if (
+        tabChannel &&
+        tabChannel !== pending.channel &&
+        (!supersededBinding ||
+          supersededBinding.tabId !== pending.tabId ||
+          supersededBinding.generation > pending.generation)
+      ) {
+        return undefined;
       }
       const sourceChannel = this.channelBySource.get(pending.sourceId);
       if (sourceChannel && sourceChannel !== pending.channel) {
-        return undefined;
+        const sourceBinding = this.bindings.get(sourceChannel);
+        if (
+          !sourceBinding ||
+          sourceBinding.tabId !== pending.tabId ||
+          sourceBinding !== supersededBinding
+        ) {
+          return undefined;
+        }
       }
       if (!this.isCurrentPending(pending)) {
         return undefined;
@@ -343,8 +358,17 @@ export class BackgroundRouter {
         tabId: pending.tabId,
         sourceId: pending.sourceId,
         windowId: resolved.windowId,
-        generation: this.allocateGeneration(),
+        generation: pending.generation,
       };
+      if (supersededBinding) {
+        const supersededPort = this.panelPorts.get(
+          supersededBinding.channel,
+        );
+        if (supersededPort) {
+          this.closePanelPort(supersededPort, true);
+        }
+        this.removeBinding(supersededBinding);
+      }
       this.bindings.set(binding.channel, binding);
       this.channelByTab.set(binding.tabId, binding.channel);
       this.channelBySource.set(binding.sourceId, binding.channel);
@@ -487,7 +511,7 @@ export class BackgroundRouter {
       return undefined;
     }
     const token = record.activationToken;
-    const lifecycleGeneration = this.lifecycleGeneration;
+    const disposeGeneration = this.disposeGeneration;
 
     let tab: BackgroundTab | undefined;
     try {
@@ -499,7 +523,8 @@ export class BackgroundRouter {
     if (
       !resolved ||
       this.disposed ||
-      lifecycleGeneration !== this.lifecycleGeneration ||
+      disposeGeneration !== this.disposeGeneration ||
+      this.removedWindows.has(resolved.windowId) ||
       (senderTab.windowId !== undefined &&
         senderTab.windowId !== resolved.windowId) ||
       binding.windowId !== resolved.windowId ||
@@ -549,7 +574,7 @@ export class BackgroundRouter {
   private isCurrentPending(pending: PendingRegistration): boolean {
     return (
       !this.disposed &&
-      pending.lifecycleGeneration === this.lifecycleGeneration &&
+      pending.disposeGeneration === this.disposeGeneration &&
       this.pendingRegistrations.get(pending.channel) === pending
     );
   }

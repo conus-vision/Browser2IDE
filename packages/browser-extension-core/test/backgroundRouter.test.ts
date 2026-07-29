@@ -118,6 +118,33 @@ describe("BackgroundRouter", () => {
     expect(harness.coordinator.registrations).toEqual([]);
   });
 
+  it("allows an unresolved registration in another window to complete", async () => {
+    const tabLookup = deferred<{ id: number; windowId: number }>();
+    const harness = createHarness({
+      getTab: async (tabId) =>
+        tabId === 18 ? tabLookup.promise : { id: tabId, windowId: 10 },
+    });
+    const windowAPort = await harness.registerAndConnect(
+      "channel-a",
+      17,
+      "source-a",
+    );
+    const registration = harness.router.routeMessage(
+      registerMessage("channel-b", 18, "source-b"),
+      devtoolsSender(),
+    );
+
+    await harness.router.removeWindow(10);
+    tabLookup.resolve({ id: 18, windowId: 20 });
+
+    await expect(registration).resolves.toEqual({ ok: true });
+    const windowBPort = harness.panelPort("channel-b");
+    harness.router.connectPort(windowBPort);
+    expect(windowAPort.disconnected).toBe(true);
+    expect(windowBPort.disconnected).toBe(false);
+    expect(harness.coordinator.activeSources()).toEqual(["source-b"]);
+  });
+
   it("binds a valid panel port that arrives before registration", async () => {
     const harness = createHarness();
     const port = harness.panelPort("channel-1");
@@ -165,56 +192,86 @@ describe("BackgroundRouter", () => {
     expect(overflow.disconnected).toBe(true);
   });
 
-  it("replaces only a stale inactive tab mapping and guards the resolution race", async () => {
-    const tabLookup = deferred<{ id: number; windowId: number }>();
-    let deferNew = false;
+  it.each(["before", "after"] as const)(
+    "atomically supersedes a live same-tab channel when the new port arrives %s the announcement",
+    async (portOrder) => {
+      const harness = createHarness();
+      const oldPort = await harness.registerAndConnect(
+        "old-channel",
+        17,
+        "old-source",
+      );
+      const delayedOldDisconnect = oldPort.queueDisconnect();
+      const newPort = harness.panelPort("new-channel");
+      if (portOrder === "before") {
+        harness.router.connectPort(newPort);
+      }
+
+      const result = await harness.router.routeMessage(
+        registerMessage("new-channel", 17, "new-source"),
+        devtoolsSender(),
+      );
+      if (portOrder === "after") {
+        harness.router.connectPort(newPort);
+      }
+
+      expect(result).toEqual({ ok: true });
+      expect(oldPort.disconnected).toBe(true);
+      expect(newPort.disconnected).toBe(false);
+      expect(harness.coordinator.activeSources()).toEqual(["new-source"]);
+      expect(harness.coordinator.registrations).toHaveLength(2);
+      expect(harness.coordinator.disposeCalls).toBe(1);
+
+      delayedOldDisconnect();
+
+      expect(newPort.disconnected).toBe(false);
+      expect(harness.coordinator.activeSources()).toEqual(["new-source"]);
+      expect(harness.coordinator.disposeCalls).toBe(1);
+    },
+  );
+
+  it("does not let an older re-announcement reclaim a superseded tab", async () => {
+    const staleLookup = deferred<{ id: number; windowId: number }>();
+    let deferNextLookup = false;
     const harness = createHarness({
       getTab: async (tabId) => {
-        harness.getTabCalls.push(tabId);
-        return deferNew
-          ? tabLookup.promise
-          : { id: tabId, windowId: 10 };
+        if (deferNextLookup) {
+          deferNextLookup = false;
+          return staleLookup.promise;
+        }
+        return { id: tabId, windowId: 10 };
       },
     });
-    await harness.router.routeMessage(
+    await harness.registerAndConnect("old-channel", 17, "old-source");
+    deferNextLookup = true;
+    const staleAnnouncement = harness.router.routeMessage(
       registerMessage("old-channel", 17, "old-source"),
       devtoolsSender(),
     );
+    const newPort = harness.panelPort("new-channel");
+    harness.router.connectPort(newPort);
 
-    deferNew = true;
-    const replacing = harness.router.routeMessage(
-      registerMessage("new-channel", 17, "new-source"),
-      devtoolsSender(),
-    );
-    const oldPort = harness.panelPort("old-channel");
-    harness.router.connectPort(oldPort);
-    tabLookup.resolve({ id: 17, windowId: 10 });
-
-    expect(await replacing).toBeUndefined();
-    expect(harness.coordinator.registrations).toHaveLength(1);
-    expect(harness.coordinator.registrations[0]?.sourceId).toBe("old-source");
-
-    oldPort.disconnect();
-    deferNew = false;
-    expect(
-      await harness.router.routeMessage(
+    await expect(
+      harness.router.routeMessage(
         registerMessage("new-channel", 17, "new-source"),
         devtoolsSender(),
       ),
-    ).toEqual({ ok: true });
-    const newPort = harness.panelPort("new-channel");
-    harness.router.connectPort(newPort);
-    expect(harness.coordinator.registrations.at(-1)?.sourceId).toBe(
-      "new-source",
-    );
+    ).resolves.toEqual({ ok: true });
+    staleLookup.resolve({ id: 17, windowId: 10 });
 
-    const stalePort = harness.panelPort("old-channel");
-    harness.router.connectPort(stalePort);
+    await expect(staleAnnouncement).resolves.toBeUndefined();
+    expect(newPort.disconnected).toBe(false);
     expect(harness.coordinator.activeSources()).toEqual(["new-source"]);
+    expect(harness.coordinator.disposeCalls).toBe(1);
   });
 
-  it("rejects conflicting live channels and stale disconnects after recovery", async () => {
-    const harness = createHarness();
+  it("rejects conflicting channel tuples and cross-tab source hijacks", async () => {
+    const harness = createHarness({
+      tabs: new Map([
+        [17, 10],
+        [18, 20],
+      ]),
+    });
     await harness.router.routeMessage(
       registerMessage("channel-1", 17, "source-17"),
       devtoolsSender(),
@@ -222,6 +279,7 @@ describe("BackgroundRouter", () => {
     const first = harness.panelPort("channel-1");
     harness.router.connectPort(first);
     const delayedDisconnect = first.queueDisconnect();
+    await harness.registerAndConnect("channel-2", 18, "source-18");
 
     expect(
       await harness.router.routeMessage(
@@ -231,18 +289,25 @@ describe("BackgroundRouter", () => {
     ).toBeUndefined();
     expect(
       await harness.router.routeMessage(
-        registerMessage("other-channel", 17, "other-source"),
+        registerMessage("hijack-channel", 17, "source-18"),
         devtoolsSender(),
       ),
     ).toBeUndefined();
+    expect(harness.coordinator.activeSources()).toEqual([
+      "source-17",
+      "source-18",
+    ]);
 
     first.disconnect();
     const recovered = harness.panelPort("channel-1");
     harness.router.connectPort(recovered);
     delayedDisconnect();
 
-    expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
-    expect(harness.coordinator.registrations).toHaveLength(2);
+    expect(harness.coordinator.activeSources()).toEqual([
+      "source-17",
+      "source-18",
+    ]);
+    expect(harness.coordinator.registrations).toHaveLength(3);
     expect(harness.coordinator.disposeCalls).toBe(1);
   });
 
@@ -275,6 +340,60 @@ describe("BackgroundRouter", () => {
         payload: inspectPayload(),
       },
     ]);
+  });
+
+  it("allows an in-flight selection in another window to publish", async () => {
+    const tabLookup = deferred<{ id: number; windowId: number }>();
+    let deferWindowB = false;
+    const harness = createHarness({
+      getTab: async (tabId) => {
+        if (deferWindowB && tabId === 18) {
+          return tabLookup.promise;
+        }
+        return { id: tabId, windowId: tabId === 17 ? 10 : 20 };
+      },
+    });
+    await harness.registerAndConnect("channel-a", 17, "source-a");
+    await harness.registerAndConnect("channel-b", 18, "source-b");
+    deferWindowB = true;
+
+    const publishing = harness.router.routeMessage(
+      { type: "elementSelected", payload: inspectPayload() },
+      contentSender(18, 20),
+    );
+    await harness.router.removeWindow(10);
+    tabLookup.resolve({ id: 18, windowId: 20 });
+
+    await expect(publishing).resolves.toEqual({ ok: true });
+    expect(harness.coordinator.published).toEqual([
+      {
+        windowId: 20,
+        sourceId: "source-b",
+        payload: inspectPayload(),
+      },
+    ]);
+    expect(harness.coordinator.activeSources()).toEqual(["source-b"]);
+  });
+
+  it("does not publish an in-flight selection from a removed window", async () => {
+    const tabLookup = deferred<{ id: number; windowId: number }>();
+    let deferSelection = false;
+    const harness = createHarness({
+      getTab: async (tabId) =>
+        deferSelection ? tabLookup.promise : { id: tabId, windowId: 10 },
+    });
+    await harness.registerAndConnect("channel-a", 17, "source-a");
+    deferSelection = true;
+
+    const publishing = harness.router.routeMessage(
+      { type: "elementSelected", payload: inspectPayload() },
+      contentSender(17, 10),
+    );
+    await harness.router.removeWindow(10);
+    tabLookup.resolve({ id: 17, windowId: 10 });
+
+    await expect(publishing).resolves.toBeUndefined();
+    expect(harness.coordinator.published).toEqual([]);
   });
 
   it("fails closed for invalid payloads, inactive tabs, and sender window mismatches", async () => {
