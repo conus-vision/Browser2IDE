@@ -83,6 +83,40 @@ describe("Firefox panel adapter", () => {
     expect(dom.element("connection-status").value).toBe("Linking");
   });
 
+  it("keeps the link code cleared when linked arrives before command resolution", async () => {
+    const linkStarted = deferred<void>();
+    const linkResponse = deferred<unknown>();
+    harness.runtimeSend = async (message) => {
+      harness.messages.push(message);
+      if (
+        isRecord(message) &&
+        message.type === "browser2ide.linkWindow"
+      ) {
+        linkStarted.resolve(undefined);
+        return linkResponse.promise;
+      }
+      return undefined;
+    };
+    await loadPanel();
+
+    const linkCode = dom.element("link-code");
+    linkCode.value = "4873507";
+    linkCode.dispatch("input");
+    dom.element("link-form").dispatch("submit");
+    await linkStarted.promise;
+    expect(linkCode.value).toBe("4873507");
+
+    requiredPort(0).emitMessage({
+      type: "browser2ide.windowState",
+      state: "linked",
+    });
+    expect(linkCode.value).toBe("");
+
+    linkResponse.resolve({ ok: true });
+    await flushAsync();
+    expect(linkCode.value).toBe("");
+  });
+
   it("uses the lifetime port for state and inspect without a second client", async () => {
     await loadPanel();
     const port = requiredPort(0);
@@ -163,6 +197,18 @@ describe("Firefox panel adapter", () => {
 
     expect(port.disconnected).toBe(true);
     expect(port.onMessage.listenerCount).toBe(0);
+  });
+
+  it("clears a pending link code on unload", async () => {
+    await loadPanel();
+    const linkCode = dom.element("link-code");
+    linkCode.value = "4873507";
+    linkCode.dispatch("input");
+    expect(linkCode.value).toBe("4873507");
+
+    dom.window.dispatch("unload");
+
+    expect(linkCode.value).toBe("");
   });
 });
 
@@ -335,6 +381,19 @@ function isCommand(message: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 async function flushAsync(): Promise<void> {

@@ -305,10 +305,13 @@ describe("PanelController", () => {
   it("disposes the view and state subscription once", async () => {
     const harness = createHarness();
     await harness.controller.initialize();
+    harness.view.editLinkCode("4873507");
+    expect(harness.view.linkCode).toBe("4873507");
 
     await harness.controller.dispose();
     await harness.controller.dispose();
 
+    expect(harness.view.linkCode).toBe("");
     expect(harness.view.disposeCalls).toBe(1);
     expect(harness.subscriptionDisposals).toBe(1);
     expect(harness.inspect.enabled).toBe(false);
