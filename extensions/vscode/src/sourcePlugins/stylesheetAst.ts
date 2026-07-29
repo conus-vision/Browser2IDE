@@ -101,11 +101,12 @@ export function findMatchingCssRules(
     return smallest ? [smallest] : [];
   }
 
+  const media = factMedia(fact);
+  if (media === null) return [];
   const rulePath = fact.metadata.rulePath;
   const browserPath = parseBrowserRulePath(rulePath);
   if (browserPath !== undefined) {
     const selector = fact.selector;
-    const media = factMedia(fact);
     const exactPath = rules.filter((rule) =>
       rule.identities.some((identity) =>
         identity.path === browserPath &&
@@ -116,13 +117,10 @@ export function findMatchingCssRules(
     if (exactPath.length > 0) return exactPath;
   }
 
-  const selector = normalizeSelector(fact.selector);
-  const media = factMedia(fact);
   return rules.filter(
     (rule) =>
       rule.identities.some((identity) =>
-        (identity.normalizedSelector === selector ||
-          sameSelector(identity, fact.selector)) &&
+        sameSelector(identity, fact.selector) &&
         (media === undefined || sameMedia(identity.media, media))
       ),
   );
@@ -140,7 +138,7 @@ export function smallestContainingRule(
 }
 
 export function normalizeSelector(selector: string): string {
-  return selector.trim().replace(/\s+/g, " ");
+  return selector.trim();
 }
 
 function parseStylesheet(
@@ -266,7 +264,8 @@ function cssomChildren(
 }
 
 function isCssomRuleNode(node: ChildNode): node is Rule | AtRule {
-  return node.type === "rule" || node.type === "atrule";
+  return node.type === "rule" ||
+    (node.type === "atrule" && node.name.toLowerCase() !== "charset");
 }
 
 function addIdentity(
@@ -347,22 +346,49 @@ function sameSelector(
   identity: StylesheetRuleIdentity,
   selector: string,
 ): boolean {
-  const normalized = normalizeSelector(selector);
-  if (identity.normalizedSelector === normalized) return true;
-  return identity.nested &&
-    absolutizeNestedSelector(identity.selector) ===
-      absolutizeNestedSelector(selector);
+  if (
+    identity.selector.length > INSPECT_LIMITS.selectorLength ||
+    selector.length > INSPECT_LIMITS.selectorLength
+  ) {
+    return false;
+  }
+  if (identity.selector.trim() === selector.trim()) return true;
+
+  const left = identity.nested
+    ? absolutizeNestedSelector(identity.selector)
+    : identity.selector;
+  const right = identity.nested
+    ? absolutizeNestedSelector(selector)
+    : selector;
+  if (left === undefined || right === undefined) return false;
+
+  const leftKey = canonicalizeCss(left, "selector");
+  const rightKey = canonicalizeCss(right, "selector");
+  return leftKey !== undefined && leftKey === rightKey;
 }
 
-function absolutizeNestedSelector(selector: string): string {
-  const normalized = normalizeSelector(selector);
-  return hasNestingSelector(normalized) ? normalized : `& ${normalized}`;
+function absolutizeNestedSelector(selector: string): string | undefined {
+  const branches = splitTopLevelSelectorList(selector);
+  if (!branches) return undefined;
+  return branches.map((branch) =>
+    hasNestingSelector(branch) ? branch : `& ${branch}`
+  ).join(", ");
 }
 
 function hasNestingSelector(selector: string): boolean {
   let quote: "\"" | "'" | undefined;
   let escaped = false;
-  for (const character of selector) {
+  let inComment = false;
+  for (let index = 0; index < selector.length; index += 1) {
+    const character = selector[index]!;
+    const next = selector[index + 1];
+    if (inComment) {
+      if (character === "*" && next === "/") {
+        inComment = false;
+        index += 1;
+      }
+      continue;
+    }
     if (escaped) {
       escaped = false;
       continue;
@@ -375,6 +401,11 @@ function hasNestingSelector(selector: string): boolean {
       if (character === quote) quote = undefined;
       continue;
     }
+    if (character === "/" && next === "*") {
+      inComment = true;
+      index += 1;
+      continue;
+    }
     if (character === "\"" || character === "'") {
       quote = character;
       continue;
@@ -384,21 +415,329 @@ function hasNestingSelector(selector: string): boolean {
   return false;
 }
 
-function factMedia(fact: CssRuleFact): readonly string[] | undefined {
+function factMedia(
+  fact: CssRuleFact,
+): readonly string[] | undefined | null {
   const value = fact.metadata.media;
-  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
-    return undefined;
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length > INSPECT_LIMITS.mediaConditions ||
+    !value.every((entry) =>
+      typeof entry === "string" &&
+      entry.length <= INSPECT_LIMITS.valueLength
+    )
+  ) {
+    return null;
   }
   return value.map(normalizeMedia);
 }
 
 function sameMedia(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length &&
-    left.every((entry, index) => entry === right[index]);
+    left.every((entry, index) => {
+      const other = right[index];
+      if (other === undefined) return false;
+      if (entry.trim() === other.trim()) return true;
+      const leftKey = canonicalizeCss(entry, "media");
+      const rightKey = canonicalizeCss(other, "media");
+      return leftKey !== undefined && leftKey === rightKey;
+    });
 }
 
 function normalizeMedia(value: string): string {
-  return value.trim().replace(/\s+/g, " ");
+  return value.trim();
+}
+
+type CanonicalMode = "selector" | "media";
+
+type CssToken =
+  | { readonly kind: "symbol"; readonly value: string }
+  | { readonly kind: "string"; readonly value: string }
+  | { readonly kind: "escape"; readonly value: string }
+  | { readonly kind: "whitespace"; readonly value: " " };
+
+function canonicalizeCss(
+  value: string,
+  mode: CanonicalMode,
+): string | undefined {
+  const limit = mode === "selector"
+    ? INSPECT_LIMITS.selectorLength
+    : INSPECT_LIMITS.valueLength;
+  if (value.length === 0 || value.length > limit) return undefined;
+  const tokens = tokenizeCss(value);
+  if (!tokens) return undefined;
+
+  const canonical: CssToken[] = [];
+  let whitespacePending = false;
+  let bracketDepth = 0;
+  let parenthesisDepth = 0;
+  for (const token of tokens) {
+    if (token.kind === "whitespace") {
+      whitespacePending = canonical.length > 0;
+      continue;
+    }
+
+    const previous = canonical.at(-1);
+    if (
+      whitespacePending &&
+      previous &&
+      isMeaningfulWhitespace(previous, token, mode, bracketDepth)
+    ) {
+      canonical.push({ kind: "whitespace", value: " " });
+    }
+    whitespacePending = false;
+
+    if (token.kind === "symbol") {
+      if (token.value === "[") bracketDepth += 1;
+      if (token.value === "]") {
+        bracketDepth -= 1;
+        if (bracketDepth < 0) return undefined;
+      }
+      if (token.value === "(") parenthesisDepth += 1;
+      if (token.value === ")") {
+        parenthesisDepth -= 1;
+        if (parenthesisDepth < 0) return undefined;
+      }
+    }
+    canonical.push(token);
+  }
+  if (bracketDepth !== 0 || parenthesisDepth !== 0) return undefined;
+  return JSON.stringify(canonical);
+}
+
+function tokenizeCss(value: string): CssToken[] | undefined {
+  const tokens: CssToken[] = [];
+  for (let index = 0; index < value.length;) {
+    const character = value[index]!;
+    const next = value[index + 1];
+    if (isCssWhitespace(character)) {
+      while (index < value.length && isCssWhitespace(value[index]!)) index += 1;
+      tokens.push({ kind: "whitespace", value: " " });
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      const end = value.indexOf("*/", index + 2);
+      if (end < 0) return undefined;
+      index = end + 2;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      const result = consumeCssString(value, index, character);
+      if (!result) return undefined;
+      tokens.push({ kind: "string", value: result.value });
+      index = result.nextIndex;
+      continue;
+    }
+    if (character === "\\") {
+      const result = consumeCssEscape(value, index);
+      if (!result) return undefined;
+      tokens.push({ kind: "escape", value: result.value });
+      index = result.nextIndex;
+      continue;
+    }
+
+    const pair = `${character}${next ?? ""}`;
+    if (CSS_TWO_CHARACTER_TOKENS.has(pair)) {
+      tokens.push({ kind: "symbol", value: pair });
+      index += 2;
+      continue;
+    }
+    tokens.push({ kind: "symbol", value: character });
+    index += 1;
+  }
+  return tokens;
+}
+
+const CSS_TWO_CHARACTER_TOKENS = new Set([
+  "||",
+  "~=",
+  "|=",
+  "^=",
+  "$=",
+  "*=",
+  "<=",
+  ">=",
+]);
+
+function consumeCssString(
+  value: string,
+  start: number,
+  quote: "\"" | "'",
+): { readonly value: string; readonly nextIndex: number } | undefined {
+  let decoded = "";
+  for (let index = start + 1; index < value.length;) {
+    const character = value[index]!;
+    if (character === quote) {
+      return { value: decoded, nextIndex: index + 1 };
+    }
+    if (character === "\n" || character === "\r" || character === "\f") {
+      return undefined;
+    }
+    if (character === "\\") {
+      const result = consumeCssEscape(value, index);
+      if (!result) return undefined;
+      decoded += result.value;
+      index = result.nextIndex;
+      continue;
+    }
+    decoded += character;
+    index += 1;
+  }
+  return undefined;
+}
+
+function consumeCssEscape(
+  value: string,
+  start: number,
+): { readonly value: string; readonly nextIndex: number } | undefined {
+  let index = start + 1;
+  const character = value[index];
+  if (character === undefined) return undefined;
+  if (character === "\r") {
+    return {
+      value: "",
+      nextIndex: value[index + 1] === "\n" ? index + 2 : index + 1,
+    };
+  }
+  if (character === "\n" || character === "\f") {
+    return { value: "", nextIndex: index + 1 };
+  }
+  if (!/[0-9a-fA-F]/.test(character)) {
+    return { value: character, nextIndex: index + 1 };
+  }
+
+  const hexStart = index;
+  while (
+    index < value.length &&
+    index - hexStart < 6 &&
+    /[0-9a-fA-F]/.test(value[index]!)
+  ) {
+    index += 1;
+  }
+  const codePoint = Number.parseInt(value.slice(hexStart, index), 16);
+  if (index < value.length && isCssWhitespace(value[index]!)) {
+    if (value[index] === "\r" && value[index + 1] === "\n") index += 2;
+    else index += 1;
+  }
+  const decoded = codePoint === 0 ||
+      codePoint > 0x10ffff ||
+      (codePoint >= 0xd800 && codePoint <= 0xdfff)
+    ? "\uFFFD"
+    : String.fromCodePoint(codePoint);
+  return { value: decoded, nextIndex: index };
+}
+
+function isMeaningfulWhitespace(
+  previous: CssToken,
+  next: CssToken,
+  mode: CanonicalMode,
+  bracketDepth: number,
+): boolean {
+  if (mode === "selector") {
+    if (bracketDepth > 0) return false;
+    return !isSelectorSpacingBoundary(previous, "after") &&
+      !isSelectorSpacingBoundary(next, "before");
+  }
+  return !isMediaSpacingBoundary(previous, "after") &&
+    !isMediaSpacingBoundary(next, "before");
+}
+
+function isSelectorSpacingBoundary(
+  token: CssToken,
+  side: "before" | "after",
+): boolean {
+  if (token.kind !== "symbol") return false;
+  if ([",", ">", "+", "~", "||"].includes(token.value)) return true;
+  return side === "after" ? token.value === "(" : token.value === ")";
+}
+
+function isMediaSpacingBoundary(
+  token: CssToken,
+  side: "before" | "after",
+): boolean {
+  if (token.kind !== "symbol") return false;
+  if ([":", ",", "/", "<", "<=", ">", ">=", "="].includes(token.value)) {
+    return true;
+  }
+  return side === "after" ? token.value === "(" : token.value === ")";
+}
+
+function splitTopLevelSelectorList(value: string): string[] | undefined {
+  if (value.length === 0 || value.length > INSPECT_LIMITS.selectorLength) {
+    return undefined;
+  }
+  const branches: string[] = [];
+  let start = 0;
+  let bracketDepth = 0;
+  let parenthesisDepth = 0;
+  let quote: "\"" | "'" | undefined;
+  let escaped = false;
+  let inComment = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    const next = value[index + 1];
+    if (inComment) {
+      if (character === "*" && next === "/") {
+        inComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      inComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "[") bracketDepth += 1;
+    else if (character === "]") bracketDepth -= 1;
+    else if (character === "(") parenthesisDepth += 1;
+    else if (character === ")") parenthesisDepth -= 1;
+    if (bracketDepth < 0 || parenthesisDepth < 0) return undefined;
+    if (character === "," && bracketDepth === 0 && parenthesisDepth === 0) {
+      const branch = value.slice(start, index).trim();
+      if (branch.length === 0) return undefined;
+      branches.push(branch);
+      start = index + 1;
+    }
+  }
+  if (
+    escaped ||
+    quote !== undefined ||
+    inComment ||
+    bracketDepth !== 0 ||
+    parenthesisDepth !== 0
+  ) {
+    return undefined;
+  }
+  const branch = value.slice(start).trim();
+  if (branch.length === 0) return undefined;
+  branches.push(branch);
+  return branches;
+}
+
+function isCssWhitespace(value: string): boolean {
+  return value === " " ||
+    value === "\n" ||
+    value === "\r" ||
+    value === "\t" ||
+    value === "\f";
 }
 
 function smallestRule(

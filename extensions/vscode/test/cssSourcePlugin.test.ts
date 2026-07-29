@@ -4,8 +4,13 @@ import type {
   SourceDocument,
   SourceWorkspace,
 } from "@browser2ide/plugin-api";
-import type { CssRuleFact, InspectTarget } from "@browser2ide/protocol";
+import {
+  INSPECT_LIMITS,
+  type CssRuleFact,
+  type InspectTarget,
+} from "@browser2ide/protocol";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
+import { normalizeSelector } from "../src/sourcePlugins/stylesheetAst.js";
 
 describe("CssSourcePlugin", () => {
   it("returns every complete selected and parent CSS rule", async () => {
@@ -174,6 +179,145 @@ describe("CssSourcePlugin", () => {
     expect(snippets(text, result.matches)).toEqual([
       ".title { color: blue; }",
     ]);
+  });
+
+  it.each([
+    {
+      name: "implicit selector branches with nested commas and quoted commas",
+      sourceSelector:
+        ".title:is(.primary,.secondary), [data-label='a,b'], .escaped\\,comma",
+      cssomSelector:
+        '& .title:is(.primary, .secondary), & [data-label="a,b"], & .escaped\\,comma',
+    },
+    {
+      name: "relative combinator branches",
+      sourceSelector: "> .title, + .summary",
+      cssomSelector: "& > .title, & + .summary",
+    },
+    {
+      name: "mixed explicit and implicit branches",
+      sourceSelector: "&.active, .child",
+      cssomSelector: "&.active, & .child",
+    },
+  ])("maps nested $name per selector-list branch", async ({
+    sourceSelector,
+    cssomSelector,
+  }) => {
+    const text = [
+      ".card {",
+      `  ${sourceSelector} { color: red; }`,
+      "}",
+      ".panel {",
+      `  ${sourceSelector} { color: blue; }`,
+      "}",
+    ].join("\n");
+    const target = cssTarget("selected", cssomSelector, "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0.0";
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      `${sourceSelector} { color: red; }`,
+    ]);
+  });
+
+  it.each([
+    ["selector-list comma spacing", ".a,.b", ".a, .b", "red"],
+    ["combinator spacing", ".a>.b", ".a > .b", "blue"],
+    [
+      "attribute quote serialization",
+      "[data-kind='card']",
+      '[data-kind="card"]',
+      "green",
+    ],
+  ])("matches CSSOM %s at the exact rule path", async (
+    _name,
+    sourceSelector,
+    cssomSelector,
+    color,
+  ) => {
+    const text = `${sourceSelector} { color: ${color}; }`;
+    const target = cssTarget("selected", cssomSelector, "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0";
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([text]);
+  });
+
+  it("matches CSSOM media colon spacing at the exact nested path", async () => {
+    const text = [
+      "@media (min-width:40rem) {",
+      "  .card { color: red; }",
+      "}",
+      "@media (min-width: 60rem) {",
+      "  .card { color: blue; }",
+      "}",
+    ].join("\n");
+    const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0.0";
+    target.facts[0]!.metadata.media = ["(min-width: 40rem)"];
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".card { color: red; }",
+    ]);
+  });
+
+  it("rejects media identity work beyond the inspect value limit", async () => {
+    const media = "x".repeat(INSPECT_LIMITS.valueLength + 1);
+    const text = `@media ${media} { .card { color: red; } }`;
+    const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0.0";
+    target.facts[0]!.metadata.media = [media];
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(result.matches).toEqual([]);
+  });
+
+  it("does not count a leading charset declaration in CSSOM rule paths", async () => {
+    const text = [
+      '@charset "UTF-8";',
+      ".duplicate { color: red; }",
+      ".duplicate { color: blue; }",
+    ].join("\n");
+    const target = cssTarget("selected", ".duplicate", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.1";
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".duplicate { color: blue; }",
+    ]);
+  });
+
+  it.each([
+    ["a descendant combinator", ".a .b", ".a.b"],
+    [
+      "attribute string content",
+      '[data-label="a  b"]',
+      '[data-label="a b"]',
+    ],
+  ])("does not erase meaningful whitespace in %s", async (
+    _name,
+    sourceSelector,
+    browserSelector,
+  ) => {
+    const text = `${sourceSelector} { color: red; }`;
+    const target = cssTarget("selected", browserSelector, "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0";
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(result.matches).toEqual([]);
+  });
+
+  it("preserves meaningful string whitespace in normalized selector metadata", () => {
+    expect(normalizeSelector('  [data-label="a  b"]  ')).toBe(
+      '[data-label="a  b"]',
+    );
   });
 
   it("falls back safely when an untrusted rule path is malformed or excessive", async () => {
