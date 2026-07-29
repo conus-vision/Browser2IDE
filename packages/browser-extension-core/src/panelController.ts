@@ -128,6 +128,7 @@ export class PanelController {
   private changingIde = false;
   private busy = false;
   private operationGeneration = 0;
+  private pendingLinkGeneration: number | undefined;
   private initialized = false;
   private disposed = false;
 
@@ -170,14 +171,12 @@ export class PanelController {
       return;
     }
     this.operationGeneration += 1;
+    this.pendingLinkGeneration = undefined;
     this.busy = false;
     this.changingIde = false;
     this.inspectController.handleTransportDisconnect();
-    if (this.state !== "notLinked") {
-      this.hasLinkIntent = true;
+    if (this.hasLinkIntent) {
       this.state = "offline";
-    } else {
-      this.hasLinkIntent = false;
     }
     this.render();
   }
@@ -188,6 +187,8 @@ export class PanelController {
     }
     this.disposed = true;
     this.operationGeneration += 1;
+    this.pendingLinkGeneration = undefined;
+    this.view.writeLinkCode("");
     this.removeStateSubscription?.();
     this.removeStateSubscription = undefined;
     this.removeViewBindings?.();
@@ -239,11 +240,14 @@ export class PanelController {
     }
 
     const generation = ++this.operationGeneration;
+    this.pendingLinkGeneration = generation;
     await this.disableInspect();
     if (!this.isCurrent(generation)) {
       return;
     }
-    this.view.writeLinkCode(code);
+    if (this.pendingLinkGeneration === generation) {
+      this.view.writeLinkCode(code);
+    }
     this.changingIde = false;
     this.hasLinkIntent = true;
     this.busy = true;
@@ -265,6 +269,7 @@ export class PanelController {
       return;
     }
     const generation = ++this.operationGeneration;
+    this.pendingLinkGeneration = undefined;
     this.busy = false;
     await this.disableInspect();
     if (!this.isCurrent(generation)) {
@@ -281,6 +286,7 @@ export class PanelController {
       return;
     }
     const generation = ++this.operationGeneration;
+    this.pendingLinkGeneration = undefined;
     await this.disableInspect();
     if (!this.isCurrent(generation)) {
       return;
@@ -316,6 +322,9 @@ export class PanelController {
       if (!this.isCurrent(generation)) {
         return;
       }
+      if (command.type === "browser2ide.linkWindow") {
+        this.pendingLinkGeneration = undefined;
+      }
       this.busy = false;
       this.state = "error";
       this.errorText = "Browser2IDE background is unavailable";
@@ -324,6 +333,9 @@ export class PanelController {
     }
     if (!this.isCurrent(generation)) {
       return;
+    }
+    if (command.type === "browser2ide.linkWindow") {
+      this.pendingLinkGeneration = undefined;
     }
     this.busy = false;
     const result = parseCommandResult(response);
@@ -339,7 +351,9 @@ export class PanelController {
         this.hasLinkIntent = false;
       }
       this.applyCommandError(result.error);
-    } else if (command.type === "browser2ide.unlinkWindow") {
+    } else if (command.type === "browser2ide.linkWindow") {
+      this.view.writeLinkCode("");
+    } else {
       this.state = "notLinked";
       this.hasLinkIntent = false;
       this.changingIde = false;
@@ -365,6 +379,10 @@ export class PanelController {
       this.hasLinkIntent = true;
     }
     if (nextState === "connected") {
+      if (this.pendingLinkGeneration === this.operationGeneration) {
+        this.pendingLinkGeneration = undefined;
+        this.view.writeLinkCode("");
+      }
       this.errorText = undefined;
     } else {
       await this.disableInspect();

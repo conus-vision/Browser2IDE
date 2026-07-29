@@ -74,7 +74,7 @@ describe("Firefox panel adapter", () => {
     await flushAsync();
 
     expect(harness.clipboardReads).toBe(1);
-    expect(dom.element("link-code").value).toBe("4873507");
+    expect(dom.element("link-code").value).toBe("");
     expect(harness.messages).toContainEqual({
       type: "browser2ide.linkWindow",
       channel: "test-channel",

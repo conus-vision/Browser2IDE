@@ -18,7 +18,7 @@ describe("PanelController", () => {
     await harness.view.actions.onPaste();
 
     expect(harness.clipboardReads).toBe(1);
-    expect(harness.view.linkCode).toBe("4873507");
+    expect(harness.view.linkCode).toBe("");
     expect(harness.sent).toEqual([
       {
         type: "browser2ide.linkWindow",
@@ -27,6 +27,50 @@ describe("PanelController", () => {
       },
     ]);
     expect(harness.view.current.statusLabel).toBe("Linking");
+  });
+
+  it("clears the accepted link code only after the command succeeds", async () => {
+    const response = deferred<unknown>();
+    const harness = createHarness({ commandResponse: () => response.promise });
+    await harness.controller.initialize();
+    harness.view.editLinkCode("48735 07");
+
+    const linking = harness.view.actions.onLink();
+    await Promise.resolve();
+    expect(harness.view.linkCode).not.toBe("");
+
+    response.resolve({ ok: true });
+    await linking;
+
+    expect(harness.view.linkCode).toBe("");
+  });
+
+  it("clears the link code when connected arrives before command acceptance", async () => {
+    const response = deferred<unknown>();
+    const harness = createHarness({ commandResponse: () => response.promise });
+    await harness.controller.initialize();
+    harness.view.editLinkCode("4873507");
+
+    const linking = harness.view.actions.onLink();
+    await Promise.resolve();
+    await harness.emitState("connected");
+
+    expect(harness.view.linkCode).toBe("");
+    response.resolve({ ok: true });
+    await linking;
+    expect(harness.view.linkCode).toBe("");
+  });
+
+  it("keeps the accepted code cleared when connected arrives after success", async () => {
+    const harness = createHarness();
+    await harness.controller.initialize();
+    harness.view.editLinkCode("4873507");
+
+    await harness.view.actions.onLink();
+    expect(harness.view.linkCode).toBe("");
+
+    await harness.emitState("connected");
+    expect(harness.view.linkCode).toBe("");
   });
 
   it("keeps manual entry enabled when clipboard access is denied", async () => {
@@ -68,6 +112,7 @@ describe("PanelController", () => {
       "Enter a valid seven-digit code",
     );
     expect(harness.view.current.linkInputDisabled).toBe(false);
+    expect(harness.view.linkCode).toBe("48735 0x");
   });
 
   it.each<readonly [PanelOperationalState, string, boolean]>([
@@ -134,8 +179,79 @@ describe("PanelController", () => {
 
     expect(harness.inspect.disconnectCalls).toBe(1);
     expect(harness.view.current.state).toBe("offline");
+    expect(harness.view.current.showConnectedControls).toBe(true);
     expect(harness.view.current.inspectChecked).toBe(false);
   });
+
+  it.each([
+    {
+      name: "invalid manual code",
+      arrange: async (harness: ReturnType<typeof createHarness>) => {
+        harness.view.editLinkCode("invalid");
+        await harness.view.actions.onLink();
+      },
+      state: "error",
+      error: "Enter a valid seven-digit code",
+    },
+    {
+      name: "denied clipboard",
+      arrange: async (harness: ReturnType<typeof createHarness>) => {
+        await harness.view.actions.onPaste();
+      },
+      state: "error",
+      error: "Paste the seven-digit code manually",
+    },
+  ])(
+    "keeps an unlinked $name unlinked after transport disconnect",
+    async ({ arrange, state, error }) => {
+      const harness = createHarness({
+        clipboardError: new Error("permission denied"),
+      });
+      await harness.controller.initialize();
+      await arrange(harness);
+
+      await harness.controller.handleTransportDisconnect();
+
+      expect(harness.view.current.state).toBe(state);
+      expect(harness.view.current.errorText).toBe(error);
+      expect(harness.view.current.showConnectedControls).toBe(false);
+    },
+  );
+
+  it.each([
+    ["rateLimited", "Rate limited"],
+    ["error", "Error"],
+  ] as const)(
+    "keeps an unlinked %s command failure unlinked after disconnect",
+    async (error, expectedLabel) => {
+      const harness = createHarness({
+        commandResponse: async () => ({ ok: false, error }),
+      });
+      await harness.controller.initialize();
+      harness.view.editLinkCode("4873507");
+      await harness.view.actions.onLink();
+
+      await harness.controller.handleTransportDisconnect();
+
+      expect(harness.view.current.statusLabel).toBe(expectedLabel);
+      expect(harness.view.current.showConnectedControls).toBe(false);
+      expect(harness.view.linkCode).toBe("4873507");
+    },
+  );
+
+  it.each(["linking", "connected", "reconnecting"] as const)(
+    "keeps real %s link intent as offline after disconnect",
+    async (state) => {
+      const harness = createHarness();
+      await harness.controller.initialize();
+      await harness.emitState(state);
+
+      await harness.controller.handleTransportDisconnect();
+
+      expect(harness.view.current.state).toBe("offline");
+      expect(harness.view.current.showConnectedControls).toBe(true);
+    },
+  );
 
   it("renders inspect failures without leaving the toggle enabled", async () => {
     const harness = createHarness({
@@ -183,6 +299,7 @@ describe("PanelController", () => {
     expect(harness.view.current.errorText).toBe(
       "Too many attempts. Try again in one minute.",
     );
+    expect(harness.view.linkCode).toBe("4873507");
   });
 
   it("disposes the view and state subscription once", async () => {
