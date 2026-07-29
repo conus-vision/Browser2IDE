@@ -20,6 +20,7 @@ export class PanelInspectTransport {
   public constructor(
     private readonly createPort: () => PanelInspectPort,
     private readonly onUnexpectedDisconnect: () => void = () => {},
+    private readonly onUnhandledMessage: (message: unknown) => void = () => {},
   ) {}
 
   public connect(): void {
@@ -102,6 +103,11 @@ export class PanelInspectTransport {
     }
     const result = parseInspectPortResult(message);
     if (!result) {
+      try {
+        this.onUnhandledMessage(message);
+      } catch {
+        // Panel presentation cannot break inspect request ownership.
+      }
       return;
     }
     const pending = this.pending.get(result.requestId);

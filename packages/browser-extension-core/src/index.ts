@@ -113,6 +113,19 @@ export type {
   PanelErrorSummary,
   PanelLinkDetails,
 } from "./panelDiagnostics.js";
+export {
+  createPanelIcons,
+  PanelController,
+} from "./panelController.js";
+export type {
+  PanelActions,
+  PanelCommand,
+  PanelControllerOptions,
+  PanelInspectModeController,
+  PanelOperationalState,
+  PanelView,
+  PanelViewModel,
+} from "./panelController.js";
 export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
 export { WindowConnectionCoordinator } from "./windowConnectionCoordinator.js";

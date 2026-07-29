@@ -19,11 +19,11 @@ await build({
   sourcemap: true,
 });
 
-for (const asset of [
-  "devtools.html",
-  "panel.html",
-  "panel.css",
-  "browser2ide.svg",
-]) {
-  await copyFile(`src/${asset}`, `${outdir}/${asset}`);
+await copyFile("src/devtools.html", `${outdir}/devtools.html`);
+
+for (const asset of ["panel.html", "panel.css", "browser2ide.svg"]) {
+  await copyFile(
+    `../../packages/browser-extension-core/assets/${asset}`,
+    `${outdir}/${asset}`,
+  );
 }

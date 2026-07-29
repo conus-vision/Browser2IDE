@@ -1,523 +1,137 @@
 import browser from "webextension-polyfill";
 import {
-  BrowserBridgeClient,
-  BrowserProtocolError,
-  PanelDiagnostics,
+  PanelController,
   PanelInspectController,
   PanelInspectTransport,
   createDevtoolsPanelPortName,
-  parseLinkCode,
-  type BrowserConnectionState,
-  type BrowserCredentials,
-  type ParsedLinkCode,
+  createPanelIcons,
+  type PanelActions,
+  type PanelView,
+  type PanelViewModel,
 } from "@browser2ide/browser-extension-core";
-import {
-  loadPanelSettings,
-  resetPanelSettings,
-  savePanelSettings,
-  type PanelSettings,
-  type PanelStorage,
-} from "./panelState.js";
-import {
-  PanelLifecycleCoordinator,
-  type PanelLifecycleContext,
-} from "./panelLifecycle.js";
 
-const linkForm = required<HTMLFormElement>("link-form");
-const linkCodeInput = required<HTMLInputElement>("link-code");
-const linkButton = required<HTMLButtonElement>("link-button");
-const unlinkButton = required<HTMLButtonElement>("unlink-button");
-const inspectToggle = required<HTMLInputElement>("inspect-mode");
-const connectionStatus = required<HTMLOutputElement>("connection-status");
-const selectedSummary = required<HTMLOutputElement>("selected-summary");
-const linkStatus = required<HTMLOutputElement>("link-status");
-const linkedEndpoint = required<HTMLOutputElement>("linked-endpoint");
-const linkedSession = required<HTMLOutputElement>("linked-session");
-const bridgeInstance = required<HTMLOutputElement>("bridge-instance");
-const linkDetailElements = document.querySelectorAll<HTMLElement>(
-  "[data-link-detail]",
-);
-const lastMessage = required<HTMLOutputElement>("last-message");
-const lastError = required<HTMLOutputElement>("last-error");
-const matchedFacts = required<HTMLOutputElement>("matched-facts");
-const inaccessibleStylesheets = required<HTMLOutputElement>(
-  "inaccessible-stylesheets",
-);
 const channel = new URLSearchParams(location.search).get("channel") ?? "";
-const sourceId = `firefox-${globalThis.crypto.randomUUID()}`;
-const storage: PanelStorage = {
-  get: async (keys) => browser.storage.local.get(keys),
-  set: async (values) => browser.storage.local.set(values),
-  remove: async (keys) => browser.storage.local.remove(keys),
-};
-
-type ConnectionIntent = "none" | "link" | "reconnect";
-
-let settings: PanelSettings | undefined;
-let client: BrowserBridgeClient | undefined;
-let connected = false;
-let connectionIntent: ConnectionIntent = "none";
-const diagnostics = new PanelDiagnostics();
-const lifecycle = new PanelLifecycleCoordinator(updateControls);
+const stateListeners = new Set<
+  (message: unknown) => void | Promise<void>
+>();
+let disposed = false;
+let recovery: Promise<void> | undefined;
+let controller: PanelController;
 let inspectTransport: PanelInspectTransport;
-const inspectController = new PanelInspectController((message) =>
-  inspectTransport.send(message),
-);
-inspectTransport = new PanelInspectTransport(
-  () =>
-    browser.runtime.connect({
-      name: createDevtoolsPanelPortName(channel),
-    }),
-  () => {
-    inspectController.handleTransportDisconnect();
-    inspectToggle.checked = false;
-    updateControls();
-    void announcePanelReady()
-      .then(() => {
-        if (!lifecycle.isDisposed) {
-          inspectTransport.connect();
-        }
-      })
-      .catch(showError);
-  },
-);
-try {
-  inspectTransport.connect();
-} catch (error) {
-  showError(error);
-}
 
-linkForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  try {
-    const parsed = parseLinkCode(linkCodeInput.value);
-    void lifecycle
-      .start((context) => linkToBridge(parsed, context))
-      .catch(showError);
-  } catch (error) {
-    showError(error);
+function ensurePanelPort(): Promise<void> {
+  if (disposed) {
+    return Promise.resolve();
   }
-});
-
-linkCodeInput.addEventListener("input", updateControls);
-
-unlinkButton.addEventListener("click", () => {
-  void lifecycle.start(unlinkFromBridge).catch(showError);
-});
-
-inspectToggle.addEventListener("change", () => {
-  void setInspectMode(inspectToggle.checked).catch((error) => {
-    inspectToggle.checked = false;
-    showError(error);
-  });
-});
-
-window.addEventListener("unload", dispose);
-
-void lifecycle.start(initialize).catch(showError);
-
-async function initialize(context: PanelLifecycleContext): Promise<void> {
-  await announcePanelReady();
-  if (!context.isCurrent()) {
-    return;
+  if (recovery) {
+    return recovery;
   }
 
-  const loadedSettings = await loadPanelSettings(storage);
-  if (!context.isCurrent()) {
-    return;
-  }
-  settings = loadedSettings;
-  if (loadedSettings) {
-    diagnostics.setLink(toLinkDetails(loadedSettings));
-  }
-  renderDiagnostics();
-  updateControls();
-
-  if (loadedSettings === undefined) {
-    renderConnectionStatus();
-    return;
-  }
-
-  connectionIntent = "reconnect";
-  const createdClient = createClient(
-    loadedSettings.bridgeUrl,
-    context.generation,
-  );
-  client = createdClient;
-  createdClient.connect(loadedSettings.credentials);
-}
-
-async function linkToBridge(
-  parsed: ParsedLinkCode,
-  context: PanelLifecycleContext,
-): Promise<void> {
-  const disableError = await tryDisableInspectMode();
-  if (!context.isCurrent()) {
-    return;
-  }
-
-  const previousClient = client;
-  client = undefined;
-  previousClient?.unlink();
-  connected = false;
-  connectionIntent = "none";
-  settings = undefined;
-  diagnostics.reset();
-  selectedSummary.value = "None";
-  renderDiagnostics();
-  updateControls();
-  await resetPanelSettings(storage);
-  if (!context.isCurrent()) {
-    return;
-  }
-
-  if (disableError) {
-    throw disableError;
-  }
-
-  connectionIntent = "link";
-  const createdClient = createClient(parsed.url, context.generation);
-  client = createdClient;
-  createdClient.link(parsed.pin);
-  updateControls();
-}
-
-async function unlinkFromBridge(
-  context: PanelLifecycleContext,
-): Promise<void> {
-  const disableError = await tryDisableInspectMode();
-  if (!context.isCurrent()) {
-    return;
-  }
-
-  const previousClient = client;
-  client = undefined;
-  previousClient?.unlink();
-  connected = false;
-  connectionIntent = "none";
-  settings = undefined;
-  diagnostics.reset();
-  selectedSummary.value = "None";
-  linkCodeInput.value = "";
-  renderDiagnostics();
-  updateControls();
-  await resetPanelSettings(storage);
-  if (!context.isCurrent()) {
-    return;
-  }
-
-  if (disableError) {
-    throw disableError;
-  }
-}
-
-function createClient(
-  url: string,
-  generation: number,
-): BrowserBridgeClient {
-  let createdClient: BrowserBridgeClient;
-  createdClient = new BrowserBridgeClient({
-    url,
-    sourceId,
-    onCredentials: (credentials) => {
-      if (
-        client !== createdClient ||
-        !lifecycle.isCurrent(generation)
-      ) {
-        return;
+  const pending = browser.runtime
+    .sendMessage({
+      type: "browser2ide.panelReady",
+      channel,
+    })
+    .then(() => {
+      if (!disposed) {
+        inspectTransport.connect();
       }
-      void lifecycle
-        .continue(generation, (context) =>
-          storeCredentials(
-            credentials,
-            url,
-            createdClient,
-            context,
-          ),
-        )
-        .catch(showError);
-    },
-    onStateChanged: (state) => {
-      if (
-        client === createdClient &&
-        lifecycle.isCurrent(generation)
-      ) {
-        updateConnectionState(state, createdClient, generation);
-      }
-    },
-    onError: (error) => {
-      if (
-        client === createdClient &&
-        lifecycle.isCurrent(generation)
-      ) {
-        handleClientError(error, createdClient, generation);
-      }
-    },
+    })
+    .catch(() => controller.handleTransportDisconnect());
+  let tracked: Promise<void>;
+  tracked = pending.finally(() => {
+    if (recovery === tracked) {
+      recovery = undefined;
+    }
   });
-  return createdClient;
-}
-
-async function storeCredentials(
-  credentials: BrowserCredentials,
-  bridgeUrl: string,
-  owner: BrowserBridgeClient,
-  context: PanelLifecycleContext,
-): Promise<void> {
-  if (!isCurrentOwner(context, owner)) {
-    return;
-  }
-
-  const nextSettings: PanelSettings = { bridgeUrl, credentials };
-  await savePanelSettings(storage, nextSettings);
-  if (!isCurrentOwner(context, owner)) {
-    await resetPanelSettings(storage);
-    return;
-  }
-
-  settings = nextSettings;
-  connectionIntent = "reconnect";
-  linkCodeInput.value = "";
-  diagnostics.setLink(toLinkDetails(nextSettings));
-  renderDiagnostics();
-  updateControls();
-}
-
-function handleClientError(
-  error: Error,
-  owner: BrowserBridgeClient,
-  generation: number,
-): void {
-  if (
-    error instanceof BrowserProtocolError &&
-    (error.code === "auth.instanceChanged" ||
-      error.code === "auth.tokenRejected")
-  ) {
-    void lifecycle
-      .continue(generation, (context) =>
-        invalidateSavedLink(error, owner, context),
-      )
-      .catch(showError);
-    return;
-  }
-
-  if (
-    error instanceof BrowserProtocolError &&
-    error.code.startsWith("link.")
-  ) {
-    void lifecycle
-      .continue(generation, async (context) => {
-        if (!isCurrentOwner(context, owner)) {
-          return;
-        }
-        client = undefined;
-        owner.disconnect();
-        connected = false;
-        connectionIntent = "none";
-        showError(error);
-        updateControls();
-      })
-      .catch(showError);
-    return;
-  }
-  showError(error);
-  updateControls();
-}
-
-async function invalidateSavedLink(
-  error: BrowserProtocolError,
-  owner: BrowserBridgeClient,
-  context: PanelLifecycleContext,
-): Promise<void> {
-  if (!isCurrentOwner(context, owner)) {
-    return;
-  }
-
-  const disableError = await tryDisableInspectMode();
-  if (!isCurrentOwner(context, owner)) {
-    return;
-  }
-
-  client = undefined;
-  owner.disconnect();
-  connected = false;
-  connectionIntent = "none";
-  settings = undefined;
-  diagnostics.reset();
-  diagnostics.recordError({ code: error.code, message: error.message });
-  selectedSummary.value = "None";
-  renderDiagnostics();
-  updateControls();
-  await resetPanelSettings(storage);
-  if (!context.isCurrent()) {
-    return;
-  }
-
-  if (disableError) {
-    throw disableError;
-  }
-}
-
-function updateConnectionState(
-  state: BrowserConnectionState,
-  owner: BrowserBridgeClient,
-  generation: number,
-): void {
-  diagnostics.setConnectionState(state);
-  connected = state === "connected";
-  if (!connected && inspectController.enabled) {
-    void lifecycle
-      .continue(generation, async (context) => {
-        if (!isCurrentOwner(context, owner)) {
-          return;
-        }
-        await disableInspectMode();
-        if (!isCurrentOwner(context, owner)) {
-          return;
-        }
-        updateControls();
-      })
-      .catch(showError);
-  }
-  renderDiagnostics();
-  updateControls();
-}
-
-function updateControls(): void {
-  const hasLinkCode = linkCodeInput.value.replace(/[\s-]/g, "").length > 0;
-  const blocked = lifecycle.busy || lifecycle.isDisposed;
-  linkButton.disabled = blocked || !hasLinkCode;
-  unlinkButton.disabled =
-    blocked || (client === undefined && settings === undefined);
-  inspectToggle.disabled =
-    blocked || !connected;
-  inspectToggle.checked = inspectController.enabled;
-}
-
-async function setInspectMode(enabled: boolean): Promise<void> {
-  await inspectController.setEnabled(enabled);
-  inspectToggle.checked = inspectController.enabled;
-}
-
-async function disableInspectMode(): Promise<void> {
-  await inspectController.disable();
-  inspectToggle.checked = false;
-}
-
-async function tryDisableInspectMode(): Promise<unknown | undefined> {
-  try {
-    await disableInspectMode();
-    return undefined;
-  } catch (error) {
-    inspectToggle.checked = false;
-    return error;
-  }
-}
-
-function announcePanelReady(): Promise<unknown> {
-  return browser.runtime.sendMessage({
-    type: "browser2ide.panelReady",
-    channel,
-  });
-}
-
-function showError(error: unknown): void {
-  diagnostics.recordError({
-    ...(error instanceof BrowserProtocolError ? { code: error.code } : {}),
-    message: error instanceof Error ? error.message : "Unexpected panel error",
-  });
-  if (diagnostics.snapshot().connectionState === "disconnected") {
-    diagnostics.setConnectionState("error");
-  }
-  renderDiagnostics();
-}
-
-function renderDiagnostics(): void {
-  const snapshot = diagnostics.snapshot();
-  const presentation = connectionPresentation(
-    snapshot.connectionState,
-    snapshot.lastError?.code,
-  );
-  connectionStatus.value = presentation.label;
-  connectionStatus.dataset.state = presentation.state;
-  linkStatus.value = presentation.label;
-
-  const hasLinkDetails = snapshot.link !== undefined;
-  for (const element of linkDetailElements) {
-    element.hidden = !hasLinkDetails;
-  }
-  linkedEndpoint.value = snapshot.link?.url ?? "None";
-  linkedSession.value = snapshot.link?.sessionId ?? "None";
-  bridgeInstance.value = snapshot.link?.bridgeInstanceId ?? "None";
-  lastMessage.value = snapshot.lastMessageSentAt?.toISOString() ?? "None";
-  lastError.value = snapshot.lastError
-    ? `${snapshot.lastError.code ? `${snapshot.lastError.code}: ` : ""}${snapshot.lastError.message}`
-    : "None";
-  matchedFacts.value = String(snapshot.matchedCssFactCount);
-  inaccessibleStylesheets.value = String(
-    snapshot.inaccessibleStylesheetCount,
-  );
-}
-
-function renderConnectionStatus(): void {
-  renderDiagnostics();
-}
-
-function connectionPresentation(
-  state: BrowserConnectionState,
-  errorCode: string | undefined,
-): { readonly label: string; readonly state: string } {
-  if (state === "error" && errorCode === "link.rateLimited") {
-    return { label: "Rate-limited", state: "rate-limited" };
-  }
-  if (state === "connected") {
-    return { label: "Linked", state: "connected" };
-  }
-  if (state === "linking") {
-    return { label: "Linking", state: "linking" };
-  }
-  if (state === "reconnecting") {
-    return { label: "Reconnecting", state: "reconnecting" };
-  }
-  if (state === "connecting") {
-    return connectionIntent === "link"
-      ? { label: "Linking", state: "linking" }
-      : { label: "Reconnecting", state: "reconnecting" };
-  }
-  if (state === "error") {
-    return { label: "Error", state: "error" };
-  }
-  return settings
-    ? { label: "Offline", state: "offline" }
-    : { label: "Not linked", state: "not-linked" };
-}
-
-function toLinkDetails(value: PanelSettings) {
-  return {
-    url: value.bridgeUrl,
-    sessionId: value.credentials.sessionId,
-    bridgeInstanceId: value.credentials.bridgeInstanceId,
-  };
-}
-
-function isCurrentOwner(
-  context: PanelLifecycleContext,
-  owner: BrowserBridgeClient,
-): boolean {
-  return context.isCurrent() && client === owner;
+  recovery = tracked;
+  return tracked;
 }
 
 function dispose(): void {
-  if (lifecycle.isDisposed) {
+  if (disposed) {
     return;
   }
-  lifecycle.dispose();
-  void inspectController.disable().catch(() => undefined);
+  disposed = true;
+  stateListeners.clear();
+  void controller.dispose();
   inspectTransport.dispose();
-  inspectToggle.checked = false;
-  const activeClient = client;
-  client = undefined;
-  activeClient?.disconnect();
-  connected = false;
+  window.removeEventListener("unload", dispose);
+}
+
+class FirefoxPanelView implements PanelView {
+  private readonly linkControls = required<HTMLElement>("link-controls");
+  private readonly linkForm = required<HTMLFormElement>("link-form");
+  private readonly linkCode = required<HTMLInputElement>("link-code");
+  private readonly pasteButton = required<HTMLButtonElement>("paste-button");
+  private readonly linkButton = required<HTMLButtonElement>("link-button");
+  private readonly connectedControls = required<HTMLElement>(
+    "connected-controls",
+  );
+  private readonly changeButton = required<HTMLButtonElement>("change-button");
+  private readonly unlinkButton = required<HTMLButtonElement>("unlink-button");
+  private readonly inspectToggle = required<HTMLInputElement>("inspect-mode");
+  private readonly connectionStatus = required<HTMLOutputElement>(
+    "connection-status",
+  );
+  private readonly panelError = required<HTMLOutputElement>("panel-error");
+
+  public bind(actions: PanelActions): () => void {
+    const submit = (event: Event): void => {
+      event.preventDefault();
+      run(actions.onLink);
+    };
+    const paste = (): void => run(actions.onPaste);
+    const change = (): void => run(actions.onChangeIde);
+    const unlink = (): void => run(actions.onUnlink);
+    const inspect = (): void =>
+      run(() => actions.onInspectChanged(this.inspectToggle.checked));
+    const input = (): void => actions.onLinkCodeChanged(this.linkCode.value);
+
+    this.linkForm.addEventListener("submit", submit);
+    this.pasteButton.addEventListener("click", paste);
+    this.changeButton.addEventListener("click", change);
+    this.unlinkButton.addEventListener("click", unlink);
+    this.inspectToggle.addEventListener("change", inspect);
+    this.linkCode.addEventListener("input", input);
+
+    return () => {
+      this.linkForm.removeEventListener("submit", submit);
+      this.pasteButton.removeEventListener("click", paste);
+      this.changeButton.removeEventListener("click", change);
+      this.unlinkButton.removeEventListener("click", unlink);
+      this.inspectToggle.removeEventListener("change", inspect);
+      this.linkCode.removeEventListener("input", input);
+    };
+  }
+
+  public readLinkCode(): string {
+    return this.linkCode.value;
+  }
+
+  public writeLinkCode(value: string): void {
+    this.linkCode.value = value;
+  }
+
+  public render(model: PanelViewModel): void {
+    this.connectionStatus.value = model.statusLabel;
+    this.connectionStatus.dataset.state = model.state;
+    this.linkControls.hidden = !model.showLinkControls;
+    this.connectedControls.hidden = !model.showConnectedControls;
+    this.linkCode.disabled = model.linkInputDisabled;
+    this.pasteButton.disabled = model.pasteButtonDisabled;
+    this.linkButton.disabled = model.linkButtonDisabled;
+    this.changeButton.disabled = model.changeButtonDisabled;
+    this.unlinkButton.disabled = model.unlinkButtonDisabled;
+    this.inspectToggle.disabled = model.inspectDisabled;
+    this.inspectToggle.checked = model.inspectChecked;
+    this.panelError.value = model.errorText ?? "";
+    this.panelError.hidden = model.errorText === undefined;
+  }
+}
+
+function run(action: () => void | Promise<void>): void {
+  void Promise.resolve(action()).catch(() => undefined);
 }
 
 function required<T extends HTMLElement>(id: string): T {
@@ -527,3 +141,42 @@ function required<T extends HTMLElement>(id: string): T {
   }
   return element as T;
 }
+
+function startPanel(): void {
+  const view = new FirefoxPanelView();
+  inspectTransport = new PanelInspectTransport(
+    () =>
+      browser.runtime.connect({
+        name: createDevtoolsPanelPortName(channel),
+      }),
+    () => {
+      void controller.handleTransportDisconnect();
+      void ensurePanelPort();
+    },
+    (message) => {
+      for (const listener of [...stateListeners]) {
+        void Promise.resolve(listener(message)).catch(() => undefined);
+      }
+    },
+  );
+  const inspectController = new PanelInspectController((message) =>
+    inspectTransport.send(message),
+  );
+  controller = new PanelController({
+    channel,
+    view,
+    inspectController,
+    readClipboard: () => navigator.clipboard.readText(),
+    sendCommand: (message) => browser.runtime.sendMessage(message),
+    subscribeWindowState: (listener) => {
+      stateListeners.add(listener);
+      return () => stateListeners.delete(listener);
+    },
+  });
+
+  createPanelIcons();
+  void controller.initialize().then(ensurePanelPort);
+  window.addEventListener("unload", dispose);
+}
+
+startPanel();

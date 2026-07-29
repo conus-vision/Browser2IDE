@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { InspectPayload } from "../src/bridgeClient.js";
+import {
+  BrowserProtocolError,
+  type InspectPayload,
+} from "../src/bridgeClient.js";
 import {
   BackgroundInspectCoordinator,
 } from "../src/backgroundInspectSession.js";
@@ -472,6 +475,306 @@ describe("BackgroundRouter", () => {
     expect(harness.coordinator.published).toEqual([]);
   });
 
+  it("links and unlinks only the window derived from the trusted panel binding", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "browser2ide.linkWindow",
+          channel: "channel-1",
+          code: "4873507",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "browser2ide.unlinkWindow",
+          channel: "channel-1",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    expect(harness.coordinator.links).toEqual([
+      {
+        windowId: 10,
+        code: "4873507",
+        source: {
+          role: "browser",
+          id: "source-17",
+          metadata: {},
+        },
+      },
+    ]);
+    expect(harness.coordinator.unlinks).toEqual([10]);
+  });
+
+  it("rejects spoofed panel URLs, channels, IDs, and extra command keys", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    const link = {
+      type: "browser2ide.linkWindow",
+      channel: "channel-1",
+      code: "4873507",
+    } as const;
+
+    expect(
+      await harness.router.routeMessage(link, {
+        url: `${PANEL_URL}?channel=channel-1#spoof`,
+      }),
+    ).toBeUndefined();
+    expect(
+      await harness.router.routeMessage(
+        { ...link, channel: "channel-2" },
+        panelSender("channel-2"),
+      ),
+    ).toBeUndefined();
+    expect(
+      await harness.router.routeMessage(
+        { ...link, windowId: 99 },
+        panelSender("channel-1"),
+      ),
+    ).toBeUndefined();
+    expect(
+      await harness.router.routeMessage(
+        {
+          type: "browser2ide.unlinkWindow",
+          channel: "channel-1",
+          tabId: 99,
+        },
+        panelSender("channel-1"),
+      ),
+    ).toBeUndefined();
+    expect(harness.coordinator.links).toEqual([]);
+    expect(harness.coordinator.unlinks).toEqual([]);
+  });
+
+  it("returns sanitized failures for invalid codes and stale panel bindings", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "browser2ide.linkWindow",
+          channel: "channel-1",
+          code: "0999907",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: false, error: "invalidCode" });
+
+    port.disconnect();
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "browser2ide.unlinkWindow",
+          channel: "channel-1",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: false, error: "stalePanel" });
+    expect(harness.coordinator.links).toEqual([]);
+    expect(harness.coordinator.unlinks).toEqual([]);
+  });
+
+  it("rejects malformed or oversized link codes before coordinator dispatch", async () => {
+    const harness = createHarness();
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+
+    for (const code of ["48735 07", "48735070", "48735x7", ""] as const) {
+      expect(
+        await harness.router.routeMessage(
+          {
+            type: "browser2ide.linkWindow",
+            channel: "channel-1",
+            code,
+          },
+          panelSender("channel-1"),
+        ),
+      ).toBeUndefined();
+    }
+    expect(harness.coordinator.links).toEqual([]);
+  });
+
+  it("allows only one reentrant command per active panel channel", async () => {
+    const linkResult = deferred<void>();
+    const harness = createHarness({
+      linkWindow: async () => linkResult.promise,
+    });
+    await harness.registerAndConnect("channel-1", 17, "source-17");
+    const message = {
+      type: "browser2ide.linkWindow",
+      channel: "channel-1",
+      code: "4873507",
+    } as const;
+
+    const first = harness.router.routeMessage(
+      message,
+      panelSender("channel-1"),
+    );
+    await Promise.resolve();
+    await expect(
+      harness.router.routeMessage(message, panelSender("channel-1")),
+    ).resolves.toEqual({ ok: false, error: "busy" });
+    linkResult.resolve();
+    await expect(first).resolves.toEqual({ ok: true });
+
+    expect(harness.coordinator.links).toHaveLength(1);
+  });
+
+  it("maps coordinator rate limits and errors without exposing their messages", async () => {
+    const rateLimited = createHarness({
+      linkWindow: async () => {
+        throw new BrowserProtocolError(
+          "link.rateLimited",
+          "secret server detail",
+        );
+      },
+    });
+    await rateLimited.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await expect(
+      rateLimited.router.routeMessage(
+        {
+          type: "browser2ide.linkWindow",
+          channel: "channel-1",
+          code: "4873507",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: false, error: "rateLimited" });
+    expect(rateLimited.reportedErrors).toEqual([]);
+
+    const failed = createHarness({
+      unlinkWindow: async () => {
+        throw new Error("secret storage detail");
+      },
+    });
+    await failed.registerAndConnect("channel-1", 17, "source-17");
+    await expect(
+      failed.router.routeMessage(
+        {
+          type: "browser2ide.unlinkWindow",
+          channel: "channel-1",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: false, error: "error" });
+    expect(failed.reportedErrors).toHaveLength(1);
+    expect(failed.reportedErrors[0]).toBeInstanceOf(Error);
+    expect((failed.reportedErrors[0] as Error).message).toBe(
+      "Browser2IDE panel command failed",
+    );
+    expect((failed.reportedErrors[0] as Error).message).not.toContain(
+      "secret storage detail",
+    );
+  });
+
+  it("does not report success after an async command loses its panel binding", async () => {
+    const linkResult = deferred<void>();
+    const harness = createHarness({
+      linkWindow: async () => linkResult.promise,
+    });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    const result = harness.router.routeMessage(
+      {
+        type: "browser2ide.linkWindow",
+        channel: "channel-1",
+        code: "4873507",
+      },
+      panelSender("channel-1"),
+    );
+    await Promise.resolve();
+
+    port.disconnect();
+    linkResult.resolve();
+
+    await expect(result).resolves.toEqual({ ok: false, error: "stalePanel" });
+  });
+
+  it("does not report an async command error to a stale panel binding", async () => {
+    const linkResult = deferred<void>();
+    const harness = createHarness({
+      linkWindow: async () => linkResult.promise,
+    });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    const result = harness.router.routeMessage(
+      {
+        type: "browser2ide.linkWindow",
+        channel: "channel-1",
+        code: "4873507",
+      },
+      panelSender("channel-1"),
+    );
+    await Promise.resolve();
+
+    port.disconnect();
+    linkResult.reject(new Error("secret stale failure"));
+
+    await expect(result).resolves.toEqual({ ok: false, error: "stalePanel" });
+  });
+
+  it("does not let a stale command block a recovered port on the same channel", async () => {
+    const linkResult = deferred<void>();
+    const harness = createHarness({
+      linkWindow: async () => linkResult.promise,
+    });
+    const firstPort = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    const staleLink = harness.router.routeMessage(
+      {
+        type: "browser2ide.linkWindow",
+        channel: "channel-1",
+        code: "4873507",
+      },
+      panelSender("channel-1"),
+    );
+    await Promise.resolve();
+    firstPort.disconnect();
+
+    const recoveredPort = harness.panelPort("channel-1");
+    harness.router.connectPort(recoveredPort);
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "browser2ide.unlinkWindow",
+          channel: "channel-1",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    linkResult.resolve();
+    await expect(staleLink).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    expect(harness.coordinator.unlinks).toEqual([10]);
+  });
+
   it("disposes subscriptions, ports, inspect ownership, and panel registration once", async () => {
     const removedListeners: string[] = [];
     const harness = createHarness({
@@ -533,13 +836,19 @@ interface HarnessOptions {
     ): () => void;
     subscribeWindowRemoved(listener: (windowId: number) => void): () => void;
   };
+  readonly linkWindow?: FakeWindowCoordinator["linkWindow"];
+  readonly unlinkWindow?: FakeWindowCoordinator["unlinkWindow"];
 }
 
 function createHarness(options: HarnessOptions = {}) {
   const tabs = options.tabs ?? new Map([[17, 10]]);
   const getTabCalls: number[] = [];
   const inspectCalls: unknown[] = [];
-  const coordinator = new FakeWindowCoordinator();
+  const reportedErrors: unknown[] = [];
+  const coordinator = new FakeWindowCoordinator(
+    options.linkWindow,
+    options.unlinkWindow,
+  );
   const inspectCoordinator = new BackgroundInspectCoordinator({
     async executeScript(details) {
       inspectCalls.push(["inject", details]);
@@ -552,6 +861,7 @@ function createHarness(options: HarnessOptions = {}) {
     coordinator,
     getTabCalls,
     inspectCalls,
+    reportedErrors,
     inspectCoordinator,
     router: undefined as unknown as ReturnType<typeof createBackgroundRouter>,
     port(
@@ -596,6 +906,7 @@ function createHarness(options: HarnessOptions = {}) {
     coordinator,
     inspectCoordinator,
     subscriptions: options.subscriptions,
+    onError: (error) => reportedErrors.push(error),
   });
   return harness;
 }
@@ -608,8 +919,37 @@ class FakeWindowCoordinator {
     payload: InspectPayload;
   }> = [];
   public readonly removedWindows: number[] = [];
+  public readonly links: Array<{
+    windowId: number;
+    code: string;
+    source: unknown;
+  }> = [];
+  public readonly unlinks: number[] = [];
   public disposeCalls = 0;
   private readonly active = new Set<PanelRegistration>();
+
+  public constructor(
+    private readonly linkBehavior?: (
+      windowId: number,
+      code: string,
+      source: unknown,
+    ) => Promise<void>,
+    private readonly unlinkBehavior?: (windowId: number) => Promise<void>,
+  ) {}
+
+  public async linkWindow(
+    windowId: number,
+    code: string,
+    source: unknown,
+  ): Promise<void> {
+    this.links.push({ windowId, code, source });
+    await this.linkBehavior?.(windowId, code, source);
+  }
+
+  public async unlinkWindow(windowId: number): Promise<void> {
+    this.unlinks.push(windowId);
+    await this.unlinkBehavior?.(windowId);
+  }
 
   public registerPanel(registration: PanelRegistration): { dispose(): void } {
     this.registrations.push(registration);
@@ -750,12 +1090,15 @@ function inspectPayload(): InspectPayload {
 interface Deferred<T> {
   readonly promise: Promise<T>;
   resolve(value: T): void;
+  reject(reason: unknown): void;
 }
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }

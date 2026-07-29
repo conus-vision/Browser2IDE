@@ -113,6 +113,38 @@ describe("panel inspect transport", () => {
     ).rejects.toThrow("Inspect connection is closed");
     expect(factoryCalls).toBe(2);
   });
+
+  it("forwards window state on the shared port without duplicate listeners after reconnect", () => {
+    const ports = [new FakePort(), new FakePort()];
+    const received: unknown[] = [];
+    let factoryCalls = 0;
+    const transport = new PanelInspectTransport(
+      () => ports[factoryCalls++]!,
+      () => undefined,
+      (message) => received.push(message),
+    );
+
+    transport.connect();
+    ports[0].emitMessage({
+      type: "browser2ide.windowState",
+      state: "notLinked",
+    });
+    ports[0].disconnect();
+    transport.connect();
+    ports[1].emitMessage({
+      type: "browser2ide.windowState",
+      state: "linked",
+    });
+    ports[0].emitMessage({
+      type: "browser2ide.windowState",
+      state: "error",
+    });
+
+    expect(received).toEqual([
+      { type: "browser2ide.windowState", state: "notLinked" },
+      { type: "browser2ide.windowState", state: "linked" },
+    ]);
+  });
 });
 
 class FakePort {

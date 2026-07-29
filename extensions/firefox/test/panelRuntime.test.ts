@@ -1,60 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-}
-
-interface FakeClient {
-  readonly url: string;
-  readonly active: boolean;
-  readonly credentials?: unknown;
-  readonly pin?: string;
-  readonly unlinkCalls: number;
-  emitProtocolError(code: string, message: string): void;
-  emitState(state: string): void;
-}
-
-type RuntimeListener = (message: unknown) => void;
+type RuntimeMessage = Record<string, unknown>;
 
 const harness = vi.hoisted(() => ({
-  clients: [] as FakeClient[],
-  inspectPayloads: [] as unknown[],
+  clipboardReads: 0,
+  clipboardText: "",
+  messages: [] as unknown[],
   ports: [] as TestRuntimePort[],
-  runtimeListeners: [] as RuntimeListener[],
-  storageGet: async (_keys: string[]): Promise<Record<string, unknown>> => ({}),
-  storageSet: async (_values: Record<string, unknown>): Promise<void> => {},
-  storageRemove: async (_keys: string[]): Promise<void> => {},
   runtimeSend: async (_message: unknown): Promise<unknown> => undefined,
-  runtimeConnect: (_options: { name: string }): TestRuntimePort => {
-    throw new Error("Runtime connect is not configured");
-  },
 }));
 
 vi.mock("webextension-polyfill", () => ({
   default: {
-    storage: {
-      local: {
-        get: (keys: string[]) => harness.storageGet(keys),
-        set: (values: Record<string, unknown>) => harness.storageSet(values),
-        remove: (keys: string[]) => harness.storageRemove(keys),
-      },
-    },
     runtime: {
       sendMessage: (message: unknown) => harness.runtimeSend(message),
-      connect: (options: { name: string }) =>
-        harness.runtimeConnect(options),
-      onMessage: {
-        addListener: (listener: RuntimeListener) => {
-          harness.runtimeListeners.push(listener);
-        },
-        removeListener: (listener: RuntimeListener) => {
-          const index = harness.runtimeListeners.indexOf(listener);
-          if (index >= 0) {
-            harness.runtimeListeners.splice(index, 1);
-          }
-        },
+      connect: ({ name }: { name: string }) => {
+        const port = new TestRuntimePort(name);
+        harness.ports.push(port);
+        return port;
       },
     },
   },
@@ -63,125 +26,21 @@ vi.mock("webextension-polyfill", () => ({
 vi.mock("@browser2ide/browser-extension-core", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@browser2ide/browser-extension-core")>();
-
-  class FakeBrowserProtocolError extends Error {
-    public constructor(
-      public readonly code: string,
-      message: string,
-    ) {
-      super(message);
-    }
-  }
-
-  class FakeBrowserBridgeClient implements FakeClient {
-    public readonly url: string;
-    public credentials: unknown;
-    public pin: string | undefined;
-    public unlinkCalls = 0;
-    private stopped = true;
-
-    public constructor(
-      private readonly options: {
-        readonly url: string;
-        readonly onStateChanged?: (state: string) => void;
-        readonly onError?: (error: Error) => void;
-      },
-    ) {
-      this.url = options.url;
-      harness.clients.push(this);
-    }
-
-    public get active(): boolean {
-      return !this.stopped;
-    }
-
-    public link(pin: string): void {
-      this.pin = pin;
-      this.stopped = false;
-    }
-
-    public connect(credentials: unknown): void {
-      this.credentials = credentials;
-      this.stopped = false;
-    }
-
-    public disconnect(): void {
-      this.stopped = true;
-    }
-
-    public unlink(): void {
-      this.unlinkCalls += 1;
-      this.stopped = true;
-    }
-
-    public sendInspect(payload: unknown): boolean {
-      harness.inspectPayloads.push(payload);
-      return true;
-    }
-
-    public emitProtocolError(code: string, message: string): void {
-      this.options.onError?.(new FakeBrowserProtocolError(code, message));
-    }
-
-    public emitState(state: string): void {
-      this.options.onStateChanged?.(state);
-    }
-  }
-
-  class FakeInspectPublisher {
-    private lastSentHash: string | undefined;
-
-    public constructor(
-      private readonly options: {
-        readonly send: (payload: unknown) => void;
-      },
-    ) {}
-
-    public publish(payload: unknown): void {
-      const hash = JSON.stringify(payload);
-      if (hash === this.lastSentHash) {
-        return;
-      }
-      this.lastSentHash = hash;
-      this.options.send(payload);
-    }
-
-    public reset(): void {
-      this.lastSentHash = undefined;
-    }
-
-    public dispose(): void {
-      this.reset();
-    }
-  }
-
-  return {
-    ...actual,
-    BrowserBridgeClient: FakeBrowserBridgeClient,
-    BrowserProtocolError: FakeBrowserProtocolError,
-    InspectPublisher: FakeInspectPublisher,
-  };
+  return { ...actual, createPanelIcons: () => undefined };
 });
 
-describe("Firefox panel lifecycle", () => {
+describe("Firefox panel adapter", () => {
   let dom: FakeDom;
 
   beforeEach(() => {
     vi.resetModules();
-    harness.clients.length = 0;
-    harness.inspectPayloads.length = 0;
+    harness.clipboardReads = 0;
+    harness.clipboardText = "";
+    harness.messages.length = 0;
     harness.ports.length = 0;
-    harness.runtimeListeners.length = 0;
-    harness.storageGet = async () => ({});
-    harness.storageSet = async () => {};
-    harness.storageRemove = async () => {};
-    harness.runtimeSend = async () => undefined;
-    harness.runtimeConnect = ({ name }) => {
-      const port = new TestRuntimePort(name, (message) =>
-        harness.runtimeSend(message),
-      );
-      harness.ports.push(port);
-      return port;
+    harness.runtimeSend = async (message) => {
+      harness.messages.push(message);
+      return isCommand(message) ? { ok: true } : undefined;
     };
     dom = installFakeDom();
   });
@@ -192,354 +51,133 @@ describe("Firefox panel lifecycle", () => {
     vi.unstubAllGlobals();
   });
 
-  it("opens its channel-only lifetime port while announcing panel readiness", async () => {
-    const messages: unknown[] = [];
-    harness.runtimeSend = async (message) => {
-      messages.push(message);
-      return undefined;
-    };
-
-    await loadSettledPanel();
+  it("opens one channel port without reading clipboard or enabling inspect", async () => {
+    await loadPanel();
 
     expect(harness.ports).toHaveLength(1);
     expect(harness.ports[0]?.name).toBe(
       "browser2ide.devtools.test-channel",
     );
-    expect(messages).toEqual([
+    expect(harness.messages).toEqual([
       { type: "browser2ide.panelReady", channel: "test-channel" },
     ]);
+    expect(harness.clipboardReads).toBe(0);
+    expect(dom.element("inspect-mode").checked).toBe(false);
+    expect(dom.element("inspect-mode").disabled).toBe(true);
   });
 
-  it("serializes double Link without leaving an orphan client", async () => {
-    const removals: Deferred<void>[] = [];
-    harness.storageRemove = () => {
-      const pending = deferred<void>();
-      removals.push(pending);
-      return pending.promise;
-    };
-    await loadSettledPanel();
+  it("reads clipboard only from Paste and sends the normalized link command", async () => {
+    harness.clipboardText = "48735 07";
+    await loadPanel();
 
-    submitLink(dom, "4873507");
-    await flushAsync();
-    submitLink(dom, "4873608");
+    dom.element("paste-button").dispatch("click");
     await flushAsync();
 
-    removals[0]?.resolve();
-    await flushAsync();
-    removals[1]?.resolve();
-    await flushAsync();
-
-    expect(activeClients()).toHaveLength(1);
-    expect(activeClients()[0]).toMatchObject({
-      url: "ws://127.0.0.1:48736",
-      pin: "08",
+    expect(harness.clipboardReads).toBe(1);
+    expect(dom.element("link-code").value).toBe("4873507");
+    expect(harness.messages).toContainEqual({
+      type: "browser2ide.linkWindow",
+      channel: "test-channel",
+      code: "4873507",
     });
+    expect(dom.element("connection-status").value).toBe("Linking");
   });
 
-  it("serializes Link followed by Unlink without leaving a client", async () => {
-    const removals: Deferred<void>[] = [];
-    harness.storageRemove = () => {
-      const pending = deferred<void>();
-      removals.push(pending);
-      return pending.promise;
-    };
-    await loadSettledPanel();
-
-    submitLink(dom, "4873507");
+  it("uses the lifetime port for state and inspect without a second client", async () => {
+    await loadPanel();
+    const port = requiredPort(0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
     await flushAsync();
+
+    const inspect = dom.element("inspect-mode");
+    expect(inspect.disabled).toBe(false);
+    inspect.checked = true;
+    inspect.dispatch("change");
+    await flushAsync();
+
+    expect(port.sent).toHaveLength(1);
+    const request = port.sent[0] as RuntimeMessage;
+    expect(request).toMatchObject({
+      type: "browser2ide.inspect.setEnabled",
+      enabled: true,
+    });
+    port.emitMessage({
+      type: "browser2ide.inspect.result",
+      requestId: request.requestId,
+      ok: true,
+    });
+    await flushAsync();
+
+    expect(inspect.checked).toBe(true);
+    expect(harness.ports).toHaveLength(1);
+  });
+
+  it("binds explicit Change IDE and Unlink actions", async () => {
+    await loadPanel();
+    requiredPort(0).emitMessage({
+      type: "browser2ide.windowState",
+      state: "linked",
+    });
+    await flushAsync();
+
+    dom.element("change-button").dispatch("click");
+    await flushAsync();
+    expect(dom.element("link-controls").hidden).toBe(false);
+    expect(dom.element("inspect-mode").checked).toBe(false);
+
     dom.element("unlink-button").dispatch("click");
     await flushAsync();
-
-    removals[0]?.resolve();
-    await flushAsync();
-    removals[1]?.resolve();
-    await flushAsync();
-
-    expect(activeClients()).toEqual([]);
+    expect(harness.messages).toContainEqual({
+      type: "browser2ide.unlinkWindow",
+      channel: "test-channel",
+    });
   });
 
-  it("keeps the current client authoritative after an invalid Link", async () => {
-    await loadSettledPanel();
-
-    submitLink(dom, "4873507");
+  it("recovers one shared port after disconnect and removes old listeners", async () => {
+    await loadPanel();
+    const first = requiredPort(0);
+    first.emitMessage({ type: "browser2ide.windowState", state: "linked" });
     await flushAsync();
-    const current = harness.clients[0];
-    expect(current).toBeDefined();
 
-    submitLink(dom, "invalid");
+    first.disconnect();
     await flushAsync();
-    current?.emitProtocolError(
-      "auth.tokenRejected",
-      "Rejected browser token",
+
+    expect(dom.element("inspect-mode").checked).toBe(false);
+    expect(dom.element("connection-status").value).toBe(
+      "Linked IDE offline",
     );
-    await flushAsync();
-
-    expect(activeClients()).toEqual([]);
-  });
-
-  it("does not consume legacy raw selection broadcasts", async () => {
-    await loadSettledPanel();
-    submitLink(dom, "4873507");
-    await flushAsync();
-    const current = harness.clients[0];
-    current?.emitState("connected");
-    const payload = selectionPayload(".card");
-
-    notifyRuntime({
-      type: "browser2ide.selection",
-      tabId: 12,
-      payload,
-    });
-    notifyRuntime({
-      type: "browser2ide.selection",
-      tabId: 12,
-      payload,
-    });
-
-    expect(harness.inspectPayloads).toEqual([]);
-  });
-
-  it("lets an explicit Link supersede an overlapping initialize", async () => {
-    const stored = deferred<Record<string, unknown>>();
-    harness.storageGet = () => stored.promise;
-
-    await import("../src/panel.js");
-    submitLink(dom, "4873608");
-    await flushAsync();
-
-    stored.resolve(storedLink("48735"));
-    await flushAsync();
-
-    expect(activeClients()).toHaveLength(1);
-    expect(activeClients()[0]).toMatchObject({
-      url: "ws://127.0.0.1:48736",
-      pin: "08",
-    });
-  });
-
-  it("reconnects only the saved endpoint and complete credentials", async () => {
-    harness.storageGet = async () => storedLink("48735");
-
-    await loadSettledPanel();
-
-    expect(activeClients()).toHaveLength(1);
-    expect(activeClients()[0]).toMatchObject({
-      url: "ws://127.0.0.1:48735",
-      credentials: {
-        sessionId: "saved-session",
-        bridgeInstanceId:
-          "2d7856f5-8218-4ba6-9f6c-7aa459333ee1",
-        authToken: "saved-token",
-      },
-    });
-  });
-
-  it("blocks all controls while a lifecycle operation is pending", async () => {
-    const removal = deferred<void>();
-    harness.storageRemove = () => removal.promise;
-    await loadSettledPanel();
-
-    submitLink(dom, "4873507");
-    await flushAsync();
-
-    expect(dom.element("link-button").disabled).toBe(true);
-    expect(dom.element("unlink-button").disabled).toBe(true);
-    expect(dom.element("inspect-mode").disabled).toBe(true);
-
-    removal.resolve();
-    await flushAsync();
-  });
-
-  it("does not let stale auth invalidation remove a newer Link", async () => {
-    const remoteDisables: Deferred<unknown>[] = [];
-    harness.runtimeSend = (message) => {
-      if (
-        isRecord(message) &&
-        message.type === "disableInspectMode"
-      ) {
-        const pending = deferred<unknown>();
-        remoteDisables.push(pending);
-        return pending.promise;
-      }
-      return Promise.resolve(undefined);
-    };
-    await loadSettledPanel();
-
-    submitLink(dom, "4873507");
-    await flushAsync();
-    const first = harness.clients[0];
-    expect(first).toBeDefined();
-
-    first?.emitState("connected");
-    dom.element("inspect-mode").checked = true;
-    dom.element("inspect-mode").dispatch("change");
-    await flushAsync();
-
-    first?.emitProtocolError(
-      "auth.tokenRejected",
-      "Rejected 4873507/browser-token",
-    );
-    await flushAsync();
-    submitLink(dom, "4873608");
-    await flushAsync();
-
-    for (const pending of remoteDisables.slice(1)) {
-      pending.resolve(undefined);
-    }
-    await flushAsync();
-    remoteDisables[0]?.resolve(undefined);
-    await flushAsync();
-
-    const latest = harness.clients.find(
-      (candidate) => candidate.url === "ws://127.0.0.1:48736",
-    );
-    expect(latest).toBeDefined();
-    latest?.emitState("connected");
-
-    expect(dom.element("connection-status").value).toBe("Linked");
-    expect(activeClients()).toEqual([latest]);
-  });
-
-  it("prevents pending initialize from creating a client after unload", async () => {
-    const stored = deferred<Record<string, unknown>>();
-    harness.storageGet = () => stored.promise;
-
-    await import("../src/panel.js");
-    dom.window.dispatch("unload");
-    stored.resolve(storedLink("48735"));
-    await flushAsync();
-
-    expect(activeClients()).toEqual([]);
-  });
-
-  it("prevents pending Link from creating a client after unload", async () => {
-    const removal = deferred<void>();
-    harness.storageRemove = () => removal.promise;
-    await loadSettledPanel();
-
-    submitLink(dom, "4873507");
-    await flushAsync();
-    dom.window.dispatch("unload");
-    removal.resolve();
-    await flushAsync();
-
-    expect(activeClients()).toEqual([]);
-  });
-
-  it("disables inspection after disconnect during a pending enable", async () => {
-    const messages: unknown[] = [];
-    const enable = deferred<unknown>();
-    harness.runtimeSend = (message) => {
-      messages.push(message);
-      return isRecord(message) && message.type === "enableInspectMode"
-        ? enable.promise
-        : Promise.resolve(undefined);
-    };
-    await loadSettledPanel();
-    submitLink(dom, "4873507");
-    await flushAsync();
-    const current = harness.clients[0];
-    current?.emitState("connected");
-
-    dom.element("inspect-mode").checked = true;
-    dom.element("inspect-mode").dispatch("change");
-    await flushAsync();
-    current?.emitState("disconnected");
-    await flushAsync();
-
-    enable.resolve(undefined);
-    await flushAsync();
-
-    expect(messageTypes(messages)).toEqual([
-      "browser2ide.panelReady",
-      "enableInspectMode",
-      "disableInspectMode",
+    expect(harness.messages).toEqual([
+      { type: "browser2ide.panelReady", channel: "test-channel" },
+      { type: "browser2ide.panelReady", channel: "test-channel" },
     ]);
-    expect(dom.element("inspect-mode").checked).toBe(false);
-  });
-
-  it("disconnects its inspect port on unload during a pending enable", async () => {
-    const messages: unknown[] = [];
-    const enable = deferred<unknown>();
-    harness.runtimeSend = (message) => {
-      messages.push(message);
-      return isRecord(message) && message.type === "enableInspectMode"
-        ? enable.promise
-        : Promise.resolve(undefined);
-    };
-    await loadSettledPanel();
-    submitLink(dom, "4873507");
-    await flushAsync();
-    const current = harness.clients[0];
-    current?.emitState("connected");
-
-    dom.element("inspect-mode").checked = true;
-    dom.element("inspect-mode").dispatch("change");
-    await flushAsync();
-    dom.window.dispatch("unload");
-
-    expect(harness.ports[0]?.disconnected).toBe(true);
-
-    enable.resolve(undefined);
-    await flushAsync();
-
-    expect(messageTypes(messages)).toEqual([
-      "browser2ide.panelReady",
-      "enableInspectMode",
-    ]);
-    expect(dom.element("inspect-mode").checked).toBe(false);
-  });
-
-  it("re-announces and recovers its lifetime port after port loss", async () => {
-    const messages: unknown[] = [];
-    harness.runtimeSend = async (message) => {
-      messages.push(message);
-      return undefined;
-    };
-    await loadSettledPanel();
-    submitLink(dom, "4873507");
-    await flushAsync();
-    const current = harness.clients[0];
-    current?.emitState("connected");
-
-    dom.element("inspect-mode").checked = true;
-    dom.element("inspect-mode").dispatch("change");
-    await flushAsync();
-    harness.ports[0]?.disconnect();
-
-    expect(dom.element("inspect-mode").checked).toBe(false);
-
-    dom.element("inspect-mode").checked = true;
-    dom.element("inspect-mode").dispatch("change");
-    await flushAsync();
-
     expect(harness.ports).toHaveLength(2);
-    expect(messageTypes(messages)).toEqual([
-      "browser2ide.panelReady",
-      "enableInspectMode",
-      "browser2ide.panelReady",
-      "enableInspectMode",
-    ]);
-    expect(dom.element("inspect-mode").checked).toBe(true);
+    expect(first.onMessage.listenerCount).toBe(0);
+    expect(requiredPort(1).onMessage.listenerCount).toBe(1);
+  });
+
+  it("disconnects the shared port on unload", async () => {
+    await loadPanel();
+    const port = requiredPort(0);
+
+    dom.window.dispatch("unload");
+
+    expect(port.disconnected).toBe(true);
+    expect(port.onMessage.listenerCount).toBe(0);
   });
 });
 
 const ELEMENT_IDS = [
+  "connection-status",
+  "link-controls",
   "link-form",
   "link-code",
+  "paste-button",
   "link-button",
+  "connected-controls",
+  "change-button",
   "unlink-button",
   "inspect-mode",
-  "connection-status",
-  "selected-summary",
-  "link-status",
-  "linked-endpoint",
-  "linked-session",
-  "bridge-instance",
-  "last-message",
-  "last-error",
-  "matched-facts",
-  "inaccessible-stylesheets",
+  "panel-error",
 ] as const;
 
 class FakeElement {
@@ -548,90 +186,59 @@ class FakeElement {
   public disabled = false;
   public hidden = false;
   public readonly dataset: Record<string, string> = {};
-  private readonly listeners = new Map<string, ((event: FakeEvent) => void)[]>();
+  private readonly listeners = new Map<string, Set<(event: Event) => void>>();
 
-  public addEventListener(
-    type: string,
-    listener: (event: FakeEvent) => void,
-  ): void {
-    const listeners = this.listeners.get(type) ?? [];
-    listeners.push(listener);
+  public addEventListener(type: string, listener: (event: Event) => void): void {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
     this.listeners.set(type, listeners);
   }
 
+  public removeEventListener(type: string, listener: (event: Event) => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
   public dispatch(type: string): void {
-    const event = { preventDefault() {} };
-    for (const listener of this.listeners.get(type) ?? []) {
+    const event = { preventDefault() {} } as Event;
+    for (const listener of [...(this.listeners.get(type) ?? [])]) {
       listener(event);
     }
   }
 }
 
-interface FakeEvent {
-  preventDefault(): void;
-}
-
 class FakeWindow {
-  private readonly listeners = new Map<string, (() => void)[]>();
+  private readonly listeners = new Map<string, Set<() => void>>();
 
   public addEventListener(type: string, listener: () => void): void {
-    const listeners = this.listeners.get(type) ?? [];
-    listeners.push(listener);
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
     this.listeners.set(type, listeners);
   }
 
+  public removeEventListener(type: string, listener: () => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
   public dispatch(type: string): void {
-    for (const listener of this.listeners.get(type) ?? []) {
+    for (const listener of [...(this.listeners.get(type) ?? [])]) {
       listener();
     }
   }
 }
 
 class TestRuntimePort {
+  public readonly sent: unknown[] = [];
   public disconnected = false;
-  public readonly onMessage = new FakePortEvent<
-    (message: unknown) => void
-  >();
+  public readonly onMessage = new FakePortEvent<(message: unknown) => void>();
   public readonly onDisconnect = new FakePortEvent<() => void>();
 
-  public constructor(
-    public readonly name: string,
-    private readonly sendMessage: (message: unknown) => Promise<unknown>,
-  ) {}
+  public constructor(public readonly name: string) {}
 
   public postMessage(message: unknown): void {
     if (this.disconnected) {
       throw new Error("Port is disconnected");
     }
-    if (
-      !isRecord(message) ||
-      message.type !== "browser2ide.inspect.setEnabled" ||
-      typeof message.requestId !== "string" ||
-      typeof message.enabled !== "boolean"
-    ) {
-      return;
-    }
-
-    const requestId = message.requestId;
-    void this.sendMessage({
-      type: message.enabled
-        ? "enableInspectMode"
-        : "disableInspectMode",
-    }).then(
-      () =>
-        this.onMessage.emit({
-          type: "browser2ide.inspect.result",
-          requestId,
-          ok: true,
-        }),
-      () =>
-        this.onMessage.emit({
-          type: "browser2ide.inspect.result",
-          requestId,
-          ok: false,
-          error: "Inspect mode update failed",
-        }),
-    );
+    this.sent.push(message);
   }
 
   public disconnect(): void {
@@ -641,10 +248,18 @@ class TestRuntimePort {
     this.disconnected = true;
     this.onDisconnect.emit();
   }
+
+  public emitMessage(message: unknown): void {
+    this.onMessage.emit(message);
+  }
 }
 
 class FakePortEvent<T extends (...args: never[]) => void> {
   private readonly listeners = new Set<T>();
+
+  public get listenerCount(): number {
+    return this.listeners.size;
+  }
 
   public addListener(listener: T): void {
     this.listeners.add(listener);
@@ -655,7 +270,7 @@ class FakePortEvent<T extends (...args: never[]) => void> {
   }
 
   public emit(...args: Parameters<T>): void {
-    for (const listener of this.listeners) {
+    for (const listener of [...this.listeners]) {
       listener(...args);
     }
   }
@@ -670,17 +285,20 @@ function installFakeDom(): FakeDom {
   const elements = new Map(
     ELEMENT_IDS.map((id) => [id, new FakeElement()] as const),
   );
-  const linkDetails = [new FakeElement(), new FakeElement()];
   const fakeWindow = new FakeWindow();
-  const fakeDocument = {
+  vi.stubGlobal("document", {
     getElementById: (id: string) => elements.get(id) ?? null,
-    querySelectorAll: () => linkDetails,
-  };
-
-  vi.stubGlobal("document", fakeDocument);
+  });
   vi.stubGlobal("window", fakeWindow);
   vi.stubGlobal("location", { search: "?channel=test-channel" });
-  vi.stubGlobal("crypto", { randomUUID: () => "panel-source-id" });
+  vi.stubGlobal("navigator", {
+    clipboard: {
+      readText: async () => {
+        harness.clipboardReads += 1;
+        return harness.clipboardText;
+      },
+    },
+  });
 
   return {
     window: fakeWindow,
@@ -694,76 +312,33 @@ function installFakeDom(): FakeDom {
   };
 }
 
-async function loadSettledPanel(): Promise<void> {
+async function loadPanel(): Promise<void> {
   await import("../src/panel.js");
   await flushAsync();
 }
 
-function submitLink(dom: FakeDom, code: string): void {
-  const input = dom.element("link-code");
-  input.value = code;
-  input.dispatch("input");
-  dom.element("link-form").dispatch("submit");
-}
-
-function notifyRuntime(message: unknown): void {
-  for (const listener of [...harness.runtimeListeners]) {
-    listener(message);
+function requiredPort(index: number): TestRuntimePort {
+  const port = harness.ports[index];
+  if (!port) {
+    throw new Error(`Missing runtime port ${index}`);
   }
+  return port;
 }
 
-function activeClients(): FakeClient[] {
-  return harness.clients.filter((candidate) => candidate.active);
-}
-
-function storedLink(port: string): Record<string, unknown> {
-  return {
-    browser2ideBridgeUrl: `ws://127.0.0.1:${port}`,
-    browser2ideSessionId: "saved-session",
-    browser2ideBridgeInstanceId:
-      "2d7856f5-8218-4ba6-9f6c-7aa459333ee1",
-    browser2ideAuthToken: "saved-token",
-  };
-}
-
-function selectionPayload(selector: string): Record<string, unknown> {
-  return {
-    targets: [
-      {
-        role: "selected",
-        depth: 0,
-        subject: { selector, metadata: {} },
-        facts: [],
-        metadata: {},
-      },
-    ],
-    context: { url: "https://example.test/page", metadata: {} },
-    metadata: {},
-  };
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
-async function flushAsync(): Promise<void> {
-  for (let index = 0; index < 50; index += 1) {
-    await Promise.resolve();
-  }
+function isCommand(message: unknown): boolean {
+  return (
+    isRecord(message) &&
+    (message.type === "browser2ide.linkWindow" ||
+      message.type === "browser2ide.unlinkWindow")
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
 }
 
-function messageTypes(messages: unknown[]): unknown[] {
-  return messages.map((message) =>
-    isRecord(message) ? message.type : undefined,
-  );
+async function flushAsync(): Promise<void> {
+  for (let index = 0; index < 30; index += 1) {
+    await Promise.resolve();
+  }
 }

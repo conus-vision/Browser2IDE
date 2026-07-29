@@ -2,8 +2,12 @@ import {
   ClientSourceSchema,
   InspectMessageSchema,
   PROTOCOL_VERSION,
+  type ClientSource,
 } from "@browser2ide/protocol";
-import type { InspectPayload } from "./bridgeClient.js";
+import {
+  BrowserProtocolError,
+  type InspectPayload,
+} from "./bridgeClient.js";
 import {
   BackgroundInspectSession,
   type BackgroundInspectCoordinator,
@@ -19,6 +23,7 @@ import type {
   BrowserWindowConnectionState,
   PanelRegistration,
 } from "./windowConnectionCoordinator.js";
+import { parseLinkCode } from "./linkCode.js";
 
 export const DEFAULT_MAX_PANEL_PORTS = 64;
 
@@ -37,6 +42,12 @@ export interface BackgroundRuntimePort extends PanelInspectPort {
 }
 
 export interface BackgroundWindowCoordinator {
+  linkWindow(
+    windowId: number,
+    code: string,
+    source: ClientSource,
+  ): Promise<void>;
+  unlinkWindow(windowId: number): Promise<void>;
   registerPanel(registration: PanelRegistration): { dispose(): void };
   publishInspect(
     windowId: number,
@@ -46,7 +57,16 @@ export interface BackgroundWindowCoordinator {
   removeWindow(windowId: number): Promise<void>;
 }
 
-export type BackgroundRouteResult = { readonly ok: true };
+export type BackgroundCommandError =
+  | "invalidCode"
+  | "stalePanel"
+  | "busy"
+  | "rateLimited"
+  | "error";
+
+export type BackgroundRouteResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: BackgroundCommandError };
 
 export interface BackgroundRouterSubscriptions {
   subscribeRuntimeMessages(
@@ -101,6 +121,22 @@ interface PanelPortRecord {
   inspectSession?: BackgroundInspectSession;
 }
 
+interface PanelCommandRecord {
+  readonly commandToken: object;
+  readonly activationToken: object;
+}
+
+type PanelWindowCommand =
+  | {
+      readonly type: "browser2ide.linkWindow";
+      readonly channel: string;
+      readonly code: string;
+    }
+  | {
+      readonly type: "browser2ide.unlinkWindow";
+      readonly channel: string;
+    };
+
 const okResult = Object.freeze({ ok: true } as const);
 
 export class BackgroundRouter {
@@ -119,6 +155,7 @@ export class BackgroundRouter {
     PendingRegistration
   >();
   private readonly panelPorts = new Map<string, PanelPortRecord>();
+  private readonly panelCommands = new Map<string, PanelCommandRecord>();
   private readonly removedWindows = new Set<number>();
   private readonly removeSubscriptions: Array<() => void> = [];
   private nextGeneration = 1;
@@ -150,6 +187,18 @@ export class BackgroundRouter {
         return undefined;
       }
       return this.registerDevtools(registration);
+    }
+
+    const command = parsePanelWindowCommand(message);
+    if (command) {
+      const binding = this.bindings.get(command.channel);
+      if (
+        !binding ||
+        !this.isExpectedPanelSender(sender, command.channel)
+      ) {
+        return undefined;
+      }
+      return this.executePanelWindowCommand(command, binding);
     }
 
     const payload = parseElementSelectedMessage(message);
@@ -234,6 +283,7 @@ export class BackgroundRouter {
       this.closePanelPort(record, true);
     }
     this.pendingRegistrations.clear();
+    this.panelCommands.clear();
     this.bindings.clear();
     this.channelByTab.clear();
     this.channelBySource.clear();
@@ -481,6 +531,81 @@ export class BackgroundRouter {
     }
   }
 
+  private async executePanelWindowCommand(
+    command: PanelWindowCommand,
+    binding: ChannelBinding,
+  ): Promise<BackgroundRouteResult> {
+    const record = this.panelPorts.get(command.channel);
+    const activationToken = record?.activationToken;
+    if (
+      !record ||
+      !activationToken ||
+      !record.registration ||
+      !this.isCurrentActivation(record, activationToken, binding)
+    ) {
+      return { ok: false, error: "stalePanel" };
+    }
+    const pendingCommand = this.panelCommands.get(command.channel);
+    if (pendingCommand?.activationToken === activationToken) {
+      return { ok: false, error: "busy" };
+    }
+
+    let source: ClientSource;
+    try {
+      source = ClientSourceSchema.parse({
+        role: "browser",
+        id: binding.sourceId,
+        metadata: {},
+      });
+    } catch {
+      return { ok: false, error: "stalePanel" };
+    }
+
+    if (command.type === "browser2ide.linkWindow") {
+      try {
+        parseLinkCode(command.code);
+      } catch {
+        return { ok: false, error: "invalidCode" };
+      }
+    }
+
+    const commandToken = {};
+    this.panelCommands.set(command.channel, {
+      commandToken,
+      activationToken,
+    });
+    try {
+      if (command.type === "browser2ide.linkWindow") {
+        await this.coordinator.linkWindow(
+          binding.windowId,
+          command.code,
+          source,
+        );
+      } else {
+        await this.coordinator.unlinkWindow(binding.windowId);
+      }
+    } catch (error) {
+      if (!this.isCurrentActivation(record, activationToken, binding)) {
+        return { ok: false, error: "stalePanel" };
+      }
+      const commandError = sanitizedCommandError(error);
+      if (commandError === "error") {
+        this.reportError(new Error("Browser2IDE panel command failed"));
+      }
+      return { ok: false, error: commandError };
+    } finally {
+      if (
+        this.panelCommands.get(command.channel)?.commandToken === commandToken
+      ) {
+        this.panelCommands.delete(command.channel);
+      }
+    }
+
+    return this.isCurrentActivation(record, activationToken, binding)
+      ? okResult
+      : { ok: false, error: "stalePanel" };
+  }
+
   private connectContentLease(port: BackgroundRuntimePort): void {
     const tabId = port.sender?.tab?.id;
     if (!isBrowserId(tabId)) {
@@ -684,6 +809,36 @@ function parseRegistrationMessage(
     : undefined;
 }
 
+function parsePanelWindowCommand(
+  value: unknown,
+): PanelWindowCommand | undefined {
+  if (!isRecord(value) || !isValidDevtoolsChannel(value.channel)) {
+    return undefined;
+  }
+  if (
+    value.type === "browser2ide.linkWindow" &&
+    hasOnlyKeys(value, ["type", "channel", "code"]) &&
+    typeof value.code === "string" &&
+    /^[0-9]{7}$/.test(value.code)
+  ) {
+    return {
+      type: "browser2ide.linkWindow",
+      channel: value.channel,
+      code: value.code,
+    };
+  }
+  if (
+    value.type === "browser2ide.unlinkWindow" &&
+    hasOnlyKeys(value, ["type", "channel"])
+  ) {
+    return {
+      type: "browser2ide.unlinkWindow",
+      channel: value.channel,
+    };
+  }
+  return undefined;
+}
+
 function parseElementSelectedMessage(value: unknown): InspectPayload | undefined {
   if (
     !isRecord(value) ||
@@ -758,6 +913,18 @@ function validPanelPortLimit(value: number | undefined): number {
   return Number.isSafeInteger(value) && Number(value) > 0
     ? Math.min(Number(value), 1_024)
     : DEFAULT_MAX_PANEL_PORTS;
+}
+
+function sanitizedCommandError(error: unknown): BackgroundCommandError {
+  if (error instanceof BrowserProtocolError) {
+    if (error.code === "link.rateLimited") {
+      return "rateLimited";
+    }
+    if (error.code === "link.invalidCode") {
+      return "invalidCode";
+    }
+  }
+  return "error";
 }
 
 function isBrowserId(value: unknown): value is number {
