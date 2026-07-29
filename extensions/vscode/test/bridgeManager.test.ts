@@ -1,9 +1,11 @@
+import { createServer } from "node:net";
 import { describe, expect, it } from "vitest";
 import {
   LinkAuthenticator,
   type BridgeServerOptions,
   type LinkAuthenticatorOptions,
 } from "@browser2ide/bridge";
+import { BridgeClient } from "../src/bridgeClient.js";
 import {
   BridgeManager,
   MANAGED_PORT_COUNT,
@@ -80,6 +82,64 @@ describe("BridgeManager", () => {
     expect(attempts).toHaveLength(100);
     expect(authenticators.created).toHaveLength(1);
     await manager.stop();
+  });
+
+  it("authenticates the IDE after an occupied first managed port", async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once("error", reject);
+      blocker.listen(MANAGED_PORT_START, "127.0.0.1", () => {
+        blocker.off("error", reject);
+        resolve();
+      });
+    });
+
+    const authenticators = deterministicAuthenticators([
+      { bridgeInstanceId: INSTANCE_A, pin: "07" },
+    ]);
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      createAuthenticator: authenticators.create,
+    });
+    let client: BridgeClient | undefined;
+
+    try {
+      await manager.start();
+      expect(manager.snapshot().port).toBe(MANAGED_PORT_START + 1);
+
+      const credentials = manager.getIdeCredentials();
+      if (!credentials) {
+        throw new Error("Expected IDE credentials from the running bridge");
+      }
+
+      const states: string[] = [];
+      client = new BridgeClient({
+        url: manager.snapshot().url ?? "",
+        ...credentials,
+      });
+      client.onConnectionStateChanged((state) => states.push(state));
+      client.connect();
+
+      await eventually(() => expect(states).toContain("connected"));
+
+      client.dispose();
+      client = undefined;
+      await manager.stop();
+      expect(
+        authenticators.created[0]?.validateToken(
+          SESSION_ID,
+          "ide",
+          credentials.authToken,
+          INSTANCE_A,
+        ),
+      ).toBe("rejected");
+    } finally {
+      client?.dispose();
+      await manager.stop();
+      await new Promise<void>((resolve, reject) => {
+        blocker.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("stops each occupied-port bridge before trying the next port", async () => {
@@ -172,16 +232,7 @@ describe("BridgeManager", () => {
     });
     expect(manager.getIdeCredentials()).toBeUndefined();
     expect(authenticators.created).toHaveLength(1);
-    const failedToken = authenticators.created[0]?.issuedTokens[0];
-    expect(failedToken).toBeDefined();
-    expect(
-      authenticators.created[0]?.validateToken(
-        SESSION_ID,
-        "ide",
-        failedToken?.value ?? "",
-        INSTANCE_A,
-      ),
-    ).toBe("rejected");
+    expect(authenticators.created[0]?.issuedTokens).toEqual([]);
 
     portsOccupied = false;
     await manager.start();
@@ -200,7 +251,9 @@ describe("BridgeManager", () => {
       sessionId: SESSION_ID,
       bridgeInstanceId: INSTANCE_B,
     });
-    expect(retryCredentials?.authToken).not.toBe(failedToken?.value);
+    expect(retryCredentials?.authToken).toBe(
+      authenticators.created[1]?.issuedTokens[0]?.value,
+    );
     await manager.stop();
   });
 
@@ -237,15 +290,7 @@ describe("BridgeManager", () => {
       linkedBrowserCount: 0,
     });
     expect(manager.getIdeCredentials()).toBeUndefined();
-    const issuedToken = authenticators.created[0]?.issuedTokens[0];
-    expect(
-      authenticators.created[0]?.validateToken(
-        SESSION_ID,
-        "ide",
-        issuedToken?.value ?? "",
-        INSTANCE_A,
-      ),
-    ).toBe("rejected");
+    expect(authenticators.created[0]?.issuedTokens).toEqual([]);
   });
 
   it("creates a new server, identity, PIN, and token after a successful stop", async () => {

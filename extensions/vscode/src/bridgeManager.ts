@@ -172,9 +172,9 @@ export class BridgeManager {
     try {
       const sessionId = this.options.configuration.sessionId;
       authenticator = this.createAuthenticator({ sessionId });
-      const ideToken = authenticator.issueTrustedToken("ide");
       const started = await this.startOnAvailablePort(authenticator);
       startedBridge = started.bridge;
+      const ideToken = authenticator.issueTrustedToken("ide");
       const linkInfo = started.bridge.getLinkInfo();
 
       this.bridge = started.bridge;
