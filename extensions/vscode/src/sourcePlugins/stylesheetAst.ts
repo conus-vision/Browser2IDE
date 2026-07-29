@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import postcss, {
   type AtRule,
-  type ChildNode,
   type Container,
   type Document,
   type Root,
   type Rule,
 } from "postcss";
+import selectorParser from "postcss-selector-parser";
 import { parse as parseScss } from "postcss-scss";
 import type {
   SourceDocument,
@@ -22,29 +22,26 @@ export type StylesheetSyntax = "css" | "scss";
 
 export interface StylesheetRule {
   readonly selector: string;
-  readonly normalizedSelector: string;
   readonly range: SourceRange;
   readonly startOffset: number;
   readonly endOffset: number;
-  readonly media: readonly string[];
-  readonly path: string;
-  readonly identities: readonly StylesheetRuleIdentity[];
 }
 
-interface StylesheetRuleIdentity {
-  readonly selector: string;
-  readonly normalizedSelector: string;
-  readonly media: readonly string[];
-  readonly path: string;
-  readonly nested: boolean;
-}
+type RuleIndex = ReadonlyMap<string, StylesheetRule | null>;
+type FallbackIndex = ReadonlyMap<string, readonly StylesheetRule[] | null>;
 
 export interface ParsedStylesheet {
   readonly uri: string;
   readonly syntax: StylesheetSyntax;
   readonly document: SourceDocument;
   readonly rules: readonly StylesheetRule[];
+  readonly pathIndex: RuleIndex;
+  readonly fallbackIndex: FallbackIndex;
+  readonly fallbackMediaIndex: FallbackIndex;
 }
+
+const FALLBACK_BUCKET_LIMIT = 32;
+const FALLBACK_ENTRY_LIMIT = INSPECT_LIMITS.cssRules * 2;
 
 export class StylesheetAstCache {
   private readonly documents = new Map<string, ParsedStylesheet>();
@@ -85,56 +82,46 @@ export class StylesheetAstCache {
 }
 
 export function findMatchingCssRules(
-  rules: readonly StylesheetRule[],
+  stylesheet: ParsedStylesheet,
   fact: CssRuleFact,
   document: SourceDocument,
 ): StylesheetRule[] {
-  if (fact.source) {
+  if (fact.source !== undefined) {
+    if (!validSourcePosition(fact.source.line, fact.source.column)) return [];
     const offset = document.offsetAt({
       line: fact.source.line - 1,
       character: fact.source.column - 1,
     });
-    const containing = rules.filter(
+    const smallest = smallestRule(stylesheet.rules.filter(
       (rule) => rule.startOffset <= offset && offset < rule.endOffset,
-    );
-    const smallest = smallestRule(containing);
+    ));
     return smallest ? [smallest] : [];
   }
 
-  const media = factMedia(fact);
-  if (media === null) return [];
-  const rulePath = fact.metadata.rulePath;
-  const browserPath = parseBrowserRulePath(rulePath);
-  if (browserPath !== undefined) {
-    const selector = fact.selector;
-    const exactPath = rules.filter((rule) =>
-      rule.identities.some((identity) =>
-        identity.path === browserPath &&
-        sameSelector(identity, selector) &&
-        (media === undefined || sameMedia(identity.media, media))
-      )
-    );
-    if (exactPath.length > 0) return exactPath;
+  if (Object.prototype.hasOwnProperty.call(fact.metadata, "rulePath")) {
+    const browserPath = parseBrowserRulePath(fact.metadata.rulePath);
+    if (browserPath === undefined) return [];
+    const rule = stylesheet.pathIndex.get(browserPath);
+    return rule ? [rule] : [];
   }
 
-  return rules.filter(
-    (rule) =>
-      rule.identities.some((identity) =>
-        sameSelector(identity, fact.selector) &&
-        (media === undefined || sameMedia(identity.media, media))
-      ),
-  );
+  const selector = fallbackSelectorKey(fact.selector);
+  if (selector === undefined) return [];
+  const media = factMedia(fact);
+  if (media === null) return [];
+  const bucket = media === undefined
+    ? stylesheet.fallbackIndex.get(selector)
+    : stylesheet.fallbackMediaIndex.get(fallbackMediaKey(selector, media));
+  return bucket ? [...bucket] : [];
 }
 
 export function smallestContainingRule(
   rules: readonly StylesheetRule[],
   offset: number,
 ): StylesheetRule | undefined {
-  return smallestRule(
-    rules.filter(
-      (rule) => rule.startOffset <= offset && offset < rule.endOffset,
-    ),
-  );
+  return smallestRule(rules.filter(
+    (rule) => rule.startOffset <= offset && offset < rule.endOffset,
+  ));
 }
 
 export function normalizeSelector(selector: string): string {
@@ -149,19 +136,51 @@ function parseStylesheet(
   const root = syntax === "scss"
     ? parseScss(text, { from: document.uri })
     : postcss.parse(text, { from: document.uri });
-  const identities = collectCssomIdentities(root);
   const rules: StylesheetRule[] = [];
+  const rulesByNode = new Map<Rule, StylesheetRule>();
   root.walkRules((node) => {
-    const rule = ruleFromNode(node, document, identities.get(node) ?? []);
-    if (rule) rules.push(rule);
+    const rule = ruleFromNode(node, document);
+    if (!rule) return;
+    rules.push(rule);
+    rulesByNode.set(node, rule);
   });
-  return { uri: document.uri, syntax, document, rules };
+
+  if (syntax === "scss") {
+    return emptyIndexedStylesheet(document, syntax, rules);
+  }
+
+  const indexes = new CssomIndexBuilder(rulesByNode);
+  indexes.index(root);
+  return {
+    uri: document.uri,
+    syntax,
+    document,
+    rules,
+    pathIndex: indexes.pathIndex,
+    fallbackIndex: indexes.fallbackIndex,
+    fallbackMediaIndex: indexes.fallbackMediaIndex,
+  };
+}
+
+function emptyIndexedStylesheet(
+  document: SourceDocument,
+  syntax: StylesheetSyntax,
+  rules: readonly StylesheetRule[],
+): ParsedStylesheet {
+  return {
+    uri: document.uri,
+    syntax,
+    document,
+    rules,
+    pathIndex: new Map(),
+    fallbackIndex: new Map(),
+    fallbackMediaIndex: new Map(),
+  };
 }
 
 function ruleFromNode(
   node: Rule,
   document: SourceDocument,
-  identities: readonly StylesheetRuleIdentity[],
 ): StylesheetRule | undefined {
   const start = node.source?.start?.offset;
   const end = node.source?.end?.offset;
@@ -170,148 +189,327 @@ function ruleFromNode(
   }
   return {
     selector: node.selector,
-    normalizedSelector: normalizeSelector(node.selector),
     range: {
       start: document.positionAt(start),
       end: document.positionAt(end),
     },
     startOffset: start,
     endOffset: end,
-    media: containingMedia(node),
-    path: identities[0]?.path ?? "",
-    identities,
   };
 }
 
-function collectCssomIdentities(
-  root: Root,
-): ReadonlyMap<Rule, readonly StylesheetRuleIdentity[]> {
-  const identities = new Map<Rule, StylesheetRuleIdentity[]>();
-  indexCssomChildren(root, [], undefined, identities);
-  return identities;
+type ContainerContext = "rules" | "keyframes";
+type RootPhase = "imports" | "namespaces" | "body";
+
+interface AtRuleClassification {
+  readonly kind: "count" | "drop" | "uncertain";
+  readonly childContext?: ContainerContext;
+  readonly recurse?: boolean;
 }
 
-function indexCssomChildren(
-  container: Container,
-  parentPath: readonly number[],
-  owner: Rule | undefined,
-  identities: Map<Rule, StylesheetRuleIdentity[]>,
-): void {
-  for (const [index, child] of cssomChildren(container, owner).entries()) {
-    const path = [...parentPath, index];
-    if (child.kind === "declarations") {
-      addIdentity(
-        identities,
-        child.owner,
-        path,
-        child.owner.selector,
-        containingMediaFrom(container),
-        hasRuleAncestor(child.owner),
-      );
-      continue;
-    }
+// Deliberately limited to rule types used by the read-only MVP. New or
+// feature-gated CSSOM rule types fail closed until a browser parity fixture is
+// added here.
+const GROUP_AT_RULES = new Set([
+  "container",
+  "layer",
+  "media",
+  "scope",
+  "starting-style",
+  "supports",
+]);
+const LEAF_AT_RULES = new Set([
+  "color-profile",
+  "counter-style",
+  "font-face",
+  "font-feature-values",
+  "font-palette-values",
+  "page",
+  "property",
+  "view-transition",
+]);
+const KEYFRAMES_AT_RULES = new Set(["keyframes", "-webkit-keyframes"]);
 
-    if (child.node.type === "rule") {
-      addIdentity(
-        identities,
-        child.node,
-        path,
-        child.node.selector,
-        containingMedia(child.node),
+class CssomIndexBuilder {
+  public readonly pathIndex = new Map<string, StylesheetRule | null>();
+  public readonly fallbackIndex: FallbackIndex;
+  public readonly fallbackMediaIndex: FallbackIndex;
+
+  private readonly selectorValidity = new Map<Rule, boolean>();
+  private readonly fallback = new FallbackIndexBuilder();
+  private visitedRules = 0;
+
+  public constructor(
+    private readonly rulesByNode: ReadonlyMap<Rule, StylesheetRule>,
+  ) {
+    this.fallbackIndex = this.fallback.selectorIndex;
+    this.fallbackMediaIndex = this.fallback.mediaIndex;
+  }
+
+  public index(root: Root): void {
+    this.indexContainer(root, [], undefined, "rules", true, 0);
+  }
+
+  private indexContainer(
+    container: Container,
+    parentPath: readonly number[],
+    owner: Rule | undefined,
+    context: ContainerContext,
+    inheritedTrusted: boolean,
+    depth: number,
+  ): void {
+    let pathTrusted = inheritedTrusted;
+    let cssomIndex = 0;
+    let cssRuleSeen = container.type !== "rule";
+    let declarationsPending = false;
+    let rootPhase: RootPhase = "imports";
+    const isRoot = container.type === "root" || container.type === "document";
+
+    const flushDeclarations = (): void => {
+      if (!declarationsPending || !owner) return;
+      const path = [...parentPath, cssomIndex];
+      const withinBudget = this.visitRule();
+      if (pathTrusted && withinBudget) {
+        this.addPath(path, owner);
+      }
+      const rule = this.rulesByNode.get(owner);
+      if (rule) {
+        this.fallback.add(rule, containingMediaFrom(container));
+      }
+      cssomIndex += 1;
+      declarationsPending = false;
+    };
+
+    const markUncertain = (): void => {
+      pathTrusted = false;
+      declarationsPending = false;
+      cssRuleSeen = true;
+      if (isRoot) rootPhase = "body";
+    };
+
+    for (const node of container.nodes ?? []) {
+      if (node.type === "decl") {
+        if (owner && cssRuleSeen) declarationsPending = true;
+        continue;
+      }
+      if (node.type === "comment") continue;
+
+      if (node.type === "rule") {
+        if (context === "keyframes") {
+          flushDeclarations();
+          this.visitRule();
+          cssomIndex += 1;
+          cssRuleSeen = true;
+          continue;
+        }
+        if (!this.validSelector(node)) {
+          markUncertain();
+          continue;
+        }
+
+        flushDeclarations();
+        if (isRoot) rootPhase = "body";
+        const path = [...parentPath, cssomIndex];
+        const withinBudget = this.visitRule();
+        const rule = this.rulesByNode.get(node);
+        if (rule) {
+          this.fallback.add(rule, containingMedia(node));
+          if (pathTrusted && withinBudget) this.addPath(path, node);
+        } else {
+          pathTrusted = false;
+        }
+        cssomIndex += 1;
+        cssRuleSeen = true;
+        if (depth < INSPECT_LIMITS.cssRuleDepth) {
+          this.indexContainer(
+            node,
+            path,
+            node,
+            "rules",
+            pathTrusted && withinBudget,
+            depth + 1,
+          );
+        }
+        continue;
+      }
+
+      if (node.type !== "atrule") {
+        markUncertain();
+        continue;
+      }
+
+      const classification = classifyAtRule(
+        node,
+        isRoot,
+        rootPhase,
         owner !== undefined,
       );
-      indexCssomChildren(child.node, path, child.node, identities);
-      continue;
-    }
+      if (classification.kind === "drop") continue;
+      if (classification.kind === "uncertain") {
+        markUncertain();
+        continue;
+      }
 
-    indexCssomChildren(child.node, path, owner, identities);
-  }
-}
-
-type CssomChild =
-  | { readonly kind: "node"; readonly node: Rule | AtRule }
-  | { readonly kind: "declarations"; readonly owner: Rule };
-
-function cssomChildren(
-  container: Container,
-  owner: Rule | undefined,
-): CssomChild[] {
-  const result: CssomChild[] = [];
-  const canOwnDeclarations = owner !== undefined;
-  let cssRuleSeen = container.type !== "rule";
-  let declarationsPending = false;
-
-  const flushDeclarations = (): void => {
-    if (declarationsPending && owner) {
-      result.push({ kind: "declarations", owner });
-    }
-    declarationsPending = false;
-  };
-
-  for (const node of container.nodes ?? []) {
-    if (isCssomRuleNode(node)) {
       flushDeclarations();
-      result.push({ kind: "node", node });
+      const name = node.name.toLowerCase();
+      if (isRoot) {
+        rootPhase = name === "import"
+          ? rootPhase
+          : name === "namespace"
+            ? "namespaces"
+            : "body";
+      }
+      const path = [...parentPath, cssomIndex];
+      const withinBudget = this.visitRule();
+      cssomIndex += 1;
       cssRuleSeen = true;
-      continue;
+      if (
+        classification.recurse &&
+        node.nodes &&
+        depth < INSPECT_LIMITS.cssRuleDepth
+      ) {
+        this.indexContainer(
+          node,
+          path,
+          owner,
+          classification.childContext ?? "rules",
+          pathTrusted && withinBudget,
+          depth + 1,
+        );
+      }
     }
-    if (node.type === "decl" && canOwnDeclarations && cssRuleSeen) {
-      declarationsPending = true;
+    flushDeclarations();
+  }
+
+  private validSelector(rule: Rule): boolean {
+    const cached = this.selectorValidity.get(rule);
+    if (cached !== undefined) return cached;
+    const selector = rule.selector;
+    let valid = selector.length > 0 &&
+      selector.length <= INSPECT_LIMITS.selectorLength;
+    if (valid) {
+      try {
+        const root = selectorParser().astSync(selector);
+        valid = root.nodes.length > 0 &&
+          root.nodes.every((entry) => entry.nodes.length > 0);
+      } catch {
+        valid = false;
+      }
     }
+    this.selectorValidity.set(rule, valid);
+    return valid;
   }
-  flushDeclarations();
-  return result;
-}
 
-function isCssomRuleNode(node: ChildNode): node is Rule | AtRule {
-  return node.type === "rule" ||
-    (node.type === "atrule" && node.name.toLowerCase() !== "charset");
-}
+  private visitRule(): boolean {
+    const withinBudget = this.visitedRules < INSPECT_LIMITS.cssRules;
+    this.visitedRules += 1;
+    return withinBudget;
+  }
 
-function addIdentity(
-  identities: Map<Rule, StylesheetRuleIdentity[]>,
-  rule: Rule,
-  path: readonly number[],
-  selector: string,
-  media: readonly string[],
-  nested: boolean,
-): void {
-  const entries = identities.get(rule) ?? [];
-  entries.push({
-    selector,
-    normalizedSelector: normalizeSelector(selector),
-    media,
-    path: path.join("."),
-    nested,
-  });
-  identities.set(rule, entries);
-}
-
-function containingMedia(node: Rule): readonly string[] {
-  return containingMediaFrom(node.parent);
-}
-
-function containingMediaFrom(
-  node: Container | Document | undefined,
-): readonly string[] {
-  const media: string[] = [];
-  let current: Container | Document | undefined = node;
-  while (current) {
-    if (current.type === "atrule" && (current as AtRule).name === "media") {
-      media.unshift(normalizeMedia((current as AtRule).params));
+  private addPath(path: readonly number[], node: Rule): void {
+    const rule = this.rulesByNode.get(node);
+    if (!rule) return;
+    const key = path.join(".");
+    if (this.pathIndex.has(key)) {
+      this.pathIndex.set(key, null);
+      return;
     }
-    current = current.parent;
+    this.pathIndex.set(key, rule);
   }
-  return media;
 }
 
-function hasRuleAncestor(node: Rule): boolean {
-  let parent: Container | Document | undefined = node.parent;
-  while (parent) {
-    if (parent.type === "rule") return true;
-    parent = parent.parent;
+class FallbackIndexBuilder {
+  public readonly selectorIndex = new Map<
+    string,
+    readonly StylesheetRule[] | null
+  >();
+  public readonly mediaIndex = new Map<
+    string,
+    readonly StylesheetRule[] | null
+  >();
+
+  private entries = 0;
+  private disabled = false;
+
+  public add(rule: StylesheetRule, media: readonly string[]): void {
+    if (this.disabled) return;
+    const selector = fallbackSelectorKey(rule.selector);
+    if (selector === undefined) return;
+    this.addToIndex(this.selectorIndex, selector, rule);
+    this.addToIndex(
+      this.mediaIndex,
+      fallbackMediaKey(selector, media.map(normalizeMedia)),
+      rule,
+    );
   }
-  return false;
+
+  private addToIndex(
+    index: Map<string, readonly StylesheetRule[] | null>,
+    key: string,
+    rule: StylesheetRule,
+  ): void {
+    if (this.disabled) return;
+    const bucket = index.get(key);
+    if (bucket === null || bucket?.includes(rule)) return;
+    this.entries += 1;
+    if (this.entries > FALLBACK_ENTRY_LIMIT) {
+      this.disabled = true;
+      this.selectorIndex.clear();
+      this.mediaIndex.clear();
+      return;
+    }
+    if (bucket && bucket.length >= FALLBACK_BUCKET_LIMIT) {
+      index.set(key, null);
+      return;
+    }
+    index.set(key, bucket ? [...bucket, rule] : [rule]);
+  }
+}
+
+function classifyAtRule(
+  rule: AtRule,
+  isRoot: boolean,
+  rootPhase: RootPhase,
+  nestedInStyle: boolean,
+): AtRuleClassification {
+  const name = rule.name.toLowerCase();
+  const hasBlock = rule.nodes !== undefined;
+  const hasParameters = rule.params.trim().length > 0;
+  if (name === "charset") return { kind: "drop" };
+  if (name === "import") {
+    return !hasBlock && hasParameters && isRoot && rootPhase === "imports"
+      ? { kind: "count" }
+      : { kind: "uncertain" };
+  }
+  if (name === "namespace") {
+    return !hasBlock && hasParameters && isRoot && rootPhase !== "body"
+      ? { kind: "count" }
+      : { kind: "uncertain" };
+  }
+  if (GROUP_AT_RULES.has(name)) {
+    if (!hasBlock && !(name === "layer" && hasParameters)) {
+      return { kind: "uncertain" };
+    }
+    return { kind: "count", recurse: true, childContext: "rules" };
+  }
+  if (KEYFRAMES_AT_RULES.has(name)) {
+    return nestedInStyle || !hasBlock || !hasParameters
+      ? { kind: "uncertain" }
+      : { kind: "count", recurse: true, childContext: "keyframes" };
+  }
+  if (LEAF_AT_RULES.has(name)) {
+    return nestedInStyle || !hasBlock
+      ? { kind: "uncertain" }
+      : { kind: "count" };
+  }
+  return { kind: "uncertain" };
+}
+
+function validSourcePosition(line: number, column: number): boolean {
+  return Number.isSafeInteger(line) &&
+    Number.isSafeInteger(column) &&
+    line >= 1 &&
+    column >= 1;
 }
 
 function parseBrowserRulePath(value: unknown): string | undefined {
@@ -342,77 +540,12 @@ function parseBrowserRulePath(value: unknown): string | undefined {
   return segments.slice(1).join(".");
 }
 
-function sameSelector(
-  identity: StylesheetRuleIdentity,
-  selector: string,
-): boolean {
-  if (
-    identity.selector.length > INSPECT_LIMITS.selectorLength ||
-    selector.length > INSPECT_LIMITS.selectorLength
-  ) {
-    return false;
+function fallbackSelectorKey(selector: string): string | undefined {
+  if (selector.length === 0 || selector.length > INSPECT_LIMITS.selectorLength) {
+    return undefined;
   }
-  if (identity.selector.trim() === selector.trim()) return true;
-
-  const left = identity.nested
-    ? absolutizeNestedSelector(identity.selector)
-    : identity.selector;
-  const right = identity.nested
-    ? absolutizeNestedSelector(selector)
-    : selector;
-  if (left === undefined || right === undefined) return false;
-
-  const leftKey = canonicalizeCss(left, "selector");
-  const rightKey = canonicalizeCss(right, "selector");
-  return leftKey !== undefined && leftKey === rightKey;
-}
-
-function absolutizeNestedSelector(selector: string): string | undefined {
-  const branches = splitTopLevelSelectorList(selector);
-  if (!branches) return undefined;
-  return branches.map((branch) =>
-    hasNestingSelector(branch) ? branch : `& ${branch}`
-  ).join(", ");
-}
-
-function hasNestingSelector(selector: string): boolean {
-  let quote: "\"" | "'" | undefined;
-  let escaped = false;
-  let inComment = false;
-  for (let index = 0; index < selector.length; index += 1) {
-    const character = selector[index]!;
-    const next = selector[index + 1];
-    if (inComment) {
-      if (character === "*" && next === "/") {
-        inComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (character === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      inComment = true;
-      index += 1;
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (character === "&") return true;
-  }
-  return false;
+  const key = normalizeSelector(selector);
+  return key.length > 0 ? key : undefined;
 }
 
 function factMedia(
@@ -433,311 +566,36 @@ function factMedia(
   return value.map(normalizeMedia);
 }
 
-function sameMedia(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length &&
-    left.every((entry, index) => {
-      const other = right[index];
-      if (other === undefined) return false;
-      if (entry.trim() === other.trim()) return true;
-      const leftKey = canonicalizeCss(entry, "media");
-      const rightKey = canonicalizeCss(other, "media");
-      return leftKey !== undefined && leftKey === rightKey;
-    });
+function fallbackMediaKey(
+  selector: string,
+  media: readonly string[],
+): string {
+  return JSON.stringify([selector, media]);
+}
+
+function containingMedia(node: Rule): readonly string[] {
+  return containingMediaFrom(node.parent);
+}
+
+function containingMediaFrom(
+  node: Container | Document | undefined,
+): readonly string[] {
+  const media: string[] = [];
+  let current: Container | Document | undefined = node;
+  while (current) {
+    if (
+      current.type === "atrule" &&
+      (current as AtRule).name.toLowerCase() === "media"
+    ) {
+      media.unshift(normalizeMedia((current as AtRule).params));
+    }
+    current = current.parent;
+  }
+  return media;
 }
 
 function normalizeMedia(value: string): string {
   return value.trim();
-}
-
-type CanonicalMode = "selector" | "media";
-
-type CssToken =
-  | { readonly kind: "symbol"; readonly value: string }
-  | { readonly kind: "string"; readonly value: string }
-  | { readonly kind: "escape"; readonly value: string }
-  | { readonly kind: "whitespace"; readonly value: " " };
-
-function canonicalizeCss(
-  value: string,
-  mode: CanonicalMode,
-): string | undefined {
-  const limit = mode === "selector"
-    ? INSPECT_LIMITS.selectorLength
-    : INSPECT_LIMITS.valueLength;
-  if (value.length === 0 || value.length > limit) return undefined;
-  const tokens = tokenizeCss(value);
-  if (!tokens) return undefined;
-
-  const canonical: CssToken[] = [];
-  let whitespacePending = false;
-  let bracketDepth = 0;
-  let parenthesisDepth = 0;
-  for (const token of tokens) {
-    if (token.kind === "whitespace") {
-      whitespacePending = canonical.length > 0;
-      continue;
-    }
-
-    const previous = canonical.at(-1);
-    if (
-      whitespacePending &&
-      previous &&
-      isMeaningfulWhitespace(previous, token, mode, bracketDepth)
-    ) {
-      canonical.push({ kind: "whitespace", value: " " });
-    }
-    whitespacePending = false;
-
-    if (token.kind === "symbol") {
-      if (token.value === "[") bracketDepth += 1;
-      if (token.value === "]") {
-        bracketDepth -= 1;
-        if (bracketDepth < 0) return undefined;
-      }
-      if (token.value === "(") parenthesisDepth += 1;
-      if (token.value === ")") {
-        parenthesisDepth -= 1;
-        if (parenthesisDepth < 0) return undefined;
-      }
-    }
-    canonical.push(token);
-  }
-  if (bracketDepth !== 0 || parenthesisDepth !== 0) return undefined;
-  return JSON.stringify(canonical);
-}
-
-function tokenizeCss(value: string): CssToken[] | undefined {
-  const tokens: CssToken[] = [];
-  for (let index = 0; index < value.length;) {
-    const character = value[index]!;
-    const next = value[index + 1];
-    if (isCssWhitespace(character)) {
-      while (index < value.length && isCssWhitespace(value[index]!)) index += 1;
-      tokens.push({ kind: "whitespace", value: " " });
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      const end = value.indexOf("*/", index + 2);
-      if (end < 0) return undefined;
-      index = end + 2;
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      const result = consumeCssString(value, index, character);
-      if (!result) return undefined;
-      tokens.push({ kind: "string", value: result.value });
-      index = result.nextIndex;
-      continue;
-    }
-    if (character === "\\") {
-      const result = consumeCssEscape(value, index);
-      if (!result) return undefined;
-      tokens.push({ kind: "escape", value: result.value });
-      index = result.nextIndex;
-      continue;
-    }
-
-    const pair = `${character}${next ?? ""}`;
-    if (CSS_TWO_CHARACTER_TOKENS.has(pair)) {
-      tokens.push({ kind: "symbol", value: pair });
-      index += 2;
-      continue;
-    }
-    tokens.push({ kind: "symbol", value: character });
-    index += 1;
-  }
-  return tokens;
-}
-
-const CSS_TWO_CHARACTER_TOKENS = new Set([
-  "||",
-  "~=",
-  "|=",
-  "^=",
-  "$=",
-  "*=",
-  "<=",
-  ">=",
-]);
-
-function consumeCssString(
-  value: string,
-  start: number,
-  quote: "\"" | "'",
-): { readonly value: string; readonly nextIndex: number } | undefined {
-  let decoded = "";
-  for (let index = start + 1; index < value.length;) {
-    const character = value[index]!;
-    if (character === quote) {
-      return { value: decoded, nextIndex: index + 1 };
-    }
-    if (character === "\n" || character === "\r" || character === "\f") {
-      return undefined;
-    }
-    if (character === "\\") {
-      const result = consumeCssEscape(value, index);
-      if (!result) return undefined;
-      decoded += result.value;
-      index = result.nextIndex;
-      continue;
-    }
-    decoded += character;
-    index += 1;
-  }
-  return undefined;
-}
-
-function consumeCssEscape(
-  value: string,
-  start: number,
-): { readonly value: string; readonly nextIndex: number } | undefined {
-  let index = start + 1;
-  const character = value[index];
-  if (character === undefined) return undefined;
-  if (character === "\r") {
-    return {
-      value: "",
-      nextIndex: value[index + 1] === "\n" ? index + 2 : index + 1,
-    };
-  }
-  if (character === "\n" || character === "\f") {
-    return { value: "", nextIndex: index + 1 };
-  }
-  if (!/[0-9a-fA-F]/.test(character)) {
-    return { value: character, nextIndex: index + 1 };
-  }
-
-  const hexStart = index;
-  while (
-    index < value.length &&
-    index - hexStart < 6 &&
-    /[0-9a-fA-F]/.test(value[index]!)
-  ) {
-    index += 1;
-  }
-  const codePoint = Number.parseInt(value.slice(hexStart, index), 16);
-  if (index < value.length && isCssWhitespace(value[index]!)) {
-    if (value[index] === "\r" && value[index + 1] === "\n") index += 2;
-    else index += 1;
-  }
-  const decoded = codePoint === 0 ||
-      codePoint > 0x10ffff ||
-      (codePoint >= 0xd800 && codePoint <= 0xdfff)
-    ? "\uFFFD"
-    : String.fromCodePoint(codePoint);
-  return { value: decoded, nextIndex: index };
-}
-
-function isMeaningfulWhitespace(
-  previous: CssToken,
-  next: CssToken,
-  mode: CanonicalMode,
-  bracketDepth: number,
-): boolean {
-  if (mode === "selector") {
-    if (bracketDepth > 0) return false;
-    return !isSelectorSpacingBoundary(previous, "after") &&
-      !isSelectorSpacingBoundary(next, "before");
-  }
-  return !isMediaSpacingBoundary(previous, "after") &&
-    !isMediaSpacingBoundary(next, "before");
-}
-
-function isSelectorSpacingBoundary(
-  token: CssToken,
-  side: "before" | "after",
-): boolean {
-  if (token.kind !== "symbol") return false;
-  if ([",", ">", "+", "~", "||"].includes(token.value)) return true;
-  return side === "after" ? token.value === "(" : token.value === ")";
-}
-
-function isMediaSpacingBoundary(
-  token: CssToken,
-  side: "before" | "after",
-): boolean {
-  if (token.kind !== "symbol") return false;
-  if ([":", ",", "/", "<", "<=", ">", ">=", "="].includes(token.value)) {
-    return true;
-  }
-  return side === "after" ? token.value === "(" : token.value === ")";
-}
-
-function splitTopLevelSelectorList(value: string): string[] | undefined {
-  if (value.length === 0 || value.length > INSPECT_LIMITS.selectorLength) {
-    return undefined;
-  }
-  const branches: string[] = [];
-  let start = 0;
-  let bracketDepth = 0;
-  let parenthesisDepth = 0;
-  let quote: "\"" | "'" | undefined;
-  let escaped = false;
-  let inComment = false;
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index]!;
-    const next = value[index + 1];
-    if (inComment) {
-      if (character === "*" && next === "/") {
-        inComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (character === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === "/" && next === "*") {
-      inComment = true;
-      index += 1;
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (character === "[") bracketDepth += 1;
-    else if (character === "]") bracketDepth -= 1;
-    else if (character === "(") parenthesisDepth += 1;
-    else if (character === ")") parenthesisDepth -= 1;
-    if (bracketDepth < 0 || parenthesisDepth < 0) return undefined;
-    if (character === "," && bracketDepth === 0 && parenthesisDepth === 0) {
-      const branch = value.slice(start, index).trim();
-      if (branch.length === 0) return undefined;
-      branches.push(branch);
-      start = index + 1;
-    }
-  }
-  if (
-    escaped ||
-    quote !== undefined ||
-    inComment ||
-    bracketDepth !== 0 ||
-    parenthesisDepth !== 0
-  ) {
-    return undefined;
-  }
-  const branch = value.slice(start).trim();
-  if (branch.length === 0) return undefined;
-  branches.push(branch);
-  return branches;
-}
-
-function isCssWhitespace(value: string): boolean {
-  return value === " " ||
-    value === "\n" ||
-    value === "\r" ||
-    value === "\t" ||
-    value === "\f";
 }
 
 function smallestRule(

@@ -147,7 +147,7 @@ export class ScssSourcePlugin implements SourcePlugin {
     }
 
     const generatedRules = findMatchingCssRules(
-      generated.rules,
+      generated,
       entry.fact,
       generated.document,
     );

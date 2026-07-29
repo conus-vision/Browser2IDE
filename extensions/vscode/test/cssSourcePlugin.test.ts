@@ -10,7 +10,11 @@ import {
   type InspectTarget,
 } from "@browser2ide/protocol";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
-import { normalizeSelector } from "../src/sourcePlugins/stylesheetAst.js";
+import {
+  findMatchingCssRules,
+  normalizeSelector,
+  StylesheetAstCache,
+} from "../src/sourcePlugins/stylesheetAst.js";
 
 describe("CssSourcePlugin", () => {
   it("returns every complete selected and parent CSS rule", async () => {
@@ -113,6 +117,72 @@ describe("CssSourcePlugin", () => {
     ]);
   });
 
+  it.each([
+    {
+      name: "unquoted attribute values",
+      first: "[type=button]",
+      second: '[type="button"]',
+      browser: '[type="button"]',
+    },
+    {
+      name: "escaped identifiers",
+      first: ".\\63 ard",
+      second: ".card",
+      browser: ".card",
+    },
+    {
+      name: "equivalent nth expressions",
+      first: ":nth-child(odd)",
+      second: ":nth-child(2n+1)",
+      browser: ":nth-child(2n+1)",
+    },
+  ])("uses a trusted path for $name without selector serialization", async ({
+    first,
+    second,
+    browser,
+  }) => {
+    const text = [
+      `${first} { color: red; }`,
+      `${second} { color: blue; }`,
+    ].join("\n");
+    const target = cssTarget("selected", browser, "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0";
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      `${first} { color: red; }`,
+    ]);
+  });
+
+  it("uses a trusted path for minified nested selectors and uppercase media", async () => {
+    const text = [
+      "@MEDIA (min-width:40rem) {",
+      "  .card {",
+      "    >.title,.summary { color: red; }",
+      "  }",
+      "}",
+      "@media (min-width: 40rem) {",
+      "  .card {",
+      "    > .title, .summary { color: blue; }",
+      "  }",
+      "}",
+    ].join("\n");
+    const target = cssTarget(
+      "selected",
+      "& > .title, & .summary",
+      "/dist/app.css",
+    );
+    target.facts[0]!.metadata.rulePath = "0.0.0.0";
+    target.facts[0]!.metadata.media = ["(min-width: 40rem)"];
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      ">.title,.summary { color: red; }",
+    ]);
+  });
+
   it("maps CSSOM nesting paths without confusing declarations or sibling parents", async () => {
     const text = [
       ".card {",
@@ -178,6 +248,91 @@ describe("CssSourcePlugin", () => {
 
     expect(snippets(text, result.matches)).toEqual([
       ".title { color: blue; }",
+    ]);
+  });
+
+  it("preserves nested declaration runs through supports and media groups", async () => {
+    const text = [
+      ".card {",
+      "  color: red;",
+      "  @supports (display: grid) {",
+      "    display: grid;",
+      "    @media (min-width: 40rem) {",
+      "      gap: 1rem;",
+      "    }",
+      "  }",
+      "  background: white;",
+      "}",
+    ].join("\n");
+    const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0";
+    target.facts.push(
+      cssFact(".card", "display", "grid", "/dist/app.css", "0.0.0.0"),
+      cssFact(".card", "gap", "1rem", "/dist/app.css", "0.0.0.1.0"),
+      cssFact(".card", "background", "white", "/dist/app.css", "0.0.1"),
+    );
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(result.matches).toHaveLength(4);
+    expect(snippets(text, result.matches)).toEqual([
+      text,
+      text,
+      text,
+      text,
+    ]);
+  });
+
+  it("counts interleaved and trailing CSSNestedDeclarations", async () => {
+    const text = [
+      ".card {",
+      "  .first { color: red; }",
+      "  display: grid;",
+      "  .second { color: blue; }",
+      "  gap: 1rem;",
+      "}",
+    ].join("\n");
+    const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0.1";
+    target.facts.push(
+      cssFact(".card", "gap", "1rem", "/dist/app.css", "0.0.3"),
+    );
+    const first = cssTarget("selected", "& .first", "/dist/app.css");
+    first.facts[0]!.metadata.rulePath = "0.0.0";
+    const second = cssTarget("selected", "& .second", "/dist/app.css");
+    second.facts[0]!.metadata.rulePath = "0.0.2";
+
+    const result = await resolveCss(
+      text,
+      selection([target, first, second]),
+    );
+
+    expect(snippets(text, result.matches)).toEqual([
+      text,
+      text,
+      ".first { color: red; }",
+      ".second { color: blue; }",
+    ]);
+  });
+
+  it("keeps nested media uncertainty local to its CSSRuleList", async () => {
+    const text = [
+      "@media (min-width: 40rem) {",
+      "  @unknown demo;",
+      "  .duplicate { color: red; }",
+      "  .duplicate { color: blue; }",
+      "}",
+      ".outside { color: green; }",
+    ].join("\n");
+    const uncertain = cssTarget("selected", ".duplicate", "/dist/app.css");
+    uncertain.facts[0]!.metadata.rulePath = "0.0.1";
+    const trusted = cssTarget("parent", ".outside", "/dist/app.css");
+    trusted.facts[0]!.metadata.rulePath = "0.1";
+
+    const result = await resolveCss(text, selection([uncertain, trusted]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".outside { color: green; }",
     ]);
   });
 
@@ -265,11 +420,10 @@ describe("CssSourcePlugin", () => {
     ]);
   });
 
-  it("rejects media identity work beyond the inspect value limit", async () => {
+  it("rejects oversized media metadata for pathless fallback", async () => {
     const media = "x".repeat(INSPECT_LIMITS.valueLength + 1);
     const text = `@media ${media} { .card { color: red; } }`;
     const target = cssTarget("selected", ".card", "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0.0";
     target.facts[0]!.metadata.media = [media];
 
     const result = await resolveCss(text, selection([target]));
@@ -294,20 +448,47 @@ describe("CssSourcePlugin", () => {
   });
 
   it.each([
-    ["a descendant combinator", ".a .b", ".a.b"],
-    [
-      "attribute string content",
-      '[data-label="a  b"]',
-      '[data-label="a b"]',
-    ],
-  ])("does not erase meaningful whitespace in %s", async (
-    _name,
-    sourceSelector,
-    browserSelector,
-  ) => {
-    const text = `${sourceSelector} { color: red; }`;
-    const target = cssTarget("selected", browserSelector, "/dist/app.css");
-    target.facts[0]!.metadata.rulePath = "0.0";
+    {
+      name: "an unknown at-rule",
+      prefix: "@unknown demo;",
+      path: "0.1",
+    },
+    {
+      name: "an invalid selector",
+      prefix: ".broken,, .selector { color: black; }",
+      path: "0.1",
+    },
+    {
+      name: "a misplaced import",
+      prefix: ".before { color: black; }\n@import url('late.css');",
+      path: "0.2",
+    },
+    {
+      name: "a misplaced namespace",
+      prefix: ".before { color: black; }\n@namespace svg url(http://www.w3.org/2000/svg);",
+      path: "0.2",
+    },
+    {
+      name: "a malformed known group rule",
+      prefix: "@media screen;",
+      path: "0.1",
+    },
+    {
+      name: "a malformed known leaf rule",
+      prefix: "@font-face;",
+      path: "0.1",
+    },
+  ])("fails closed after $name shifts a browser path", async ({
+    prefix,
+    path,
+  }) => {
+    const text = [
+      prefix,
+      ".duplicate { color: red; }",
+      ".duplicate { color: blue; }",
+    ].join("\n");
+    const target = cssTarget("selected", ".duplicate", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = path;
 
     const result = await resolveCss(text, selection([target]));
 
@@ -320,21 +501,104 @@ describe("CssSourcePlugin", () => {
     );
   });
 
-  it("falls back safely when an untrusted rule path is malformed or excessive", async () => {
+  it("never falls back when a rule path is malformed, excessive, or unresolved", async () => {
     const malformed = cssTarget("selected", ".card", "/dist/app.css");
     malformed.facts[0]!.metadata.rulePath = "0.not-an-index";
     const excessive = cssTarget("parent", ".layout", "/dist/app.css");
     excessive.facts[0]!.metadata.rulePath = `0.${"1.".repeat(1000)}1`;
+    const unresolved = cssTarget("selected", ".card", "/dist/app.css");
+    unresolved.facts[0]!.metadata.rulePath = "0.99";
 
     const result = await resolveCss(
       ".layout { display: grid; }\n.card { color: red; }",
-      selection([malformed, excessive]),
+      selection([malformed, excessive, unresolved]),
     );
 
-    expect(result.matches.map((match) => [match.targetRole, match.label])).toEqual([
-      ["selected", ".card"],
-      ["parent", ".layout"],
-    ]);
+    expect(result.matches).toEqual([]);
+  });
+
+  it("does not use selector fallback for an invalidated path collision", () => {
+    const ast = new StylesheetAstCache();
+    const parsed = ast.parseText(
+      "file:///workspace/dist/app.css",
+      "css",
+      ".card { color: red; }",
+    );
+    const collided = {
+      ...parsed,
+      pathIndex: new Map([["0", null]]),
+    } as unknown as Parameters<typeof findMatchingCssRules>[0];
+    const fact = cssFact(
+      ".card",
+      "color",
+      "red",
+      "/dist/app.css",
+      "0.0",
+    );
+
+    expect(() =>
+      findMatchingCssRules(collided, fact, parsed.document)
+    ).not.toThrow();
+    expect(findMatchingCssRules(collided, fact, parsed.document)).toEqual([]);
+  });
+
+  it("returns bounded exact duplicates only when rulePath is absent", async () => {
+    const boundedText = [
+      ".duplicate { color: red; }",
+      ".duplicate { color: blue; }",
+    ].join("\n");
+    const bounded = await resolveCss(
+      boundedText,
+      selection([cssTarget("selected", ".duplicate", "/dist/app.css")]),
+    );
+    const oversizedText = Array.from(
+      { length: 65 },
+      (_, index) => `.duplicate { order: ${index}; }`,
+    ).join("\n");
+    const oversized = await resolveCss(
+      oversizedText,
+      selection([cssTarget("selected", ".duplicate", "/dist/app.css")]),
+    );
+
+    expect(bounded.matches).toHaveLength(2);
+    expect(oversized.matches).toEqual([]);
+  });
+
+  it("uses precomputed indexes for path and fallback lookups", () => {
+    const ast = new StylesheetAstCache();
+    const parsed = ast.parseText(
+      "file:///workspace/dist/app.css",
+      "css",
+      Array.from(
+        { length: 1024 },
+        (_, index) => `.rule-${index} { order: ${index}; }`,
+      ).join("\n"),
+    );
+    const source = parsed.document;
+    Object.defineProperty(parsed, "rules", {
+      get(): never {
+        throw new Error("lookup scanned ParsedStylesheet.rules");
+      },
+    });
+    const byPath = cssFact(
+      ".browser-serialized-selector",
+      "order",
+      "1023",
+      "/dist/app.css",
+      "0.1023",
+    );
+    const bySelector: CssRuleFact = {
+      ...byPath,
+      selector: ".rule-512",
+      metadata: { sourceUrl: "/dist/app.css" },
+    };
+
+    expect(findMatchingCssRules(parsed, byPath, source).map(
+      (rule) => rule.selector,
+    )).toEqual([".rule-1023"]);
+    expect(findMatchingCssRules(parsed, bySelector, source).map(
+      (rule) => rule.selector,
+    )).toEqual([".rule-512"]);
   });
 
   it("does not match an ambiguous or different active CSS source", async () => {

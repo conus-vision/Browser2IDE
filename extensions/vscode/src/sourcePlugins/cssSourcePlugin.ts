@@ -55,7 +55,7 @@ export class CssSourcePlugin implements SourcePlugin {
       if (!resolution.uris.includes(context.document.uri)) continue;
 
       for (const rule of findMatchingCssRules(
-        parsed.rules,
+        parsed,
         entry.fact,
         context.document,
       )) {

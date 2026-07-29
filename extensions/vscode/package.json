@@ -115,6 +115,7 @@
     "@browser2ide/plugin-api": "workspace:*",
     "@browser2ide/protocol": "workspace:*",
     "postcss": "8.5.16",
+    "postcss-selector-parser": "7.1.0",
     "postcss-scss": "4.0.9",
     "source-map": "^0.7.6",
     "ws": "^8.18.0"
