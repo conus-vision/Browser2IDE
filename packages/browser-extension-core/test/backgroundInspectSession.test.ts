@@ -3,31 +3,58 @@ import {
   BackgroundInspectCoordinator,
   attachBackgroundInspectSession,
 } from "../src/backgroundInspectSession.js";
-import {
-  INSPECT_PORT_NAME,
-  type InspectPortRequest,
-} from "../src/inspectPortProtocol.js";
+import type { InspectPortRequest } from "../src/inspectPortProtocol.js";
 
 describe("background inspect session", () => {
-  it("disables the tab after its port disconnects during a pending enable", async () => {
-    const enable = deferred<void>();
+  it("uses its trusted tab and rejects a panel-supplied tab ID", async () => {
     const calls: unknown[] = [];
-    const port = new FakePort(INSPECT_PORT_NAME);
+    const port = new FakePort("browser2ide.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript(details) {
         calls.push(["inject", details]);
       },
       async sendTabMessage(tabId, message) {
         calls.push(["tab", tabId, message]);
-        if (
-          isRecord(message) &&
-          message.type === "enableInspectMode"
-        ) {
+      },
+    });
+    const session = attachBackgroundInspectSession(port, coordinator, 17);
+
+    port.emitMessage({ ...request("spoof", true), tabId: 99 });
+    port.emitMessage(request("trusted", true));
+    await session.whenIdle();
+
+    expect(calls).toEqual([
+      [
+        "inject",
+        { target: { tabId: 17 }, files: ["dist/contentScript.js"] },
+      ],
+      ["tab", 17, { type: "enableInspectMode" }],
+    ]);
+    expect(port.sent).toEqual([
+      {
+        type: "browser2ide.inspect.result",
+        requestId: "trusted",
+        ok: true,
+      },
+    ]);
+  });
+
+  it("disables the trusted tab after its port disconnects during enable", async () => {
+    const enable = deferred<void>();
+    const calls: unknown[] = [];
+    const port = new FakePort("browser2ide.devtools.channel-1");
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript(details) {
+        calls.push(["inject", details]);
+      },
+      async sendTabMessage(tabId, message) {
+        calls.push(["tab", tabId, message]);
+        if (isRecord(message) && message.type === "enableInspectMode") {
           await enable.promise;
         }
       },
     });
-    const session = attachBackgroundInspectSession(port, coordinator);
+    const session = attachBackgroundInspectSession(port, coordinator, 17);
 
     port.emitMessage(request("enable", true));
     await flushAsync();
@@ -49,22 +76,19 @@ describe("background inspect session", () => {
   it("serializes enable and disable requests on the owning port", async () => {
     const enable = deferred<void>();
     const calls: unknown[] = [];
-    const port = new FakePort(INSPECT_PORT_NAME);
+    const port = new FakePort("browser2ide.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript() {
         calls.push("inject");
       },
       async sendTabMessage(_tabId, message) {
         calls.push(message);
-        if (
-          isRecord(message) &&
-          message.type === "enableInspectMode"
-        ) {
+        if (isRecord(message) && message.type === "enableInspectMode") {
           await enable.promise;
         }
       },
     });
-    const session = attachBackgroundInspectSession(port, coordinator);
+    const session = attachBackgroundInspectSession(port, coordinator, 17);
 
     port.emitMessage(request("enable", true));
     await flushAsync();
@@ -93,14 +117,18 @@ describe("background inspect session", () => {
 
   it("disconnects the content lease synchronously for the current owner", async () => {
     const calls: unknown[] = [];
-    const panelPort = new FakePort(INSPECT_PORT_NAME);
+    const panelPort = new FakePort("browser2ide.devtools.channel-1");
     const coordinator = new BackgroundInspectCoordinator({
       async executeScript() {},
       async sendTabMessage(_tabId, message) {
         calls.push(message);
       },
     });
-    const session = attachBackgroundInspectSession(panelPort, coordinator);
+    const session = attachBackgroundInspectSession(
+      panelPort,
+      coordinator,
+      17,
+    );
 
     panelPort.emitMessage(request("enable", true));
     await session.whenIdle();
@@ -127,10 +155,7 @@ describe("background inspect session", () => {
       },
       async sendTabMessage(_tabId, message) {
         calls.push(message);
-        if (
-          isRecord(message) &&
-          message.type === "enableInspectMode"
-        ) {
+        if (isRecord(message) && message.type === "enableInspectMode") {
           enableCount += 1;
           if (enableCount === 1) {
             await firstEnable.promise;
@@ -138,10 +163,10 @@ describe("background inspect session", () => {
         }
       },
     });
-    const oldPort = new FakePort(INSPECT_PORT_NAME);
-    const newPort = new FakePort(INSPECT_PORT_NAME);
-    attachBackgroundInspectSession(oldPort, coordinator);
-    attachBackgroundInspectSession(newPort, coordinator);
+    const oldPort = new FakePort("browser2ide.devtools.old");
+    const newPort = new FakePort("browser2ide.devtools.new");
+    attachBackgroundInspectSession(oldPort, coordinator, 17);
+    attachBackgroundInspectSession(newPort, coordinator, 17);
 
     oldPort.emitMessage(request("old", true));
     await flushAsync();
@@ -188,8 +213,8 @@ describe("background inspect session", () => {
         }
       },
     });
-    const port = new FakePort(INSPECT_PORT_NAME);
-    const session = attachBackgroundInspectSession(port, coordinator);
+    const port = new FakePort("browser2ide.devtools.channel-1");
+    const session = attachBackgroundInspectSession(port, coordinator, 17);
 
     port.emitMessage(request("enable", true));
     await session.whenIdle();
@@ -276,7 +301,6 @@ function request(requestId: string, enabled: boolean): InspectPortRequest {
   return {
     type: "browser2ide.inspect.setEnabled",
     requestId,
-    tabId: 17,
     enabled,
   };
 }

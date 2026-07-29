@@ -1,5 +1,4 @@
 export class PanelInspectController {
-  private tabId: number | undefined;
   private desiredEnabled = false;
   private remoteEnabled = false;
   private enableInFlight = false;
@@ -11,19 +10,11 @@ export class PanelInspectController {
     private readonly sendMessage: (message: unknown) => Promise<unknown>,
   ) {}
 
-  public setTabId(tabId: number): void {
-    this.tabId = tabId;
-  }
-
   public async setEnabled(enabled: boolean): Promise<void> {
     if (!enabled) {
       await this.disable();
       return;
     }
-    if (this.tabId === undefined) {
-      throw new Error("No inspected tab is attached");
-    }
-
     this.desiredEnabled = true;
     this.enabled = true;
     await this.reconcile();
@@ -72,10 +63,9 @@ export class PanelInspectController {
           return;
         }
 
-        const tabId = this.requireTabId();
         this.enableInFlight = true;
         try {
-          await this.sendMessage({ type: "enableInspectMode", tabId });
+          await this.sendMessage({ type: "enableInspectMode" });
           this.remoteEnabled = true;
           this.remoteDisablePending = false;
         } catch (error) {
@@ -99,9 +89,8 @@ export class PanelInspectController {
         return;
       }
 
-      const tabId = this.requireTabId();
       try {
-        await this.sendMessage({ type: "disableInspectMode", tabId });
+        await this.sendMessage({ type: "disableInspectMode" });
         this.remoteEnabled = false;
         this.remoteDisablePending = false;
       } catch (error) {
@@ -111,10 +100,4 @@ export class PanelInspectController {
     }
   }
 
-  private requireTabId(): number {
-    if (this.tabId === undefined) {
-      throw new Error("No inspected tab is attached");
-    }
-    return this.tabId;
-  }
 }

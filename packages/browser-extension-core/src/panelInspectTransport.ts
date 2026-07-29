@@ -22,6 +22,15 @@ export class PanelInspectTransport {
     private readonly onUnexpectedDisconnect: () => void = () => {},
   ) {}
 
+  public connect(): void {
+    if (this.disposed) {
+      throw new Error("Inspect connection is closed");
+    }
+    if (!this.connection) {
+      this.openConnection();
+    }
+  }
+
   public send(message: unknown): Promise<unknown> {
     if (this.disposed) {
       return Promise.reject(new Error("Inspect connection is closed"));
@@ -45,7 +54,6 @@ export class PanelInspectTransport {
         connection.port.postMessage({
           type: "browser2ide.inspect.setEnabled",
           requestId,
-          tabId: command.tabId,
           enabled: command.type === "enableInspectMode",
         } satisfies InspectPortRequest);
       } catch {

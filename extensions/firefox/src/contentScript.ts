@@ -1,13 +1,13 @@
 import browser from "webextension-polyfill";
 import {
   createInspectPayload,
+  ContentInspectLease,
+  INSPECT_CONTENT_LEASE_PORT_NAME,
   InspectMode,
   type CssDocumentSource,
   type InspectDocument,
   type InspectableElement,
 } from "@browser2ide/browser-extension-core";
-import { ContentInspectLease } from "./inspectLease.js";
-import { INSPECT_CONTENT_LEASE_PORT_NAME } from "./inspectPortProtocol.js";
 
 interface ContentScriptState {
   readonly mode: InspectMode;

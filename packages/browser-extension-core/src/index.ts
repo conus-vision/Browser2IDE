@@ -3,6 +3,26 @@ export {
   BrowserProtocolError,
   InspectPublisher,
 } from "./bridgeClient.js";
+export {
+  attachBackgroundInspectSession,
+  BackgroundInspectCoordinator,
+  BackgroundInspectSession,
+} from "./backgroundInspectSession.js";
+export type { BackgroundInspectApi } from "./backgroundInspectSession.js";
+export {
+  BackgroundRouter,
+  createBackgroundRouter,
+  DEFAULT_MAX_PANEL_PORTS,
+} from "./backgroundRouter.js";
+export type {
+  BackgroundMessageSender,
+  BackgroundRouterOptions,
+  BackgroundRouterSubscriptions,
+  BackgroundRouteResult,
+  BackgroundRuntimePort,
+  BackgroundTab,
+  BackgroundWindowCoordinator,
+} from "./backgroundRouter.js";
 export type {
   BrowserBridgeClientOptions,
   BrowserConnectionState,
@@ -56,6 +76,30 @@ export type {
   InspectDocument,
   InspectModeOptions,
 } from "./inspectMode.js";
+export {
+  BackgroundInspectLeaseRegistry,
+  ContentInspectLease,
+} from "./inspectLease.js";
+export type { InspectLeaseTarget } from "./inspectLease.js";
+export {
+  createDevtoolsPanelPortName,
+  DEVTOOLS_CHANNEL_MAX_LENGTH,
+  DEVTOOLS_PANEL_PORT_PREFIX,
+  INSPECT_CONTENT_LEASE_PORT_NAME,
+  isValidDevtoolsChannel,
+  parseDevtoolsPanelPortName,
+  parseInspectControllerCommand,
+  parseInspectPortRequest,
+  parseInspectPortResult,
+} from "./inspectPortProtocol.js";
+export type {
+  BackgroundInspectPort,
+  ContentInspectPort,
+  InspectPortEvent,
+  InspectPortRequest,
+  InspectPortResult,
+  PanelInspectPort,
+} from "./inspectPortProtocol.js";
 export { parseLinkCode } from "./linkCode.js";
 export type { ParsedLinkCode } from "./linkCode.js";
 export { createInspectPayload } from "./inspectPayload.js";
@@ -70,6 +114,7 @@ export type {
   PanelLinkDetails,
 } from "./panelDiagnostics.js";
 export { PanelInspectController } from "./panelInspectController.js";
+export { PanelInspectTransport } from "./panelInspectTransport.js";
 export { WindowConnectionCoordinator } from "./windowConnectionCoordinator.js";
 export type {
   BrowserWindowConnectionState,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { registerDevtoolsPanel } from "../src/devtoolsRuntime.js";
 
 describe("registerDevtoolsPanel", () => {
-  it("correlates inspected tab announcements with a unique panel channel", async () => {
+  it("registers a trusted source and re-announces it for panel recovery", async () => {
     let onShown: (() => void) | undefined;
     let runtimeListener: ((message: unknown) => void) | undefined;
     const removed: string[] = [];
@@ -11,6 +11,7 @@ describe("registerDevtoolsPanel", () => {
     const registration = await registerDevtoolsPanel({
       inspectedTabId: 42,
       channelId: "channel-1",
+      sourceId: "firefox-source-1",
       async createPanel(title, icon, page) {
         created.push({ title, icon, page });
         return {
@@ -34,6 +35,14 @@ describe("registerDevtoolsPanel", () => {
         page: "/dist/panel.html?channel=channel-1",
       },
     ]);
+    expect(sent).toEqual([
+      {
+        type: "browser2ide.registerDevtools",
+        channel: "channel-1",
+        tabId: 42,
+        sourceId: "firefox-source-1",
+      },
+    ]);
     runtimeListener?.({ type: "browser2ide.panelReady", channel: "other" });
     runtimeListener?.({
       type: "browser2ide.panelReady",
@@ -41,11 +50,48 @@ describe("registerDevtoolsPanel", () => {
     });
     onShown?.();
     expect(sent).toEqual([
-      { type: "browser2ide.inspectedTab", channel: "channel-1", tabId: 42 },
-      { type: "browser2ide.inspectedTab", channel: "channel-1", tabId: 42 },
+      {
+        type: "browser2ide.registerDevtools",
+        channel: "channel-1",
+        tabId: 42,
+        sourceId: "firefox-source-1",
+      },
+      {
+        type: "browser2ide.registerDevtools",
+        channel: "channel-1",
+        tabId: 42,
+        sourceId: "firefox-source-1",
+      },
+      {
+        type: "browser2ide.registerDevtools",
+        channel: "channel-1",
+        tabId: 42,
+        sourceId: "firefox-source-1",
+      },
     ]);
 
     registration.dispose();
     expect(removed).toEqual(["shown", "runtime"]);
+  });
+
+  it("removes its runtime listener when panel creation fails", async () => {
+    const removed: string[] = [];
+
+    await expect(
+      registerDevtoolsPanel({
+        inspectedTabId: 42,
+        channelId: "channel-1",
+        sourceId: "firefox-source-1",
+        async createPanel() {
+          throw new Error("panel unavailable");
+        },
+        addRuntimeMessageListener() {
+          return () => removed.push("runtime");
+        },
+        async sendRuntimeMessage() {},
+      }),
+    ).rejects.toThrow("panel unavailable");
+
+    expect(removed).toEqual(["runtime"]);
   });
 });

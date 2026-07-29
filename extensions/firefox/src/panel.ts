@@ -2,13 +2,13 @@ import browser from "webextension-polyfill";
 import {
   BrowserBridgeClient,
   BrowserProtocolError,
-  InspectPublisher,
   PanelDiagnostics,
   PanelInspectController,
+  PanelInspectTransport,
+  createDevtoolsPanelPortName,
   parseLinkCode,
   type BrowserConnectionState,
   type BrowserCredentials,
-  type InspectPayload,
   type ParsedLinkCode,
 } from "@browser2ide/browser-extension-core";
 import {
@@ -18,8 +18,6 @@ import {
   type PanelSettings,
   type PanelStorage,
 } from "./panelState.js";
-import { INSPECT_PORT_NAME } from "./inspectPortProtocol.js";
-import { PanelInspectTransport } from "./panelInspectTransport.js";
 import {
   PanelLifecycleCoordinator,
   type PanelLifecycleContext,
@@ -56,33 +54,38 @@ const storage: PanelStorage = {
 type ConnectionIntent = "none" | "link" | "reconnect";
 
 let settings: PanelSettings | undefined;
-let inspectedTabId: number | undefined;
 let client: BrowserBridgeClient | undefined;
 let connected = false;
 let connectionIntent: ConnectionIntent = "none";
 const diagnostics = new PanelDiagnostics();
+const lifecycle = new PanelLifecycleCoordinator(updateControls);
 let inspectTransport: PanelInspectTransport;
 const inspectController = new PanelInspectController((message) =>
   inspectTransport.send(message),
 );
 inspectTransport = new PanelInspectTransport(
-  () => browser.runtime.connect({ name: INSPECT_PORT_NAME }),
+  () =>
+    browser.runtime.connect({
+      name: createDevtoolsPanelPortName(channel),
+    }),
   () => {
     inspectController.handleTransportDisconnect();
     inspectToggle.checked = false;
     updateControls();
+    void announcePanelReady()
+      .then(() => {
+        if (!lifecycle.isDisposed) {
+          inspectTransport.connect();
+        }
+      })
+      .catch(showError);
   },
 );
-const lifecycle = new PanelLifecycleCoordinator(updateControls);
-
-const publisher = new InspectPublisher({
-  send: (payload) => {
-    if (client?.sendInspect(payload)) {
-      diagnostics.recordMessageSent();
-      renderDiagnostics();
-    }
-  },
-});
+try {
+  inspectTransport.connect();
+} catch (error) {
+  showError(error);
+}
 
 linkForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -111,14 +114,10 @@ inspectToggle.addEventListener("change", () => {
 
 window.addEventListener("unload", dispose);
 
-browser.runtime.onMessage.addListener(handleRuntimeMessage);
 void lifecycle.start(initialize).catch(showError);
 
 async function initialize(context: PanelLifecycleContext): Promise<void> {
-  await browser.runtime.sendMessage({
-    type: "browser2ide.panelReady",
-    channel,
-  });
+  await announcePanelReady();
   if (!context.isCurrent()) {
     return;
   }
@@ -163,7 +162,6 @@ async function linkToBridge(
   connected = false;
   connectionIntent = "none";
   settings = undefined;
-  publisher.reset();
   diagnostics.reset();
   selectedSummary.value = "None";
   renderDiagnostics();
@@ -198,7 +196,6 @@ async function unlinkFromBridge(
   connected = false;
   connectionIntent = "none";
   settings = undefined;
-  publisher.reset();
   diagnostics.reset();
   selectedSummary.value = "None";
   linkCodeInput.value = "";
@@ -322,12 +319,6 @@ function handleClientError(
       .catch(showError);
     return;
   }
-  if (
-    error instanceof BrowserProtocolError &&
-    error.code === "bridge.noIdeClient"
-  ) {
-    publisher.reset();
-  }
   showError(error);
   updateControls();
 }
@@ -351,7 +342,6 @@ async function invalidateSavedLink(
   connected = false;
   connectionIntent = "none";
   settings = undefined;
-  publisher.reset();
   diagnostics.reset();
   diagnostics.recordError({ code: error.code, message: error.message });
   selectedSummary.value = "None";
@@ -373,7 +363,6 @@ function updateConnectionState(
   generation: number,
 ): void {
   diagnostics.setConnectionState(state);
-  publisher.reset();
   connected = state === "connected";
   if (!connected && inspectController.enabled) {
     void lifecycle
@@ -400,7 +389,7 @@ function updateControls(): void {
   unlinkButton.disabled =
     blocked || (client === undefined && settings === undefined);
   inspectToggle.disabled =
-    blocked || !connected || inspectedTabId === undefined;
+    blocked || !connected;
   inspectToggle.checked = inspectController.enabled;
 }
 
@@ -424,73 +413,11 @@ async function tryDisableInspectMode(): Promise<unknown | undefined> {
   }
 }
 
-function handleRuntimeMessage(message: unknown): void {
-  if (!isRecord(message)) {
-    return;
-  }
-  if (
-    message.type === "browser2ide.inspectedTab" &&
-    message.channel === channel &&
-    typeof message.tabId === "number"
-  ) {
-    inspectedTabId = message.tabId;
-    inspectController.setTabId(message.tabId);
-    updateControls();
-    return;
-  }
-  if (
-    message.type === "browser2ide.selection" &&
-    message.tabId === inspectedTabId &&
-    isInspectPayload(message.payload)
-  ) {
-    const payload = message.payload;
-    const inaccessible = Array.isArray(payload.inaccessibleStylesheets)
-      ? payload.inaccessibleStylesheets.length
-      : 0;
-    const selected = payload.targets.find(
-      (target) => target.role === "selected",
-    );
-    const facts = payload.targets.flatMap((target) => target.facts);
-    diagnostics.recordSelection(payload.targets, inaccessible);
-    if (inaccessible > 0) {
-      diagnostics.recordError({
-        code: "browser.stylesheetInaccessible",
-        message: `${inaccessible} stylesheet${inaccessible === 1 ? " is" : "s are"} inaccessible`,
-      });
-    }
-    renderDiagnostics();
-    selectedSummary.value = `${selected?.subject.selector ?? "element"} | ${facts.length} facts | ${inaccessible} inaccessible`;
-    publisher.publish({
-      targets: payload.targets,
-      context: payload.context,
-      metadata: payload.metadata,
-    });
-  }
-}
-
-function isInspectPayload(value: unknown): value is InspectPayload & {
-  inaccessibleStylesheets?: unknown[];
-} {
-  if (!isRecord(value)) {
-    return false;
-  }
-  return (
-    Array.isArray(value.targets) &&
-    value.targets.every(
-      (target) =>
-        isRecord(target) &&
-        (target.role === "selected" || target.role === "parent") &&
-        isRecord(target.subject) &&
-        Array.isArray(target.facts) &&
-        isRecord(target.metadata),
-    ) &&
-    isRecord(value.context) &&
-    isRecord(value.metadata)
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object");
+function announcePanelReady(): Promise<unknown> {
+  return browser.runtime.sendMessage({
+    type: "browser2ide.panelReady",
+    channel,
+  });
 }
 
 function showError(error: unknown): void {
@@ -584,11 +511,9 @@ function dispose(): void {
     return;
   }
   lifecycle.dispose();
-  browser.runtime.onMessage.removeListener(handleRuntimeMessage);
   void inspectController.disable().catch(() => undefined);
   inspectTransport.dispose();
   inspectToggle.checked = false;
-  publisher.dispose();
   const activeClient = client;
   client = undefined;
   activeClient?.disconnect();

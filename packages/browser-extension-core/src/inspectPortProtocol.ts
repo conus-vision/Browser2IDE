@@ -1,11 +1,11 @@
-export const INSPECT_PORT_NAME = "browser2ide.inspect";
 export const INSPECT_CONTENT_LEASE_PORT_NAME =
   "browser2ide.inspect.contentLease";
+export const DEVTOOLS_PANEL_PORT_PREFIX = "browser2ide.devtools.";
+export const DEVTOOLS_CHANNEL_MAX_LENGTH = 128;
 
 export interface InspectPortRequest {
   readonly type: "browser2ide.inspect.setEnabled";
   readonly requestId: string;
-  readonly tabId: number;
   readonly enabled: boolean;
 }
 
@@ -43,25 +43,56 @@ export interface ContentInspectPort {
   disconnect(): void;
 }
 
+export function createDevtoolsPanelPortName(channel: string): string {
+  if (!isValidDevtoolsChannel(channel)) {
+    throw new Error("Invalid DevTools panel channel");
+  }
+  return `${DEVTOOLS_PANEL_PORT_PREFIX}${channel}`;
+}
+
+export function parseDevtoolsPanelPortName(
+  value: unknown,
+): string | undefined {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith(DEVTOOLS_PANEL_PORT_PREFIX)
+  ) {
+    return undefined;
+  }
+  const channel = value.slice(DEVTOOLS_PANEL_PORT_PREFIX.length);
+  return isValidDevtoolsChannel(channel) &&
+      value === createDevtoolsPanelPortName(channel)
+    ? channel
+    : undefined;
+}
+
+export function isValidDevtoolsChannel(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= DEVTOOLS_CHANNEL_MAX_LENGTH &&
+    /^[A-Za-z0-9._-]+$/.test(value)
+  );
+}
+
 export function parseInspectPortRequest(
   value: unknown,
 ): InspectPortRequest | undefined {
-  if (!isRecord(value)) {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["type", "requestId", "enabled"]) ||
+    value.type !== "browser2ide.inspect.setEnabled" ||
+    typeof value.requestId !== "string" ||
+    value.requestId.length === 0 ||
+    typeof value.enabled !== "boolean"
+  ) {
     return undefined;
   }
-  return value.type === "browser2ide.inspect.setEnabled" &&
-    typeof value.requestId === "string" &&
-    value.requestId.length > 0 &&
-    Number.isInteger(value.tabId) &&
-    Number(value.tabId) >= 0 &&
-    typeof value.enabled === "boolean"
-    ? {
-        type: value.type,
-        requestId: value.requestId,
-        tabId: Number(value.tabId),
-        enabled: value.enabled,
-      }
-    : undefined;
+  return {
+    type: value.type,
+    requestId: value.requestId,
+    enabled: value.enabled,
+  };
 }
 
 export function parseInspectPortResult(
@@ -71,18 +102,22 @@ export function parseInspectPortResult(
     !isRecord(value) ||
     value.type !== "browser2ide.inspect.result" ||
     typeof value.requestId !== "string" ||
+    value.requestId.length === 0 ||
     typeof value.ok !== "boolean"
   ) {
     return undefined;
   }
   if (value.ok) {
-    return {
-      type: value.type,
-      requestId: value.requestId,
-      ok: true,
-    };
+    return hasOnlyKeys(value, ["type", "requestId", "ok"])
+      ? {
+          type: value.type,
+          requestId: value.requestId,
+          ok: true,
+        }
+      : undefined;
   }
-  return typeof value.error === "string"
+  return hasOnlyKeys(value, ["type", "requestId", "ok", "error"]) &&
+      typeof value.error === "string"
     ? {
         type: value.type,
         requestId: value.requestId,
@@ -95,18 +130,24 @@ export function parseInspectPortResult(
 export function parseInspectControllerCommand(value: unknown):
   | {
       readonly type: "enableInspectMode" | "disableInspectMode";
-      readonly tabId: number;
     }
   | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  return (value.type === "enableInspectMode" ||
-    value.type === "disableInspectMode") &&
-    Number.isInteger(value.tabId) &&
-    Number(value.tabId) >= 0
-    ? { type: value.type, tabId: Number(value.tabId) }
+  return value.type === "enableInspectMode" ||
+      value.type === "disableInspectMode"
+    ? { type: value.type }
     : undefined;
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length &&
+    actual.every((key) => keys.includes(key));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

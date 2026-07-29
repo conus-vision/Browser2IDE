@@ -192,6 +192,24 @@ describe("Firefox panel lifecycle", () => {
     vi.unstubAllGlobals();
   });
 
+  it("opens its channel-only lifetime port while announcing panel readiness", async () => {
+    const messages: unknown[] = [];
+    harness.runtimeSend = async (message) => {
+      messages.push(message);
+      return undefined;
+    };
+
+    await loadSettledPanel();
+
+    expect(harness.ports).toHaveLength(1);
+    expect(harness.ports[0]?.name).toBe(
+      "browser2ide.devtools.test-channel",
+    );
+    expect(messages).toEqual([
+      { type: "browser2ide.panelReady", channel: "test-channel" },
+    ]);
+  });
+
   it("serializes double Link without leaving an orphan client", async () => {
     const removals: Deferred<void>[] = [];
     harness.storageRemove = () => {
@@ -259,16 +277,11 @@ describe("Firefox panel lifecycle", () => {
     expect(activeClients()).toEqual([]);
   });
 
-  it("retries the same inspection after the IDE delivery is rejected", async () => {
+  it("does not consume legacy raw selection broadcasts", async () => {
     await loadSettledPanel();
     submitLink(dom, "4873507");
     await flushAsync();
     const current = harness.clients[0];
-    notifyRuntime({
-      type: "browser2ide.inspectedTab",
-      channel: "test-channel",
-      tabId: 12,
-    });
     current?.emitState("connected");
     const payload = selectionPayload(".card");
 
@@ -277,17 +290,13 @@ describe("Firefox panel lifecycle", () => {
       tabId: 12,
       payload,
     });
-    current?.emitProtocolError(
-      "bridge.noIdeClient",
-      "No IDE client is connected",
-    );
     notifyRuntime({
       type: "browser2ide.selection",
       tabId: 12,
       payload,
     });
 
-    expect(harness.inspectPayloads).toEqual([payload, payload]);
+    expect(harness.inspectPayloads).toEqual([]);
   });
 
   it("lets an explicit Link supersede an overlapping initialize", async () => {
@@ -361,11 +370,6 @@ describe("Firefox panel lifecycle", () => {
     const first = harness.clients[0];
     expect(first).toBeDefined();
 
-    notifyRuntime({
-      type: "browser2ide.inspectedTab",
-      channel: "test-channel",
-      tabId: 12,
-    });
     first?.emitState("connected");
     dom.element("inspect-mode").checked = true;
     dom.element("inspect-mode").dispatch("change");
@@ -435,11 +439,6 @@ describe("Firefox panel lifecycle", () => {
     submitLink(dom, "4873507");
     await flushAsync();
     const current = harness.clients[0];
-    notifyRuntime({
-      type: "browser2ide.inspectedTab",
-      channel: "test-channel",
-      tabId: 12,
-    });
     current?.emitState("connected");
 
     dom.element("inspect-mode").checked = true;
@@ -472,11 +471,6 @@ describe("Firefox panel lifecycle", () => {
     submitLink(dom, "4873507");
     await flushAsync();
     const current = harness.clients[0];
-    notifyRuntime({
-      type: "browser2ide.inspectedTab",
-      channel: "test-channel",
-      tabId: 12,
-    });
     current?.emitState("connected");
 
     dom.element("inspect-mode").checked = true;
@@ -496,7 +490,7 @@ describe("Firefox panel lifecycle", () => {
     expect(dom.element("inspect-mode").checked).toBe(false);
   });
 
-  it("unchecks inspection after port loss and reconnects on retry", async () => {
+  it("re-announces and recovers its lifetime port after port loss", async () => {
     const messages: unknown[] = [];
     harness.runtimeSend = async (message) => {
       messages.push(message);
@@ -506,11 +500,6 @@ describe("Firefox panel lifecycle", () => {
     submitLink(dom, "4873507");
     await flushAsync();
     const current = harness.clients[0];
-    notifyRuntime({
-      type: "browser2ide.inspectedTab",
-      channel: "test-channel",
-      tabId: 12,
-    });
     current?.emitState("connected");
 
     dom.element("inspect-mode").checked = true;
@@ -528,6 +517,7 @@ describe("Firefox panel lifecycle", () => {
     expect(messageTypes(messages)).toEqual([
       "browser2ide.panelReady",
       "enableInspectMode",
+      "browser2ide.panelReady",
       "enableInspectMode",
     ]);
     expect(dom.element("inspect-mode").checked).toBe(true);
@@ -617,7 +607,6 @@ class TestRuntimePort {
       !isRecord(message) ||
       message.type !== "browser2ide.inspect.setEnabled" ||
       typeof message.requestId !== "string" ||
-      typeof message.tabId !== "number" ||
       typeof message.enabled !== "boolean"
     ) {
       return;
@@ -628,7 +617,6 @@ class TestRuntimePort {
       type: message.enabled
         ? "enableInspectMode"
         : "disableInspectMode",
-      tabId: message.tabId,
     }).then(
       () =>
         this.onMessage.emit({

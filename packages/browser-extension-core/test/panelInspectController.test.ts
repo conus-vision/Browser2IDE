@@ -8,15 +8,13 @@ describe("PanelInspectController", () => {
       messages.push(message);
     });
 
-    await expect(controller.setEnabled(true)).rejects.toThrow("No inspected tab");
-    controller.setTabId(12);
     await controller.setEnabled(true);
     await controller.disable();
     await controller.disable();
 
     expect(messages).toEqual([
-      { type: "enableInspectMode", tabId: 12 },
-      { type: "disableInspectMode", tabId: 12 },
+      { type: "enableInspectMode" },
+      { type: "disableInspectMode" },
     ]);
     expect(controller.enabled).toBe(false);
   });
@@ -36,7 +34,6 @@ describe("PanelInspectController", () => {
       }
     });
 
-    controller.setTabId(12);
     await controller.setEnabled(true);
 
     await expect(controller.disable()).rejects.toThrow(
@@ -47,9 +44,9 @@ describe("PanelInspectController", () => {
     await controller.disable();
 
     expect(messages).toEqual([
-      { type: "enableInspectMode", tabId: 12 },
-      { type: "disableInspectMode", tabId: 12 },
-      { type: "disableInspectMode", tabId: 12 },
+      { type: "enableInspectMode" },
+      { type: "disableInspectMode" },
+      { type: "disableInspectMode" },
     ]);
     expect(controller.enabled).toBe(false);
   });
@@ -69,7 +66,6 @@ describe("PanelInspectController", () => {
       }
     });
 
-    controller.setTabId(12);
     await controller.setEnabled(true);
     await expect(controller.disable()).rejects.toThrow(
       "Background did not disable inspection",
@@ -78,9 +74,9 @@ describe("PanelInspectController", () => {
     await controller.setEnabled(true);
 
     expect(messages).toEqual([
-      { type: "enableInspectMode", tabId: 12 },
-      { type: "disableInspectMode", tabId: 12 },
-      { type: "enableInspectMode", tabId: 12 },
+      { type: "enableInspectMode" },
+      { type: "disableInspectMode" },
+      { type: "enableInspectMode" },
     ]);
     expect(controller.enabled).toBe(true);
   });
@@ -91,7 +87,6 @@ describe("PanelInspectController", () => {
       messages.push(message);
     });
 
-    controller.setTabId(12);
     await controller.setEnabled(true);
     controller.handleTransportDisconnect();
 
@@ -99,8 +94,8 @@ describe("PanelInspectController", () => {
     await controller.setEnabled(true);
 
     expect(messages).toEqual([
-      { type: "enableInspectMode", tabId: 12 },
-      { type: "enableInspectMode", tabId: 12 },
+      { type: "enableInspectMode" },
+      { type: "enableInspectMode" },
     ]);
     expect(controller.enabled).toBe(true);
   });
@@ -115,21 +110,20 @@ describe("PanelInspectController", () => {
         : Promise.resolve(undefined);
     });
 
-    controller.setTabId(12);
     const enabling = controller.setEnabled(true);
     const disabling = controller.disable();
 
     expect(controller.enabled).toBe(false);
     expect(messages).toEqual([
-      { type: "enableInspectMode", tabId: 12 },
+      { type: "enableInspectMode" },
     ]);
 
     enable.resolve();
     await Promise.all([enabling, disabling]);
 
     expect(messages).toEqual([
-      { type: "enableInspectMode", tabId: 12 },
-      { type: "disableInspectMode", tabId: 12 },
+      { type: "enableInspectMode" },
+      { type: "disableInspectMode" },
     ]);
     expect(controller.enabled).toBe(false);
   });

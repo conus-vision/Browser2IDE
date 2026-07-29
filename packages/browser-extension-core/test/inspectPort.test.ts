@@ -1,23 +1,55 @@
 import { describe, expect, it } from "vitest";
 import {
-  INSPECT_PORT_NAME,
+  createDevtoolsPanelPortName,
+  parseDevtoolsPanelPortName,
 } from "../src/inspectPortProtocol.js";
 import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 
 describe("panel inspect transport", () => {
-  it("correlates a background acknowledgement to its command", async () => {
+  it("creates and validates canonical channel-only port names", () => {
+    expect(createDevtoolsPanelPortName("channel-1")).toBe(
+      "browser2ide.devtools.channel-1",
+    );
+    expect(
+      parseDevtoolsPanelPortName("browser2ide.devtools.channel-1"),
+    ).toBe("channel-1");
+    expect(parseDevtoolsPanelPortName("browser2ide.devtools.")).toBeUndefined();
+    expect(
+      parseDevtoolsPanelPortName("browser2ide.devtools.channel/1"),
+    ).toBeUndefined();
+    expect(
+      parseDevtoolsPanelPortName(`browser2ide.devtools.${"a".repeat(129)}`),
+    ).toBeUndefined();
+    expect(parseDevtoolsPanelPortName("browser2ide.inspect")).toBeUndefined();
+  });
+
+  it("opens its lifetime port explicitly and only once", () => {
+    const port = new FakePort();
+    let factoryCalls = 0;
+    const transport = new PanelInspectTransport(() => {
+      factoryCalls += 1;
+      return port;
+    });
+
+    transport.connect();
+    transport.connect();
+
+    expect(factoryCalls).toBe(1);
+    transport.dispose();
+  });
+
+  it("correlates a background acknowledgement without sending a tab ID", async () => {
     const port = new FakePort();
     const transport = new PanelInspectTransport(() => port);
 
     const result = transport.send({
       type: "enableInspectMode",
-      tabId: 17,
+      tabId: 999,
     });
     expect(port.sent).toEqual([
       {
         type: "browser2ide.inspect.setEnabled",
         requestId: "1",
-        tabId: 17,
         enabled: true,
       },
     ]);
@@ -36,7 +68,6 @@ describe("panel inspect transport", () => {
     const transport = new PanelInspectTransport(() => port);
     const pending = transport.send({
       type: "disableInspectMode",
-      tabId: 17,
     });
 
     transport.dispose();
@@ -58,7 +89,6 @@ describe("panel inspect transport", () => {
 
     const interrupted = transport.send({
       type: "enableInspectMode",
-      tabId: 17,
     });
     ports[0].disconnect();
 
@@ -67,7 +97,6 @@ describe("panel inspect transport", () => {
 
     const retried = transport.send({
       type: "enableInspectMode",
-      tabId: 17,
     });
     ports[1].emitMessage({
       type: "browser2ide.inspect.result",
@@ -80,14 +109,14 @@ describe("panel inspect transport", () => {
 
     transport.dispose();
     await expect(
-      transport.send({ type: "enableInspectMode", tabId: 17 }),
+      transport.send({ type: "enableInspectMode" }),
     ).rejects.toThrow("Inspect connection is closed");
     expect(factoryCalls).toBe(2);
   });
 });
 
 class FakePort {
-  public readonly name = INSPECT_PORT_NAME;
+  public readonly name = "test.inspect";
   public readonly sent: unknown[] = [];
   public disconnected = false;
   public readonly onMessage = new FakeEvent<(message: unknown) => void>();

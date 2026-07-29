@@ -1,13 +1,11 @@
 import {
   parseInspectPortRequest,
   type BackgroundInspectPort,
+  type ContentInspectPort,
   type InspectPortRequest,
   type InspectPortResult,
 } from "./inspectPortProtocol.js";
-import {
-  BackgroundInspectLeaseRegistry,
-} from "./inspectLease.js";
-import type { ContentInspectPort } from "./inspectPortProtocol.js";
+import { BackgroundInspectLeaseRegistry } from "./inspectLease.js";
 
 export interface BackgroundInspectApi {
   executeScript(details: {
@@ -123,19 +121,13 @@ export class BackgroundInspectCoordinator {
     owner: object,
     tabId: number,
   ): Promise<void> {
-    if (
-      state.owner !== undefined ||
-      state.releasingOwner !== owner
-    ) {
+    if (state.owner !== undefined || state.releasingOwner !== owner) {
       return;
     }
     await this.api.sendTabMessage(tabId, {
       type: "disableInspectMode",
     });
-    if (
-      state.owner === undefined &&
-      state.releasingOwner === owner
-    ) {
+    if (state.owner === undefined && state.releasingOwner === owner) {
       state.releasingOwner = undefined;
     }
   }
@@ -178,25 +170,23 @@ export class BackgroundInspectCoordinator {
 export class BackgroundInspectSession {
   private readonly owner = {};
   private lastOperation = Promise.resolve();
-  private tabId: number | undefined;
   private disconnected = false;
 
   public constructor(
     private readonly coordinator: BackgroundInspectCoordinator,
+    private readonly tabId: number,
     private readonly sendResult: (result: InspectPortResult) => void,
-  ) {}
+  ) {
+    if (!Number.isSafeInteger(tabId) || tabId < 0) {
+      throw new Error("Invalid trusted inspect tab");
+    }
+  }
 
   public handleMessage(message: unknown): void {
     const request = parseInspectPortRequest(message);
     if (!request || this.disconnected) {
       return;
     }
-    if (this.tabId !== undefined && this.tabId !== request.tabId) {
-      this.sendFailure(request.requestId);
-      return;
-    }
-
-    this.tabId = request.tabId;
     this.track(request);
   }
 
@@ -205,13 +195,9 @@ export class BackgroundInspectSession {
       return;
     }
     this.disconnected = true;
-    const tabId = this.tabId;
-    this.lastOperation =
-      tabId === undefined
-        ? Promise.resolve()
-        : this.coordinator
-            .release(this.owner, tabId)
-            .catch(() => undefined);
+    this.lastOperation = this.coordinator
+      .release(this.owner, this.tabId)
+      .catch(() => undefined);
   }
 
   public whenIdle(): Promise<void> {
@@ -221,7 +207,7 @@ export class BackgroundInspectSession {
   private track(request: InspectPortRequest): void {
     const operation = this.coordinator.setEnabled(
       this.owner,
-      request.tabId,
+      this.tabId,
       request.enabled,
     );
     this.lastOperation = operation.catch(() => undefined);
@@ -256,6 +242,7 @@ export class BackgroundInspectSession {
 export function attachBackgroundInspectSession(
   port: BackgroundInspectPort,
   coordinator: BackgroundInspectCoordinator,
+  trustedTabId: number,
 ): BackgroundInspectSession {
   const safePost = (result: InspectPortResult): void => {
     try {
@@ -264,7 +251,11 @@ export function attachBackgroundInspectSession(
       // The panel can disappear between completion and acknowledgement.
     }
   };
-  const session = new BackgroundInspectSession(coordinator, safePost);
+  const session = new BackgroundInspectSession(
+    coordinator,
+    trustedTabId,
+    safePost,
+  );
   const onMessage = (message: unknown): void => {
     session.handleMessage(message);
   };
