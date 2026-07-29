@@ -227,11 +227,15 @@ This proves that a reused port does not preserve instance identity or tokens.
 ## Verify Panel Teardown
 
 1. With Firefox linked again, enable inspect mode and make one selection. Note
-   the latest inspect timestamp in Window A diagnostics.
+   that the fixture's `Normal card clicks` counter does not increase because
+   inspect mode intercepts the click. Also note the latest inspect timestamp in
+   Window A diagnostics.
 2. Close Firefox DevTools with `F12` while inspect mode is still enabled. This
    destroys the panel and disconnects its owning extension Port.
-3. Click the fixture card normally. Window A must receive no new selection and
-   its latest inspect timestamp must remain unchanged.
+3. Click the fixture card normally. Its visible `Normal card clicks` counter
+   must increase by one, proving that the content-script click interceptor was
+   removed. Window A must receive no new selection and its latest inspect
+   timestamp must remain unchanged.
 4. Reopen DevTools and the `Browser2IDE` panel. Confirm the saved link
    reconnects to the same endpoint, while inspect mode remains off.
 5. Enable inspect mode again and confirm a new card selection reaches Window A.

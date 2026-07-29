@@ -26,6 +26,8 @@ describe("basic CSS example server", () => {
       expect(page).toContain('href="./dist/app.css"');
       expect(page).toContain('href="./fallback.css"');
       expect(page).toContain('href="./virtual.css"');
+      expect(page).toContain('id="normal-click-count"');
+      expect(page).toContain('id="fixture-card"');
       expect(appCss).toContain("sourceMappingURL=app.css.map");
       expect(appCss).toContain(".layout > .card");
       expect(sourceMap.sources).toEqual([
