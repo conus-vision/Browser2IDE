@@ -498,6 +498,21 @@ describe("CssSourcePlugin", () => {
       "svg|a {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
       "0.1",
     ],
+    [
+      "trailing combinator",
+      ".bad > {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
+    [
+      "empty functional selector pseudo",
+      ":not() {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
+    [
+      "multiple pseudo-elements",
+      ".bad::before::after {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
   ])("fails closed after %s", async (_name, text, path) => {
     expect((await resolvePath(text, path)).matches).toEqual([]);
   });
@@ -517,6 +532,13 @@ describe("CssSourcePlugin", () => {
       "0.0.0",
       "> .valid { color: red; }",
     ],
+    [
+      "non-empty functional selector pseudo",
+      ".valid:not(.bad) { color: red; }",
+      ".valid:not(.bad)",
+      "0.0",
+      ".valid:not(.bad) { color: red; }",
+    ],
   ])("trusts a %s", async (_name, text, selector, path, expected) => {
     const result = await resolvePath(text, path, selector);
     expect(snippets(text, result.matches)).toEqual([expected]);
@@ -528,6 +550,19 @@ describe("CssSourcePlugin", () => {
     ["layer", "@layer reset, theme { .ignored {} }"],
     ["scope", "@scope .root { .ignored {} }"],
     ["starting-style", "@starting-style unexpected { .ignored {} }"],
+    [
+      "supports not-chain",
+      "@supports not (display: grid) and (gap: 1rem) { .ignored {} }",
+    ],
+    ["container name-only", "@container sidebar { .ignored {} }"],
+    [
+      "container function-only",
+      "@container style(--theme: dark) { .ignored {} }",
+    ],
+    [
+      "container not-chain",
+      "@container sidebar not (width > 10rem) and (height > 10rem) { .ignored {} }",
+    ],
   ])("fails closed after malformed %s group", async (_name, prefix) => {
     const text = `${prefix}\n.duplicate { color: red; }\n.duplicate { color: blue; }`;
     expect((await resolvePath(text, "0.1")).matches).toEqual([]);
@@ -536,6 +571,9 @@ describe("CssSourcePlugin", () => {
   it.each([
     ["@media (min-width: 40rem)", ".valid"],
     ["@supports (display: grid)", ".valid"],
+    ["@supports not (display: grid)", ".valid"],
+    ["@supports (display: grid) and (gap: 1rem)", ".valid"],
+    ["@container (width > 20rem)", ".valid"],
     ["@container card (width > 20rem)", ".valid"],
     ["@layer components", ".valid"],
     ["@scope (.shell) to (.stop)", ".valid"],
@@ -548,23 +586,91 @@ describe("CssSourcePlugin", () => {
     ]);
   });
 
-  it("keeps a statement layer in the pre-import phase", async () => {
+  it.each([
+    ["initial", ["@LAYER reset;", "@IMPORT url('theme.css');"], "0.3"],
+    [
+      "imports",
+      [
+        "@IMPORT url('base.css');",
+        "@LAYER reset;",
+        "@IMPORT url('theme.css');",
+      ],
+      "0.4",
+    ],
+  ])("keeps a statement layer in the %s phase", async (_phase, prefix, path) => {
     const text = [
-      "@LAYER reset;",
-      "@IMPORT url('theme.css');",
+      ...prefix,
       ".duplicate { color: red; }",
       ".duplicate { color: blue; }",
     ].join("\n");
-    const result = await resolvePath(text, "0.3");
+    const result = await resolvePath(text, path);
     expect(snippets(text, result.matches)).toEqual([
       ".duplicate { color: blue; }",
     ]);
+  });
+
+  it.each([
+    ["quoted string", '"theme.css"'],
+    ["url", "url('theme.css')"],
+    [
+      "supported tail",
+      "url(theme.css) layer(theme) supports(display: grid) screen and (min-width: 40rem)",
+    ],
+  ])("counts a valid %s import", async (_name, params) => {
+    const text = `@import ${params};\n` +
+      ".duplicate { color: red; }\n.duplicate { color: blue; }";
+    const result = await resolvePath(text, "0.2");
+    expect(snippets(text, result.matches)).toEqual([
+      ".duplicate { color: blue; }",
+    ]);
+  });
+
+  it.each([
+    ["source", "nonsense"],
+    ["media tail", '"theme.css" screen and (:)'],
+  ])("fails closed after a malformed import %s collision", async (_name, params) => {
+    const text = `@import ${params};\n` +
+      ".duplicate { color: red; }\n.duplicate { color: blue; }";
+    expect((await resolvePath(text, "0.1")).matches).toEqual([]);
   });
 
   it("fails closed when import follows a block layer", async () => {
     const text = "@layer reset {}\n@import url('late.css');\n" +
       ".duplicate { color: red; }\n.duplicate { color: blue; }";
     expect((await resolvePath(text, "0.2")).matches).toEqual([]);
+  });
+
+  it.each([
+    ["font-face", "@font-face {}"],
+    ["view-transition", "@view-transition {}"],
+    ["property", "@property --accent {}"],
+    ["font-palette-values", "@font-palette-values --brand {}"],
+    ["color-profile", "@color-profile --print {}"],
+    ["counter-style", "@counter-style custom {}"],
+    ["page", "@page :first {}"],
+    ["font-feature-values", "@font-feature-values Inter {}"],
+  ])("counts a valid @%s leaf rule", async (_name, prefix) => {
+    const text = `${prefix}\n.duplicate { color: red; }\n` +
+      ".duplicate { color: blue; }";
+    const result = await resolvePath(text, "0.2");
+    expect(snippets(text, result.matches)).toEqual([
+      ".duplicate { color: blue; }",
+    ]);
+  });
+
+  it.each([
+    ["font-face prelude", "@font-face nope {}"],
+    ["view-transition prelude", "@view-transition nope {}"],
+    ["property name", "@property accent {}"],
+    ["font-palette-values name", "@font-palette-values brand {}"],
+    ["color-profile name", "@color-profile print {}"],
+    ["counter-style name", "@counter-style -- {}"],
+    ["page selector", "@page :hover {}"],
+    ["font-feature-values family", "@font-feature-values {}"],
+  ])("fails closed after malformed @%s", async (_name, prefix) => {
+    const text = `${prefix}\n.duplicate { color: red; }\n` +
+      ".duplicate { color: blue; }";
+    expect((await resolvePath(text, "0.1")).matches).toEqual([]);
   });
 
   it.each([

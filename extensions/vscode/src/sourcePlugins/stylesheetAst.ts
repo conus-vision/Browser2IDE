@@ -478,7 +478,7 @@ function classifyAtRule(
   const hasParameters = rule.params.trim().length > 0;
   if (name === "charset") return { kind: "drop" };
   if (name === "import") {
-    return !hasBlock && hasParameters && isRoot &&
+    return !hasBlock && validImportParams(rule.params) && isRoot &&
         (rootPhase === "initial" || rootPhase === "imports")
       ? { kind: "count" }
       : { kind: "uncertain" };
@@ -504,7 +504,7 @@ function classifyAtRule(
       : { kind: "count", recurse: true, childContext: "keyframes" };
   }
   if (LEAF_AT_RULES.has(name)) {
-    return nestedInStyle || !hasBlock
+    return nestedInStyle || !validLeafAtRule(rule)
       ? { kind: "uncertain" }
       : { kind: "count" };
   }
@@ -518,7 +518,10 @@ function nextRootPhase(
 ): RootPhase {
   if (name === "import") return "imports";
   if (name === "namespace") return "namespaces";
-  if (name === "layer" && !hasBlock && phase === "initial") return phase;
+  if (
+    name === "layer" && !hasBlock &&
+    (phase === "initial" || phase === "imports")
+  ) return phase;
   return "body";
 }
 
@@ -532,11 +535,18 @@ function validSelectorAst(
     return root.nodes.length > 0 && root.nodes.every((selector) => {
       if (
         selector.nodes.length === 0 ||
-        (selector.first.type === "combinator" && !relativeAllowed)
+        (selector.first.type === "combinator" && !relativeAllowed) ||
+        selector.last.type === "combinator"
       ) return false;
       let valid = true;
+      let pseudoElements = 0;
       selector.walk((node) => {
-        if (node.type === "nesting") {
+        if (node.type === "selector" && node.nodes.length === 0) {
+          valid = false;
+        } else if (node.type === "pseudo" && node.value.startsWith("::")) {
+          pseudoElements += 1;
+          valid = pseudoElements <= 1;
+        } else if (node.type === "nesting") {
           const next = node.next();
           valid = relativeAllowed &&
             next?.type !== "tag" && next?.type !== "universal";
@@ -555,6 +565,35 @@ function validSelectorAst(
   } catch {
     return false;
   }
+}
+
+function validLeafAtRule(rule: AtRule): boolean {
+  const name = rule.name.toLowerCase();
+  const params = rule.params.trim();
+  if (rule.nodes === undefined || params.length > INSPECT_LIMITS.valueLength) {
+    return false;
+  }
+  if (name === "font-face" || name === "view-transition") return params === "";
+  if (
+    name === "property" || name === "font-palette-values" ||
+    name === "color-profile"
+  ) return /^--[_A-Za-z][_A-Za-z0-9-]*$/.test(params);
+  if (name === "counter-style") {
+    return simpleName(params) && params.toLowerCase() !== "none";
+  }
+  if (name === "font-feature-values") {
+    return params.split(",").every((family) =>
+      family.trim().split(/\s+/).every(simpleName)
+    );
+  }
+  if (name === "page") {
+    return params === "" || params.split(",").every((entry) => {
+      const match = /^(?:([-_A-Za-z][-_A-Za-z0-9]*))?(?::(left|right|first|blank))?$/i
+        .exec(entry.trim());
+      return !!match && (!!match[2] || (!!match[1] && simpleName(match[1])));
+    });
+  }
+  return false;
 }
 
 function validGroupAtRule(
@@ -588,18 +627,19 @@ function validGroupAtRule(
 
 function simpleCondition(value: string): boolean {
   if (!balancedParentheses(value)) return false;
+  const negated = /^not\s+/i.test(value);
   const pattern = /^(?:not\s+)?\([^()]+\)(?:\s+(and|or)\s+\([^()]+\))*$/i;
   if (!pattern.test(value)) return false;
   const operators = [...value.matchAll(/\)\s+(and|or)\s+\(/gi)]
     .map((match) => match[1]!.toLowerCase());
-  return new Set(operators).size <= 1;
+  return (!negated || operators.length === 0) && new Set(operators).size <= 1;
 }
 
 function simpleContainer(value: string): boolean {
   if (simpleCondition(value)) return true;
   const match = /^([^\s(),]+)(?:\s+(.+))?$/.exec(value);
   return !!match && simpleName(match[1]!) &&
-    (match[2] === undefined || simpleCondition(match[2]));
+    match[2] !== undefined && simpleCondition(match[2]);
 }
 
 function layerName(value: string): boolean {
@@ -616,6 +656,30 @@ function namespacePrefix(value: string): string | null | undefined {
   const match = /^(?:(-?[_A-Za-z][_A-Za-z0-9-]*)\s+)?(?:url\(\s*[^()'"\s]+\s*\)|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')$/i
     .exec(value.trim());
   return match ? match[1] ?? null : undefined;
+}
+
+function validImportParams(value: string): boolean {
+  if (value.length > INSPECT_LIMITS.valueLength) return false;
+  const match = /^(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|url\(\s*(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^()'"\s]+)\s*\))(?:\s+(.+))?$/i
+    .exec(value.trim());
+  if (!match) return false;
+  let tail = match[1]?.trim() ?? "";
+  const layer = /^layer(?:\(\s*([^()]*)\s*\))?(?:\s+|$)/i.exec(tail);
+  if (layer) {
+    if (layer[1] !== undefined && !layerName(layer[1].trim())) return false;
+    tail = tail.slice(layer[0].length).trim();
+  }
+  const supports = /^supports\(\s*([^()]*)\s*\)(?:\s+|$)/i.exec(tail);
+  if (supports) {
+    const condition = supports[1]!.trim();
+    if (
+      !/^[-_A-Za-z][-_A-Za-z0-9]*\s*:\s*[^()\s][^()]*$/.test(condition) ||
+      !simpleCondition(`(${condition})`)
+    ) return false;
+    tail = tail.slice(supports[0].length).trim();
+  }
+  return tail === "" || /^(?:all|print|screen)(?:\s+and\s+\(\s*[-_A-Za-z][-_A-Za-z0-9]*(?:\s*:\s*[^()\s][^()]*)?\s*\))*$/i
+    .test(tail);
 }
 
 function balancedParentheses(value: string): boolean {
