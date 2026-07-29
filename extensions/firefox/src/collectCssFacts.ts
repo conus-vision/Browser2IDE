@@ -27,6 +27,11 @@ export interface StyleDeclarationSource {
 export interface StyleRuleSource {
   readonly selectorText: string;
   readonly style: StyleDeclarationSource;
+  readonly cssRules?: ArrayLike<RuleSource> | Iterable<RuleSource>;
+}
+
+interface NestedDeclarationsSource {
+  readonly style: StyleDeclarationSource;
 }
 
 export interface GroupRuleSource {
@@ -35,6 +40,11 @@ export interface GroupRuleSource {
 }
 
 export type RuleSource = StyleRuleSource | GroupRuleSource | object;
+
+interface StyleSelectorContext {
+  readonly sourceSelector: string;
+  readonly resolvedSelector: string;
+}
 
 export interface StylesheetSource {
   readonly href: string | null;
@@ -98,6 +108,7 @@ export function collectCssFacts(
         sourceUrl,
         `${stylesheetIndex}`,
         [],
+        undefined,
         0,
         facts,
         state,
@@ -126,6 +137,7 @@ function collectRules(
   sourceUrl: string,
   parentPath: string,
   media: readonly string[],
+  parentSelector: StyleSelectorContext | undefined,
   depth: number,
   facts: CssRuleFact[],
   state: { rulesVisited: number },
@@ -154,17 +166,32 @@ function collectRules(
     }
     state.rulesVisited += 1;
     const rulePath = `${parentPath}.${ruleIndex}`;
+    let childSelector = parentSelector;
     try {
       if (isStyleRule(rule)) {
-        collectStyleRule(
-          element,
-          rule,
-          sourceUrl,
-          rulePath,
-          media,
-          facts,
-          budget,
+        const selector = resolveStyleSelector(
+          rule.selectorText,
+          parentSelector,
         );
+        if (!selector) {
+          continue;
+        }
+        const matches = matchesSelector(element, selector.resolvedSelector);
+        if (matches === undefined) {
+          continue;
+        }
+        if (matches) {
+          collectDeclarations(
+            rule.style,
+            selector.sourceSelector,
+            sourceUrl,
+            rulePath,
+            media,
+            facts,
+            budget,
+          );
+        }
+        childSelector = selector;
         if (
           facts.length >= INSPECT_LIMITS.factsPerTarget ||
           state.rulesVisited >= INSPECT_LIMITS.cssRules ||
@@ -172,7 +199,25 @@ function collectRules(
         ) {
           return;
         }
-        continue;
+      } else if (isNestedDeclarationsRule(rule) && parentSelector) {
+        const matches = matchesSelector(
+          element,
+          parentSelector.resolvedSelector,
+        );
+        if (matches === undefined) {
+          continue;
+        }
+        if (matches) {
+          collectDeclarations(
+            rule.style,
+            parentSelector.sourceSelector,
+            sourceUrl,
+            rulePath,
+            media,
+            facts,
+            budget,
+          );
+        }
       }
     } catch {
       continue;
@@ -204,6 +249,7 @@ function collectRules(
       sourceUrl,
       rulePath,
       nextMedia,
+      childSelector,
       depth + 1,
       facts,
       state,
@@ -219,41 +265,25 @@ function collectRules(
   }
 }
 
-function collectStyleRule(
-  element: MatchableElement,
-  rule: StyleRuleSource,
+function collectDeclarations(
+  style: StyleDeclarationSource,
+  selector: string,
   sourceUrl: string,
   rulePath: string,
   media: readonly string[],
   facts: CssRuleFact[],
   budget: InspectByteBudget,
 ): void {
-  const selector = rule.selectorText;
-  if (
-    selector.length === 0 ||
-    selector.length > INSPECT_LIMITS.selectorLength
-  ) {
-    return;
-  }
-
-  try {
-    if (!element.matches(selector)) {
-      return;
-    }
-  } catch {
-    return;
-  }
-
   const remainingFacts = INSPECT_LIMITS.factsPerTarget - facts.length;
   const declarationLimit = Math.min(
     INSPECT_LIMITS.declarationsPerRule,
     remainingFacts,
   );
   const declarationNames: string[] = [];
-  const declarationCount = boundedLength(rule.style.length, declarationLimit);
+  const declarationCount = boundedLength(style.length, declarationLimit);
   for (let index = 0; index < declarationCount; index += 1) {
     try {
-      const property = rule.style.item(index);
+      const property = style.item(index);
       if (
         property &&
         property.length <= INSPECT_LIMITS.propertyNameLength
@@ -279,7 +309,7 @@ function collectStyleRule(
         selector,
         property,
         value: truncate(
-          rule.style.getPropertyValue(property),
+          style.getPropertyValue(property),
           INSPECT_LIMITS.valueLength,
         ).trim(),
         metadata: {
@@ -298,6 +328,183 @@ function collectStyleRule(
   }
 }
 
+function resolveStyleSelector(
+  selector: string,
+  parent: StyleSelectorContext | undefined,
+): StyleSelectorContext | undefined {
+  if (
+    selector.length === 0 ||
+    selector.length > INSPECT_LIMITS.selectorLength
+  ) {
+    return undefined;
+  }
+
+  const resolvedSelector = parent
+    ? resolveNestedSelector(selector, parent.resolvedSelector)
+    : lexicallyValidSelector(selector)
+      ? selector
+      : undefined;
+  if (!resolvedSelector) {
+    return undefined;
+  }
+
+  return {
+    sourceSelector: selector,
+    resolvedSelector,
+  };
+}
+
+function resolveNestedSelector(
+  selector: string,
+  parentSelector: string,
+): string | undefined {
+  const replacement = `:is(${parentSelector})`;
+  let result = "";
+  let quote: "\"" | "'" | undefined;
+  let escaped = false;
+  let nestingSelectorFound = false;
+  let parentheses = 0;
+  let brackets = 0;
+  let topLevelComma = false;
+
+  for (const character of selector) {
+    if (escaped) {
+      if (result.length >= INSPECT_LIMITS.selectorLength) {
+        return undefined;
+      }
+      result += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      if (result.length >= INSPECT_LIMITS.selectorLength) {
+        return undefined;
+      }
+      result += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (result.length >= INSPECT_LIMITS.selectorLength) {
+        return undefined;
+      }
+      result += character;
+      if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      if (result.length >= INSPECT_LIMITS.selectorLength) {
+        return undefined;
+      }
+      result += character;
+      quote = character;
+      continue;
+    }
+    if (character === "(") {
+      parentheses += 1;
+    } else if (character === ")") {
+      if (parentheses === 0) {
+        return undefined;
+      }
+      parentheses -= 1;
+    } else if (character === "[") {
+      brackets += 1;
+    } else if (character === "]") {
+      if (brackets === 0) {
+        return undefined;
+      }
+      brackets -= 1;
+    } else if (
+      character === "," &&
+      parentheses === 0 &&
+      brackets === 0
+    ) {
+      topLevelComma = true;
+    }
+
+    const addition = character === "&" ? replacement : character;
+    if (
+      result.length + addition.length >
+      INSPECT_LIMITS.selectorLength
+    ) {
+      return undefined;
+    }
+    result += addition;
+    nestingSelectorFound ||= character === "&";
+  }
+
+  if (escaped || quote || parentheses !== 0 || brackets !== 0) {
+    return undefined;
+  }
+  if (nestingSelectorFound) {
+    return result;
+  }
+  if (topLevelComma) {
+    return undefined;
+  }
+
+  const descendantSelector = `${replacement} ${selector.trim()}`;
+  return descendantSelector.length <= INSPECT_LIMITS.selectorLength
+    ? descendantSelector
+    : undefined;
+}
+
+function lexicallyValidSelector(selector: string): boolean {
+  let quote: "\"" | "'" | undefined;
+  let escaped = false;
+  let parentheses = 0;
+  let brackets = 0;
+
+  for (const character of selector) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+    } else if (character === "(") {
+      parentheses += 1;
+    } else if (character === ")") {
+      if (parentheses === 0) {
+        return false;
+      }
+      parentheses -= 1;
+    } else if (character === "[") {
+      brackets += 1;
+    } else if (character === "]") {
+      if (brackets === 0) {
+        return false;
+      }
+      brackets -= 1;
+    }
+  }
+
+  return !escaped && !quote && parentheses === 0 && brackets === 0;
+}
+
+function matchesSelector(
+  element: MatchableElement,
+  selector: string,
+): boolean | undefined {
+  try {
+    return element.matches(selector);
+  } catch {
+    return undefined;
+  }
+}
+
 function isStyleRule(rule: RuleSource): rule is StyleRuleSource {
   const candidate = rule as Partial<StyleRuleSource>;
   return (
@@ -309,6 +516,26 @@ function isStyleRule(rule: RuleSource): rule is StyleRuleSource {
 
 function isGroupRule(rule: RuleSource): rule is GroupRuleSource {
   return "cssRules" in rule;
+}
+
+function isNestedDeclarationsRule(
+  rule: RuleSource,
+): rule is NestedDeclarationsSource {
+  if ("selectorText" in rule || "cssRules" in rule) {
+    return false;
+  }
+  const candidate = rule as Partial<NestedDeclarationsSource> & {
+    readonly constructor?: { readonly name?: unknown };
+  };
+  if (typeof candidate.style !== "object" || candidate.style === null) {
+    return false;
+  }
+  const constructorName = candidate.constructor?.name;
+  return (
+    constructorName === undefined ||
+    constructorName === "Object" ||
+    constructorName === "CSSNestedDeclarations"
+  );
 }
 
 function messageOf(error: unknown): string {

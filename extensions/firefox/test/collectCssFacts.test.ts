@@ -68,6 +68,303 @@ describe("collectCssFacts", () => {
     }
   });
 
+  it("traverses native nested style rules when the outer rule does not match", () => {
+    const matchedSelectors: string[] = [];
+    const result = collectCssFacts(
+      {
+        matches(selector) {
+          matchedSelectors.push(selector);
+          return selector === ":is(.card) > .title";
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/nested.css",
+            cssRules: [
+              {
+                ...styleRule(".card", { display: "grid" }),
+                cssRules: [
+                  styleRule("& > .title", { color: "red" }),
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(matchedSelectors).toEqual([
+      ".card",
+      ":is(.card) > .title",
+    ]);
+    expect(result.facts).toEqual([
+      {
+        type: "css-rule",
+        selector: "& > .title",
+        property: "color",
+        value: "red",
+        metadata: {
+          sourceUrl: "/nested.css",
+          rulePath: "0.0.0",
+        },
+      },
+    ]);
+  });
+
+  it("threads the nearest style selector through nested group rules", () => {
+    const matchedSelectors: string[] = [];
+    const result = collectCssFacts(
+      {
+        matches(selector) {
+          matchedSelectors.push(selector);
+          return selector === ":is(.card) .icon";
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/nested-media.css",
+            cssRules: [
+              {
+                ...styleRule(".card", {}),
+                cssRules: [
+                  {
+                    media: { conditionText: "(width >= 40rem)" },
+                    cssRules: [
+                      styleRule("& .icon", { display: "block" }),
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(matchedSelectors).toEqual([
+      ".card",
+      ":is(.card) .icon",
+    ]);
+    expect(result.facts[0]).toEqual({
+      type: "css-rule",
+      selector: "& .icon",
+      property: "display",
+      value: "block",
+      metadata: {
+        sourceUrl: "/nested-media.css",
+        media: ["(width >= 40rem)"],
+        rulePath: "0.0.0.0",
+      },
+    });
+  });
+
+  it("resolves multi-level selector lists without replacing quoted or escaped ampersands", () => {
+    const matchedSelectors: string[] = [];
+    const resolvedGrandchild =
+      ':is(:is(.card, .featured) [data-label="&"]) > .title\\&mark';
+    const result = collectCssFacts(
+      {
+        matches(selector) {
+          matchedSelectors.push(selector);
+          return selector === resolvedGrandchild;
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/multi-level.css",
+            cssRules: [
+              {
+                ...styleRule(".card, .featured", {}),
+                cssRules: [
+                  {
+                    ...styleRule('& [data-label="&"]', {}),
+                    cssRules: [
+                      styleRule("& > .title\\&mark", {
+                        color: "purple",
+                      }),
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(matchedSelectors).toEqual([
+      ".card, .featured",
+      ':is(.card, .featured) [data-label="&"]',
+      resolvedGrandchild,
+    ]);
+    expect(result.facts).toHaveLength(1);
+    expect(result.facts[0]?.selector).toBe("& > .title\\&mark");
+    expect(result.facts[0]?.metadata.rulePath).toBe("0.0.0.0");
+  });
+
+  it("uses a conservative descendant fallback when a nested selector omits ampersand", () => {
+    const matchedSelectors: string[] = [];
+    const result = collectCssFacts(
+      {
+        matches(selector) {
+          matchedSelectors.push(selector);
+          return selector === ":is(.card) .title";
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/implicit-nesting.css",
+            cssRules: [
+              {
+                ...styleRule(".card", {}),
+                cssRules: [styleRule(".title", { color: "red" })],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(matchedSelectors).toEqual([
+      ".card",
+      ":is(.card) .title",
+    ]);
+    expect(result.facts[0]?.selector).toBe(".title");
+  });
+
+  it("collects nested declarations against the inherited style selector", () => {
+    const matchedSelectors: string[] = [];
+    const nestedDeclarations = styleRule(".unused", {
+      background: "silver",
+    }).style;
+    const result = collectCssFacts(
+      {
+        matches(selector) {
+          matchedSelectors.push(selector);
+          return selector === ".card";
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/nested-declarations.css",
+            cssRules: [
+              {
+                ...styleRule(".card", {}),
+                cssRules: [
+                  {
+                    media: { conditionText: "(prefers-color-scheme: dark)" },
+                    cssRules: [{ style: nestedDeclarations }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(matchedSelectors).toEqual([".card", ".card"]);
+    expect(result.facts).toEqual([
+      {
+        type: "css-rule",
+        selector: ".card",
+        property: "background",
+        value: "silver",
+        metadata: {
+          sourceUrl: "/nested-declarations.css",
+          media: ["(prefers-color-scheme: dark)"],
+          rulePath: "0.0.0.0",
+        },
+      },
+    ]);
+  });
+
+  it("skips malformed or over-limit nested selector resolution", () => {
+    const parentSelector = "p".repeat(
+      INSPECT_LIMITS.selectorLength - 5,
+    );
+    const matchedSelectors: string[] = [];
+    const result = collectCssFacts(
+      {
+        matches(selector) {
+          matchedSelectors.push(selector);
+          return false;
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/bounded-nesting.css",
+            cssRules: [
+              {
+                ...styleRule(parentSelector, {}),
+                cssRules: [
+                  styleRule("& &", { color: "red" }),
+                  styleRule("&[data-label='unterminated]", {
+                    color: "blue",
+                  }),
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(matchedSelectors).toEqual([parentSelector]);
+    expect(result.facts).toEqual([]);
+  });
+
+  it("does not let a trailing escape cross the resolved selector limit", () => {
+    const parentSelector = ".card";
+    const replacement = `:is(${parentSelector})`;
+    const nestedSelector = `&${"a".repeat(
+      INSPECT_LIMITS.selectorLength - replacement.length - 1,
+    )}\\x`;
+    const matchedSelectors: string[] = [];
+    const result = collectCssFacts(
+      {
+        matches(selector) {
+          matchedSelectors.push(selector);
+          return false;
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/escaped-boundary.css",
+            cssRules: [
+              {
+                ...styleRule(parentSelector, {}),
+                cssRules: [
+                  styleRule(nestedSelector, { color: "red" }),
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(nestedSelector.length).toBeLessThanOrEqual(
+      INSPECT_LIMITS.selectorLength,
+    );
+    expect(matchedSelectors).toEqual([parentSelector]);
+    expect(result.facts).toEqual([]);
+  });
+
   it("reports inaccessible stylesheets and marks inline sources", () => {
     const inaccessible = {
       href: "https://cdn.example/vendor.css",
