@@ -53,7 +53,49 @@ describe("PanelInspectController", () => {
     ]);
     expect(controller.enabled).toBe(false);
   });
+
+  it("sends a trailing disable when toggled off during a pending enable", async () => {
+    const messages: unknown[] = [];
+    const enable = deferred<void>();
+    const controller = new PanelInspectController((message) => {
+      messages.push(message);
+      return isRecord(message) && message.type === "enableInspectMode"
+        ? enable.promise
+        : Promise.resolve(undefined);
+    });
+
+    controller.setTabId(12);
+    const enabling = controller.setEnabled(true);
+    const disabling = controller.disable();
+
+    expect(controller.enabled).toBe(false);
+    expect(messages).toEqual([
+      { type: "enableInspectMode", tabId: 12 },
+    ]);
+
+    enable.resolve();
+    await Promise.all([enabling, disabling]);
+
+    expect(messages).toEqual([
+      { type: "enableInspectMode", tabId: 12 },
+      { type: "disableInspectMode", tabId: 12 },
+    ]);
+    expect(controller.enabled).toBe(false);
+  });
 });
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");

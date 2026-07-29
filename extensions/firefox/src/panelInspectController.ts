@@ -1,7 +1,10 @@
 export class PanelInspectController {
   private tabId: number | undefined;
+  private desiredEnabled = false;
+  private remoteEnabled = false;
+  private enableInFlight = false;
   private remoteDisablePending = false;
-  private disableRequest: Promise<void> | undefined;
+  private reconcileRequest: Promise<void> | undefined;
   public enabled = false;
 
   public constructor(
@@ -17,50 +20,95 @@ export class PanelInspectController {
       await this.disable();
       return;
     }
-    if (enabled === this.enabled) {
-      return;
-    }
     if (this.tabId === undefined) {
       throw new Error("No inspected tab is attached");
     }
-    if (this.disableRequest) {
-      await this.disableRequest.catch(() => undefined);
-    }
-    await this.sendMessage({
-      type: "enableInspectMode",
-      tabId: this.tabId,
-    });
+
+    this.desiredEnabled = true;
     this.enabled = true;
-    this.remoteDisablePending = false;
+    await this.reconcile();
   }
 
   public async disable(): Promise<void> {
-    if (!this.enabled && !this.remoteDisablePending) {
-      return;
+    this.desiredEnabled = false;
+    this.enabled = false;
+    if (
+      this.remoteEnabled ||
+      this.enableInFlight ||
+      this.remoteDisablePending
+    ) {
+      this.remoteDisablePending = true;
+    }
+    await this.reconcile();
+  }
+
+  private reconcile(): Promise<void> {
+    if (this.reconcileRequest) {
+      return this.reconcileRequest;
     }
 
-    this.enabled = false;
-    this.remoteDisablePending = true;
-    if (this.disableRequest) {
-      return this.disableRequest;
+    const run = this.reconcileLoop();
+    let tracked: Promise<void>;
+    tracked = run.finally(() => {
+      if (this.reconcileRequest === tracked) {
+        this.reconcileRequest = undefined;
+      }
+    });
+    this.reconcileRequest = tracked;
+    return tracked;
+  }
+
+  private async reconcileLoop(): Promise<void> {
+    while (true) {
+      if (this.desiredEnabled) {
+        if (this.remoteEnabled) {
+          this.remoteDisablePending = false;
+          return;
+        }
+
+        const tabId = this.requireTabId();
+        this.enableInFlight = true;
+        try {
+          await this.sendMessage({ type: "enableInspectMode", tabId });
+          this.remoteEnabled = true;
+        } catch (error) {
+          this.remoteEnabled = false;
+          this.remoteDisablePending = false;
+          if (this.desiredEnabled) {
+            this.desiredEnabled = false;
+            this.enabled = false;
+          }
+          throw error;
+        } finally {
+          this.enableInFlight = false;
+        }
+
+        if (!this.desiredEnabled) {
+          this.remoteDisablePending = true;
+        }
+        continue;
+      }
+
+      if (!this.remoteEnabled && !this.remoteDisablePending) {
+        return;
+      }
+
+      const tabId = this.requireTabId();
+      try {
+        await this.sendMessage({ type: "disableInspectMode", tabId });
+        this.remoteEnabled = false;
+        this.remoteDisablePending = false;
+      } catch (error) {
+        this.remoteDisablePending = true;
+        throw error;
+      }
     }
+  }
+
+  private requireTabId(): number {
     if (this.tabId === undefined) {
       throw new Error("No inspected tab is attached");
     }
-
-    const request = this.sendMessage({
-      type: "disableInspectMode",
-      tabId: this.tabId,
-    })
-      .then(() => {
-        this.remoteDisablePending = false;
-      })
-      .finally(() => {
-        if (this.disableRequest === request) {
-          this.disableRequest = undefined;
-        }
-      });
-    this.disableRequest = request;
-    return request;
+    return this.tabId;
   }
 }

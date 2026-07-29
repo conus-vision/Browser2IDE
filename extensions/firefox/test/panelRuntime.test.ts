@@ -198,6 +198,25 @@ describe("Firefox panel lifecycle", () => {
     expect(activeClients()).toEqual([]);
   });
 
+  it("keeps the current client authoritative after an invalid Link", async () => {
+    await loadSettledPanel();
+
+    submitLink(dom, "4873507");
+    await flushAsync();
+    const current = harness.clients[0];
+    expect(current).toBeDefined();
+
+    submitLink(dom, "invalid");
+    await flushAsync();
+    current?.emitProtocolError(
+      "auth.tokenRejected",
+      "Rejected browser token",
+    );
+    await flushAsync();
+
+    expect(activeClients()).toEqual([]);
+  });
+
   it("lets an explicit Link supersede an overlapping initialize", async () => {
     const stored = deferred<Record<string, unknown>>();
     harness.storageGet = () => stored.promise;
@@ -328,6 +347,78 @@ describe("Firefox panel lifecycle", () => {
     await flushAsync();
 
     expect(activeClients()).toEqual([]);
+  });
+
+  it("disables inspection after disconnect during a pending enable", async () => {
+    const messages: unknown[] = [];
+    const enable = deferred<unknown>();
+    harness.runtimeSend = (message) => {
+      messages.push(message);
+      return isRecord(message) && message.type === "enableInspectMode"
+        ? enable.promise
+        : Promise.resolve(undefined);
+    };
+    await loadSettledPanel();
+    submitLink(dom, "4873507");
+    await flushAsync();
+    const current = harness.clients[0];
+    notifyRuntime({
+      type: "browser2ide.inspectedTab",
+      channel: "test-channel",
+      tabId: 12,
+    });
+    current?.emitState("connected");
+
+    dom.element("inspect-mode").checked = true;
+    dom.element("inspect-mode").dispatch("change");
+    await flushAsync();
+    current?.emitState("disconnected");
+    await flushAsync();
+
+    enable.resolve(undefined);
+    await flushAsync();
+
+    expect(messageTypes(messages)).toEqual([
+      "browser2ide.panelReady",
+      "enableInspectMode",
+      "disableInspectMode",
+    ]);
+    expect(dom.element("inspect-mode").checked).toBe(false);
+  });
+
+  it("disables inspection after unload during a pending enable", async () => {
+    const messages: unknown[] = [];
+    const enable = deferred<unknown>();
+    harness.runtimeSend = (message) => {
+      messages.push(message);
+      return isRecord(message) && message.type === "enableInspectMode"
+        ? enable.promise
+        : Promise.resolve(undefined);
+    };
+    await loadSettledPanel();
+    submitLink(dom, "4873507");
+    await flushAsync();
+    const current = harness.clients[0];
+    notifyRuntime({
+      type: "browser2ide.inspectedTab",
+      channel: "test-channel",
+      tabId: 12,
+    });
+    current?.emitState("connected");
+
+    dom.element("inspect-mode").checked = true;
+    dom.element("inspect-mode").dispatch("change");
+    await flushAsync();
+    dom.window.dispatch("unload");
+    enable.resolve(undefined);
+    await flushAsync();
+
+    expect(messageTypes(messages)).toEqual([
+      "browser2ide.panelReady",
+      "enableInspectMode",
+      "disableInspectMode",
+    ]);
+    expect(dom.element("inspect-mode").checked).toBe(false);
   });
 });
 
@@ -470,11 +561,17 @@ function deferred<T>(): Deferred<T> {
 }
 
 async function flushAsync(): Promise<void> {
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 50; index += 1) {
     await Promise.resolve();
   }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object");
+}
+
+function messageTypes(messages: unknown[]): unknown[] {
+  return messages.map((message) =>
+    isRecord(message) ? message.type : undefined,
+  );
 }

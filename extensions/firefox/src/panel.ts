@@ -12,6 +12,7 @@ import {
   parseLinkCode,
   resetPanelSettings,
   savePanelSettings,
+  type ParsedLinkCode,
   type PanelSettings,
   type PanelStorage,
 } from "./panelState.js";
@@ -74,10 +75,14 @@ const publisher = new InspectPublisher({
 
 linkForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  const code = linkCodeInput.value;
-  void lifecycle
-    .start((context) => linkToBridge(code, context))
-    .catch(showError);
+  try {
+    const parsed = parseLinkCode(linkCodeInput.value);
+    void lifecycle
+      .start((context) => linkToBridge(parsed, context))
+      .catch(showError);
+  } catch (error) {
+    showError(error);
+  }
 });
 
 linkCodeInput.addEventListener("input", updateControls);
@@ -133,10 +138,9 @@ async function initialize(context: PanelLifecycleContext): Promise<void> {
 }
 
 async function linkToBridge(
-  code: string,
+  parsed: ParsedLinkCode,
   context: PanelLifecycleContext,
 ): Promise<void> {
-  const parsed = parseLinkCode(code);
   const disableError = await tryDisableInspectMode();
   if (!context.isCurrent()) {
     return;
