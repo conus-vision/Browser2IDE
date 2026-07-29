@@ -233,7 +233,7 @@ const LEAF_AT_RULES = new Set([
 ]);
 const KEYFRAMES_AT_RULES = new Set(["keyframes", "-webkit-keyframes"]);
 const RESERVED_FONT_FAMILY_NAMES = new Set([
-  "caption", "cursive", "emoji", "fangsong", "fantasy", "icon", "math",
+  "caption", "cursive", "default", "emoji", "fangsong", "fantasy", "icon", "math",
   "menu", "message-box", "monospace", "sans-serif", "serif", "small-caption",
   "status-bar", "system-ui", "ui-monospace", "ui-rounded", "ui-sans-serif",
   "ui-serif",
@@ -668,7 +668,7 @@ function simpleContainer(value: string): boolean {
 
 function validContainerName(value: string): boolean {
   return simpleName(value) &&
-    !["and", "none", "not", "or"].includes(value.toLowerCase());
+    !["and", "default", "none", "not", "or"].includes(value.toLowerCase());
 }
 
 function layerName(value: string): boolean {

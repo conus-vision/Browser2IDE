@@ -612,6 +612,7 @@ describe("CssSourcePlugin", () => {
       "@container sidebar (width: {1px}) { .ignored {} }",
     ],
     ["reserved container name", "@container none (width > 1px) { .ignored {} }"],
+    ["globally reserved container name", "@container default (width > 1px) { .ignored {} }"],
     ["condition keyword as name", "@container and (width > 1px) { .ignored {} }"],
   ])("fails closed after malformed %s group", async (_name, prefix) => {
     const text = `${prefix}\n.duplicate { color: red; }\n.duplicate { color: blue; }`;
@@ -732,6 +733,7 @@ describe("CssSourcePlugin", () => {
     ["page selector", "@page :hover {}"],
     ["font-feature-values family", "@font-feature-values {}"],
     ["generic font-feature-values family", "@font-feature-values serif {}"],
+    ["reserved font-feature-values family", "@font-feature-values default {}"],
     ["system font-feature-values family", "@font-feature-values system-ui {}"],
     ["system font shorthand family", "@font-feature-values caption {}"],
   ])("fails closed after malformed @%s", async (_name, prefix) => {
