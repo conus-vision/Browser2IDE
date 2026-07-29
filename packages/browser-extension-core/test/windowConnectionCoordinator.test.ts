@@ -19,12 +19,20 @@ const AUTH_TOKEN_B = "b".repeat(32);
 
 describe("WindowConnectionCoordinator", () => {
   it("opens one client for all panels in one browser window", async () => {
-    const harness = coordinatorHarness();
+    const storage = new MemorySessionStorage({
+      "browser2ide.windowLink.10": windowLink({
+        port: 48_736,
+        bridgeInstanceId: INSTANCE_B,
+      }),
+    });
+    const harness = coordinatorHarness(storage);
     await harness.coordinator.linkWindow(
       10,
       "4873507",
       browserSource("window-10"),
     );
+    expect(harness.createdClients).toHaveLength(0);
+    expect(harness.coordinator.state(10)).toBe("linking");
 
     const first = harness.coordinator.registerPanel({
       windowId: 10,
@@ -38,15 +46,62 @@ describe("WindowConnectionCoordinator", () => {
     });
     await harness.flush();
 
+    expect(storage.getCalls).toBe(0);
     expect(harness.createdClients).toHaveLength(1);
+    expect(harness.createdClients[0]).toMatchObject({
+      url: "ws://127.0.0.1:48735",
+      sourceId: "window-10",
+      linkCalls: ["07"],
+      connectCalls: [],
+    });
     first.dispose();
     expect(harness.createdClients[0].disconnectCalls).toBe(0);
     second.dispose();
     expect(harness.createdClients[0].disconnectCalls).toBe(1);
   });
 
+  it("starts a pending link when registration races store cleanup", async () => {
+    const storage = new DeferredRemoveSessionStorage();
+    const harness = coordinatorHarness(storage);
+    const linking = harness.coordinator.linkWindow(
+      10,
+      "4873507",
+      browserSource("window-10"),
+    );
+    await storage.waitForRemove();
+
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    expect(harness.createdClients).toHaveLength(0);
+
+    storage.resolveRemove();
+    await linking;
+    await harness.flush();
+
+    expect(storage.getCalls).toBe(0);
+    expect(harness.createdClients).toHaveLength(1);
+    expect(harness.createdClients[0]).toMatchObject({
+      url: "ws://127.0.0.1:48735",
+      sourceId: "window-10",
+      linkCalls: ["07"],
+    });
+  });
+
   it("keeps clients and endpoints isolated between browser windows", async () => {
     const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    harness.coordinator.registerPanel({
+      windowId: 20,
+      tabId: 201,
+      sourceId: "panel-201",
+    });
 
     const first = await harness.link(10, "4873507");
     const second = await harness.link(20, "4873608");
@@ -90,12 +145,12 @@ describe("WindowConnectionCoordinator", () => {
     "deletes the mapping and never retries after %s",
     async (code) => {
       const harness = coordinatorHarness();
-      const client = await harness.link(10, "4873507");
       harness.coordinator.registerPanel({
         windowId: 10,
         tabId: 101,
         sourceId: "panel-101",
       });
+      const client = await harness.link(10, "4873507");
       await harness.authenticate(client, windowLink());
 
       client.emitState("error");
@@ -114,6 +169,11 @@ describe("WindowConnectionCoordinator", () => {
   it("does not let stale auth cleanup overwrite a new link state", async () => {
     const storage = new RejectableAuthRemovalStorage();
     const harness = coordinatorHarness(storage);
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
     const first = await harness.link(10, "4873507");
     await harness.authenticate(first, windowLink());
 
@@ -139,12 +199,12 @@ describe("WindowConnectionCoordinator", () => {
 
   it("maps protocol rate limiting without scheduling a retry", async () => {
     const harness = coordinatorHarness();
-    const client = await harness.link(10, "4873507");
     harness.coordinator.registerPanel({
       windowId: 10,
       tabId: 101,
       sourceId: "panel-101",
     });
+    const client = await harness.link(10, "4873507");
 
     client.emitState("error");
     client.emitError(
@@ -157,12 +217,12 @@ describe("WindowConnectionCoordinator", () => {
 
   it("owns capped reconnect timing and cancels it with the final panel", async () => {
     const harness = coordinatorHarness();
-    const client = await harness.link(10, "4873507");
     const registration = harness.coordinator.registerPanel({
       windowId: 10,
       tabId: 101,
       sourceId: "panel-101",
     });
+    const client = await harness.link(10, "4873507");
     const saved = windowLink();
     await harness.authenticate(client, saved);
 
@@ -186,6 +246,16 @@ describe("WindowConnectionCoordinator", () => {
 
   it("revokes and deletes links on unlink and browser-window removal", async () => {
     const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    harness.coordinator.registerPanel({
+      windowId: 20,
+      tabId: 201,
+      sourceId: "panel-201",
+    });
     const first = await harness.link(10, "4873507");
     const second = await harness.link(20, "4873608");
     await harness.authenticate(first, windowLink());
@@ -212,7 +282,6 @@ describe("WindowConnectionCoordinator", () => {
 
   it("preserves each registered panel source for simultaneous publishes", async () => {
     const harness = coordinatorHarness();
-    const client = await harness.link(10, "4873507");
     harness.coordinator.registerPanel({
       windowId: 10,
       tabId: 101,
@@ -223,8 +292,16 @@ describe("WindowConnectionCoordinator", () => {
       tabId: 102,
       sourceId: "panel-102",
     });
+    const client = await harness.link(10, "4873507");
     await harness.authenticate(client, windowLink());
-    const payload = selection(".same-selection");
+    const payload: InspectPayload = {
+      ...selection(".same-selection"),
+      metadata: {
+        existing: "preserved",
+        browserWindowId: 999,
+        tabId: 999,
+      },
+    };
 
     expect(
       harness.coordinator.publishInspect(10, "panel-101", payload),
@@ -236,6 +313,23 @@ describe("WindowConnectionCoordinator", () => {
       "panel-101",
       "panel-102",
     ]);
+    expect(client.inspectCalls.map(({ payload }) => payload.metadata)).toEqual([
+      {
+        existing: "preserved",
+        browserWindowId: 10,
+        tabId: 101,
+      },
+      {
+        existing: "preserved",
+        browserWindowId: 10,
+        tabId: 102,
+      },
+    ]);
+    expect(payload.metadata).toEqual({
+      existing: "preserved",
+      browserWindowId: 999,
+      tabId: 999,
+    });
     expect(
       harness.coordinator.publishInspect(10, "not-registered", payload),
     ).toBe(false);
@@ -275,12 +369,12 @@ describe("WindowConnectionCoordinator", () => {
     "ignores stale credentials and reconnect callbacks after %s",
     async (operation) => {
       const harness = coordinatorHarness();
-      const client = await harness.link(10, "4873507");
       harness.coordinator.registerPanel({
         windowId: 10,
         tabId: 101,
         sourceId: "panel-101",
       });
+      const client = await harness.link(10, "4873507");
 
       if (operation === "unlink") {
         await harness.coordinator.unlinkWindow(10);
@@ -455,6 +549,25 @@ class DeferredGetSessionStorage extends MemorySessionStorage {
   public resolveGet(values: Record<string, unknown>): void {
     this.resolvePendingGet?.(values);
     this.resolvePendingGet = undefined;
+  }
+}
+
+class DeferredRemoveSessionStorage extends MemorySessionStorage {
+  private readonly removeStarted = deferred<void>();
+  private readonly removeCompletion = deferred<void>();
+
+  public override async remove(key: string): Promise<void> {
+    this.removeStarted.resolve();
+    await this.removeCompletion.promise;
+    await super.remove(key);
+  }
+
+  public async waitForRemove(): Promise<void> {
+    await this.removeStarted.promise;
+  }
+
+  public resolveRemove(): void {
+    this.removeCompletion.resolve();
   }
 }
 

@@ -632,6 +632,45 @@ describe("bridge server authenticated envelope identity", () => {
     },
   );
 
+  it.each(["browser", "simulator"] as const)(
+    "routes multiplexed inspect source IDs from one authenticated %s socket",
+    async (role) => {
+      const authenticator = createAuthenticator();
+      const senderToken = acceptedToken(authenticator, role);
+      const ideToken = authenticator.issueTrustedToken("ide");
+      const server = createBridgeServer({ port: 0, authenticator });
+      await server.start();
+
+      try {
+        const ide = await connect(server.getUrl());
+        await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+        const sender = await connect(server.getUrl());
+        await sendJsonAndReceive(sender, hello(senderToken, role));
+
+        const firstRouted = nextJsonMessageBeforeClose(ide, sender);
+        sender.send(JSON.stringify(inspectMessage("panel-101", role)));
+        await expect(firstRouted).resolves.toMatchObject({
+          type: "inspect",
+          sessionId: SESSION_ID,
+          source: { role, id: "panel-101" },
+        });
+
+        const secondRouted = nextJsonMessageBeforeClose(ide, sender);
+        sender.send(JSON.stringify(inspectMessage("panel-102", role)));
+        await expect(secondRouted).resolves.toMatchObject({
+          type: "inspect",
+          sessionId: SESSION_ID,
+          source: { role, id: "panel-102" },
+        });
+
+        expect(sender.readyState).toBe(WebSocket.OPEN);
+        await Promise.all([closeSocket(sender), closeSocket(ide)]);
+      } finally {
+        await server.stop();
+      }
+    },
+  );
+
   it.each([
     [
       "session",
@@ -645,13 +684,6 @@ describe("bridge server authenticated envelope identity", () => {
       (message: ReturnType<typeof inspectMessage>) => ({
         ...message,
         source: source("simulator"),
-      }),
-    ],
-    [
-      "source id",
-      (message: ReturnType<typeof inspectMessage>) => ({
-        ...message,
-        source: { ...message.source, id: "spoofed-browser-source" },
       }),
     ],
   ])(
@@ -1057,8 +1089,11 @@ function createTestServer(): BridgeServer {
   return createBridgeServer({ port: 0, authenticator: createAuthenticator() });
 }
 
-function acceptedToken(authenticator: LinkAuthenticator): string {
-  const result = authenticator.attemptLink(PIN, "browser");
+function acceptedToken(
+  authenticator: LinkAuthenticator,
+  role: "browser" | "simulator" = "browser",
+): string {
+  const result = authenticator.attemptLink(PIN, role);
   if (!("accepted" in result)) {
     throw new Error("Expected test link attempt to be accepted");
   }
@@ -1109,13 +1144,16 @@ function unlink() {
   };
 }
 
-function inspectMessage() {
+function inspectMessage(
+  sourceId = "browser-source",
+  role: "browser" | "simulator" = "browser",
+) {
   return {
     protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
-    messageId: "inspect-after-unlink",
+    messageId: `inspect-${sourceId}`,
     sessionId: SESSION_ID,
-    source: source("browser"),
+    source: { ...source(role), id: sourceId },
     targets: [
       {
         role: "selected",
@@ -1150,6 +1188,18 @@ async function nextJsonMessage(
 ): Promise<Record<string, unknown>> {
   const [data] = await once(socket, "message");
   return JSON.parse(data.toString()) as Record<string, unknown>;
+}
+
+async function nextJsonMessageBeforeClose(
+  receiver: WebSocket,
+  sender: WebSocket,
+): Promise<Record<string, unknown>> {
+  return Promise.race([
+    nextJsonMessage(receiver),
+    once(sender, "close").then(() => {
+      throw new Error("Authenticated sender closed before inspect was routed");
+    }),
+  ]);
 }
 
 async function expectSocketErrorAndClose(

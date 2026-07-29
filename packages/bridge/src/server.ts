@@ -493,8 +493,7 @@ function isAllowedInboundMessage(
         (client.source.role === "browser" ||
           client.source.role === "simulator") &&
         message.sessionId === client.sessionId &&
-        message.source.role === client.source.role &&
-        message.source.id === client.source.id
+        message.source.role === client.source.role
       );
     case "references":
     case "command":

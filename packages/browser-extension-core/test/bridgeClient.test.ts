@@ -194,9 +194,15 @@ describe("BrowserBridgeClient", () => {
     });
     authenticate(harness.sockets[0]);
 
-    expect(harness.client.sendInspect(selection(".card"), "panel-101")).toBe(
-      true,
-    );
+    expect(
+      harness.client.sendInspect(
+        {
+          ...selection(".card"),
+          metadata: { browserWindowId: 10, tabId: 101 },
+        },
+        "panel-101",
+      ),
+    ).toBe(true);
     expect(JSON.parse(harness.sockets[0].sent[1])).toMatchObject({
       type: "inspect",
       source: {
@@ -205,6 +211,7 @@ describe("BrowserBridgeClient", () => {
         label: "Firefox window 10",
         metadata: { windowId: 10 },
       },
+      metadata: { browserWindowId: 10, tabId: 101 },
     });
   });
 

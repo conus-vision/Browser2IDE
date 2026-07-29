@@ -157,9 +157,15 @@ export class WindowConnectionCoordinator {
       source: connectionSource,
     };
     record.pendingLink = pendingLink;
-    this.openClient(record, generation, pendingLink.url, connectionSource, (client) =>
-      client.link(pendingLink.pin),
-    );
+    if (record.registrations.size > 0) {
+      this.openClient(
+        record,
+        generation,
+        pendingLink.url,
+        connectionSource,
+        (client) => client.link(pendingLink.pin),
+      );
+    }
   }
 
   public async unlinkWindow(windowId: number): Promise<void> {
@@ -224,19 +230,30 @@ export class WindowConnectionCoordinator {
     payload: InspectPayload,
   ): boolean {
     const record = this.records.get(windowId);
+    const entry = record?.registrations.get(sourceId);
     if (
       this.disposed ||
       !record ||
       record.state !== "linked" ||
       !record.clientConnected ||
       !record.client ||
-      !record.registrations.has(sourceId)
+      !entry
     ) {
       return false;
     }
 
     try {
-      return record.client.sendInspect(payload, sourceId);
+      return record.client.sendInspect(
+        {
+          ...payload,
+          metadata: {
+            ...payload.metadata,
+            browserWindowId: entry.registration.windowId,
+            tabId: entry.registration.tabId,
+          },
+        },
+        sourceId,
+      );
     } catch {
       this.setState(record, "error");
       return false;
@@ -300,6 +317,38 @@ export class WindowConnectionCoordinator {
         this.hasReconnectIntent(record)
       ) {
         this.scheduleReconnect(record, record.generation, record.clientToken);
+      }
+      return;
+    }
+
+    if (
+      record.state === "linking" &&
+      !record.pendingLink &&
+      !record.link
+    ) {
+      return;
+    }
+
+    if (record.pendingLink) {
+      const pendingLink = record.pendingLink;
+      record.connectionSource = pendingLink.source;
+      this.setState(record, "linking");
+      if (pendingLink.kind === "code") {
+        this.openClient(
+          record,
+          record.generation,
+          pendingLink.url,
+          pendingLink.source,
+          (client) => client.link(pendingLink.pin),
+        );
+      } else {
+        this.openClient(
+          record,
+          record.generation,
+          pendingLink.link.url,
+          pendingLink.source,
+          (client) => client.connect(credentialsFor(pendingLink.link)),
+        );
       }
       return;
     }
