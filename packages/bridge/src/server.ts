@@ -437,7 +437,7 @@ function handleConnection(
       return;
     }
 
-    if (!matchesAuthenticatedIdentity(registered, message)) {
+    if (!isAllowedInboundMessage(registered, message)) {
       sendSocketError(
         connection,
         "protocol.invalidMessage",
@@ -479,23 +479,29 @@ function handleConnection(
   });
 }
 
-function matchesAuthenticatedIdentity(
+function isAllowedInboundMessage(
   client: RegisteredClient,
   message: Browser2IdeMessage,
 ): boolean {
-  if (message.type === "unlink") {
-    return message.sessionId === client.sessionId;
+  switch (message.type) {
+    case "unlink":
+      return message.sessionId === client.sessionId;
+    case "inspect":
+      return (
+        (client.source.role === "browser" ||
+          client.source.role === "simulator") &&
+        message.sessionId === client.sessionId &&
+        message.source.role === client.source.role &&
+        message.source.id === client.source.id
+      );
+    case "references":
+    case "command":
+      return client.source.role === "ide";
+    case "pong":
+      return true;
+    default:
+      return false;
   }
-
-  if (message.type === "inspect") {
-    return (
-      message.sessionId === client.sessionId &&
-      message.source.role === client.source.role &&
-      message.source.id === client.source.id
-    );
-  }
-
-  return true;
 }
 
 function handleLinkRequest(

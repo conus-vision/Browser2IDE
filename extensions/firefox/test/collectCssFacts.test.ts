@@ -102,6 +102,124 @@ describe("collectCssFacts", () => {
     expect(result.facts[0].metadata.sourceUrl).toBe("inline-style://document/1");
   });
 
+  it("skips over-limit selectors and properties before reading values", () => {
+    let matchCalls = 0;
+    let valueReads = 0;
+    const oversizedProperty = "p".repeat(
+      INSPECT_LIMITS.propertyNameLength + 1,
+    );
+    const result = collectCssFacts(
+      {
+        matches() {
+          matchCalls += 1;
+          return true;
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/bounded.css",
+            cssRules: [
+              styleRule(
+                "s".repeat(INSPECT_LIMITS.selectorLength + 1),
+                { color: "red" },
+              ),
+              {
+                selectorText: ".card",
+                cssText: `.card { ${oversizedProperty}: value; }`,
+                style: {
+                  length: 1,
+                  item: () => oversizedProperty,
+                  getPropertyValue() {
+                    valueReads += 1;
+                    return "value";
+                  },
+                  getPropertyPriority: () => "",
+                },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts).toEqual([]);
+    expect(matchCalls).toBe(1);
+    expect(valueReads).toBe(0);
+  });
+
+  it("bounds declaration and priority metadata", () => {
+    const declarationCount = INSPECT_LIMITS.declarationsPerRule + 1;
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/metadata.css",
+            cssRules: [
+              {
+                selectorText: ".card",
+                cssText: ".card { color: red; }",
+                style: {
+                  length: declarationCount,
+                  item(index: number) {
+                    const prefix = `--property-${index}-`;
+                    return `${prefix}${"p".repeat(
+                      INSPECT_LIMITS.propertyNameLength - prefix.length,
+                    )}`;
+                  },
+                  getPropertyValue: () => "value",
+                  getPropertyPriority: () =>
+                    "p".repeat(INSPECT_LIMITS.propertyNameLength + 1),
+                },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts).toHaveLength(INSPECT_LIMITS.declarationsPerRule);
+    for (const fact of result.facts) {
+      expect(fact.metadata.declarationNames).toHaveLength(
+        INSPECT_LIMITS.declarationsPerRule,
+      );
+      expect(
+        (fact.metadata.declarationNames as string[]).every(
+          (name) => name.length === INSPECT_LIMITS.propertyNameLength,
+        ),
+      ).toBe(true);
+      expect(fact.metadata.priority).toHaveLength(
+        INSPECT_LIMITS.propertyNameLength,
+      );
+    }
+  });
+
+  it("truncates inaccessible stylesheet diagnostic reasons", () => {
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/inaccessible.css",
+            get cssRules(): never {
+              throw new Error(
+                "r".repeat(INSPECT_LIMITS.valueLength + 1),
+              );
+            },
+          },
+        ],
+      },
+    );
+
+    expect(result.inaccessibleStylesheets[0]?.reason).toHaveLength(
+      INSPECT_LIMITS.valueLength,
+    );
+  });
+
   it("caps declaration traversal without allocating from style.length", () => {
     let itemCalls = 0;
     const result = collectCssFacts(

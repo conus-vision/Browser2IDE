@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   INSPECT_LIMITS,
+  InspectMessageSchema,
   PROTOCOL_VERSION,
   parseMessage,
 } from "../src/index.js";
@@ -332,6 +333,115 @@ describe("Browser2IDE protocol schemas", () => {
       mediaConditions: 16,
       inaccessibleStylesheets: 64,
     });
+  });
+
+  it("rejects inspect target arrays over the exported limit", () => {
+    const result = InspectMessageSchema.safeParse(
+      inspectMessage([
+        target("selected", 0, ".card", []),
+        target("parent", 1, ".layout", []),
+        target("parent", 1, ".outer", []),
+      ]),
+    );
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "too_big",
+            path: ["targets"],
+            maximum: INSPECT_LIMITS.targets,
+          }),
+        ]),
+      );
+    }
+  });
+
+  it.each([
+    ["client source ID", "id", () => INSPECT_LIMITS.nodeIdLength],
+    ["client source label", "label", () => INSPECT_LIMITS.textLength],
+    ["client source URL", "url", () => INSPECT_LIMITS.urlLength],
+  ])("bounds inspect %s length", (_name, field, readLimit) => {
+    const createMessage = (length: number) => ({
+      ...inspectMessage([target("selected", 0, ".card", [])]),
+      source: {
+        ...source,
+        [field]: "x".repeat(length),
+      },
+    });
+    const limit = readLimit();
+
+    expect(() => parseMessage(createMessage(limit))).not.toThrow();
+    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
+  });
+
+  it.each([
+    ["DOM fact name", "name", () => INSPECT_LIMITS.attributeNameLength],
+    ["DOM fact value", "value", () => INSPECT_LIMITS.valueLength],
+  ])("bounds inspect %s length", (_name, field, readLimit) => {
+    const createMessage = (length: number) => {
+      const fact = {
+        type: "dom-attribute",
+        name: "data-state",
+        value: "ready",
+        metadata: {},
+        [field]: "x".repeat(length),
+      };
+      return inspectMessage([target("selected", 0, ".card", [fact])]);
+    };
+    const limit = readLimit();
+
+    expect(() => parseMessage(createMessage(limit))).not.toThrow();
+    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
+  });
+
+  it.each([
+    ["source URI", "uri", () => INSPECT_LIMITS.urlLength],
+    ["reference label", "label", () => INSPECT_LIMITS.textLength],
+  ])("bounds reference %s length", (_name, field, readLimit) => {
+    const createMessage = (length: number) => ({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "references",
+      messageId: `bounded-reference-${field}`,
+      subject: { selector: ".card", metadata: {} },
+      references: [
+        {
+          ...reference,
+          ...(field === "label" ? { label: "x".repeat(length) } : {}),
+          source: {
+            ...reference.source,
+            ...(field === "uri" ? { uri: "x".repeat(length) } : {}),
+          },
+        },
+      ],
+      metadata: {},
+    });
+    const limit = readLimit();
+
+    expect(() => parseMessage(createMessage(limit))).not.toThrow();
+    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
+  });
+
+  it("bounds highlight selectors", () => {
+    const createMessage = (length: number) => ({
+      protocolVersion: PROTOCOL_VERSION,
+      type: "command",
+      messageId: "bounded-highlight-selector",
+      command: "highlightElement",
+      arguments: {
+        selector: "x".repeat(length),
+        metadata: {},
+      },
+      metadata: {},
+    });
+
+    expect(() =>
+      parseMessage(createMessage(INSPECT_LIMITS.selectorLength)),
+    ).not.toThrow();
+    expect(() =>
+      parseMessage(createMessage(INSPECT_LIMITS.selectorLength + 1)),
+    ).toThrow();
   });
 
   it.each([
