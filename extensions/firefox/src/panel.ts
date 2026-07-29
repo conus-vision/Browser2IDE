@@ -322,6 +322,12 @@ function handleClientError(
       .catch(showError);
     return;
   }
+  if (
+    error instanceof BrowserProtocolError &&
+    error.code === "bridge.noIdeClient"
+  ) {
+    publisher.reset();
+  }
   showError(error);
   updateControls();
 }

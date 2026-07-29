@@ -245,6 +245,8 @@ describe("BrowserBridgeClient", () => {
     harness.client.connect(CREDENTIALS);
     harness.sockets[0].open();
     authenticate(harness.sockets[0]);
+    const payload = selection(".card");
+    expect(harness.client.sendInspect(payload)).toBe(true);
     harness.sockets[0].message({
       protocolVersion: PROTOCOL_VERSION,
       type: "error",
@@ -260,10 +262,10 @@ describe("BrowserBridgeClient", () => {
     });
     expect(harness.states.at(-1)).toBe("connected");
     expect(harness.sockets[0].closed).toBe(false);
-    expect(harness.client.sendInspect(selection(".after-error"))).toBe(true);
+    expect(harness.client.sendInspect(payload)).toBe(true);
     expect(JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}")).toMatchObject({
       type: "inspect",
-      targets: [{ subject: { selector: ".after-error" } }],
+      targets: [{ subject: { selector: ".card" } }],
     });
 
     harness.sockets[0].onmessage?.({ data: "{" });

@@ -20,6 +20,7 @@ type RuntimeListener = (message: unknown) => void;
 
 const harness = vi.hoisted(() => ({
   clients: [] as FakeClient[],
+  inspectPayloads: [] as unknown[],
   ports: [] as TestRuntimePort[],
   runtimeListeners: [] as RuntimeListener[],
   storageGet: async (_keys: string[]): Promise<Record<string, unknown>> => ({}),
@@ -110,8 +111,9 @@ vi.mock("../src/bridgeClient.js", () => {
       this.stopped = true;
     }
 
-    public sendInspect(): boolean {
-      return false;
+    public sendInspect(payload: unknown): boolean {
+      harness.inspectPayloads.push(payload);
+      return true;
     }
 
     public emitProtocolError(code: string, message: string): void {
@@ -124,9 +126,30 @@ vi.mock("../src/bridgeClient.js", () => {
   }
 
   class FakeInspectPublisher {
-    public publish(): void {}
-    public reset(): void {}
-    public dispose(): void {}
+    private lastSentHash: string | undefined;
+
+    public constructor(
+      private readonly options: {
+        readonly send: (payload: unknown) => void;
+      },
+    ) {}
+
+    public publish(payload: unknown): void {
+      const hash = JSON.stringify(payload);
+      if (hash === this.lastSentHash) {
+        return;
+      }
+      this.lastSentHash = hash;
+      this.options.send(payload);
+    }
+
+    public reset(): void {
+      this.lastSentHash = undefined;
+    }
+
+    public dispose(): void {
+      this.reset();
+    }
   }
 
   return {
@@ -142,6 +165,7 @@ describe("Firefox panel lifecycle", () => {
   beforeEach(() => {
     vi.resetModules();
     harness.clients.length = 0;
+    harness.inspectPayloads.length = 0;
     harness.ports.length = 0;
     harness.runtimeListeners.length = 0;
     harness.storageGet = async () => ({});
@@ -229,6 +253,37 @@ describe("Firefox panel lifecycle", () => {
     await flushAsync();
 
     expect(activeClients()).toEqual([]);
+  });
+
+  it("retries the same inspection after the IDE delivery is rejected", async () => {
+    await loadSettledPanel();
+    submitLink(dom, "4873507");
+    await flushAsync();
+    const current = harness.clients[0];
+    notifyRuntime({
+      type: "browser2ide.inspectedTab",
+      channel: "test-channel",
+      tabId: 12,
+    });
+    current?.emitState("connected");
+    const payload = selectionPayload(".card");
+
+    notifyRuntime({
+      type: "browser2ide.selection",
+      tabId: 12,
+      payload,
+    });
+    current?.emitProtocolError(
+      "bridge.noIdeClient",
+      "No IDE client is connected",
+    );
+    notifyRuntime({
+      type: "browser2ide.selection",
+      tabId: 12,
+      payload,
+    });
+
+    expect(harness.inspectPayloads).toEqual([payload, payload]);
   });
 
   it("lets an explicit Link supersede an overlapping initialize", async () => {
@@ -676,6 +731,22 @@ function storedLink(port: string): Record<string, unknown> {
     browser2ideBridgeInstanceId:
       "2d7856f5-8218-4ba6-9f6c-7aa459333ee1",
     browser2ideAuthToken: "saved-token",
+  };
+}
+
+function selectionPayload(selector: string): Record<string, unknown> {
+  return {
+    targets: [
+      {
+        role: "selected",
+        depth: 0,
+        subject: { selector, metadata: {} },
+        facts: [],
+        metadata: {},
+      },
+    ],
+    context: { url: "https://example.test/page", metadata: {} },
+    metadata: {},
   };
 }
 

@@ -19,9 +19,9 @@ export class ContentInspectLease {
   ) {}
 
   public enable(): void {
-    if (this.connection) {
-      this.target.enable();
-      return;
+    const previousConnection = this.connection;
+    if (previousConnection) {
+      this.close(previousConnection, true);
     }
 
     const port = this.createPort();
