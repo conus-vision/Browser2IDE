@@ -34,10 +34,18 @@ interface NestedDeclarationsSource {
   readonly style: StyleDeclarationSource;
 }
 
-export interface GroupRuleSource {
-  readonly cssRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+interface MediaConditionSource {
   readonly conditionText?: string;
   readonly media?: { readonly mediaText: string };
+}
+
+export interface GroupRuleSource extends MediaConditionSource {
+  readonly cssRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+}
+
+interface ImportRuleSource extends MediaConditionSource {
+  readonly href?: string | null;
+  readonly styleSheet: StylesheetSource;
 }
 
 export type RuleSource = StyleRuleSource | GroupRuleSource | object;
@@ -71,6 +79,12 @@ export interface CssFactCollection {
   readonly inaccessibleStylesheets: InaccessibleStylesheet[];
 }
 
+interface CollectionState {
+  rulesVisited: number;
+  stylesheetsVisited: number;
+  readonly inaccessibleStylesheets: InaccessibleStylesheet[];
+}
+
 export function collectCssFacts(
   element: MatchableElement,
   document: CssDocumentSource,
@@ -78,7 +92,11 @@ export function collectCssFacts(
 ): CssFactCollection {
   const facts: CssRuleFact[] = [];
   const inaccessibleStylesheets: InaccessibleStylesheet[] = [];
-  const state = { rulesVisited: 0 };
+  const state: CollectionState = {
+    rulesVisited: 0,
+    stylesheetsVisited: 0,
+    inaccessibleStylesheets,
+  };
 
   for (const [stylesheetIndex, stylesheet] of enumerateBounded(
     document.styleSheets,
@@ -86,10 +104,12 @@ export function collectCssFacts(
   )) {
     if (
       facts.length >= INSPECT_LIMITS.factsPerTarget ||
+      state.stylesheetsVisited >= INSPECT_LIMITS.stylesheets ||
       budget.remainingBytes <= 0
     ) {
       break;
     }
+    state.stylesheetsVisited += 1;
 
     let sourceUrl: string | undefined;
     try {
@@ -114,18 +134,10 @@ export function collectCssFacts(
         facts,
         state,
         budget,
+        new Set([stylesheet]),
       );
     } catch (error) {
-      if (
-        inaccessibleStylesheets.length <
-        INSPECT_LIMITS.inaccessibleStylesheets
-      ) {
-        inaccessibleStylesheets.push({
-          code: "browser.stylesheetInaccessible",
-          sourceUrl,
-          reason: truncate(messageOf(error), INSPECT_LIMITS.valueLength),
-        });
-      }
+      reportInaccessible(state, sourceUrl, error);
     }
   }
 
@@ -141,8 +153,9 @@ function collectRules(
   parentSelector: StyleSelectorContext | undefined,
   depth: number,
   facts: CssRuleFact[],
-  state: { rulesVisited: number },
+  state: CollectionState,
   budget: InspectByteBudget,
+  activeStylesheets: ReadonlySet<object>,
 ): void {
   if (
     depth > INSPECT_LIMITS.cssRuleDepth ||
@@ -167,6 +180,29 @@ function collectRules(
     }
     state.rulesVisited += 1;
     const rulePath = `${parentPath}.${ruleIndex}`;
+
+    if (isImportRuleCandidate(rule)) {
+      collectImportedStylesheet(
+        element,
+        rule,
+        sourceUrl,
+        media,
+        depth,
+        facts,
+        state,
+        budget,
+        activeStylesheets,
+      );
+      if (
+        facts.length >= INSPECT_LIMITS.factsPerTarget ||
+        state.rulesVisited >= INSPECT_LIMITS.cssRules ||
+        budget.remainingBytes <= 0
+      ) {
+        return;
+      }
+      continue;
+    }
+
     let childSelector = parentSelector;
     try {
       if (isStyleRule(rule)) {
@@ -237,10 +273,7 @@ function collectRules(
       continue;
     }
     const condition = readMediaCondition(rule);
-    const nextMedia =
-      condition && media.length < INSPECT_LIMITS.mediaConditions
-        ? [...media, condition]
-        : media;
+    const nextMedia = appendMediaCondition(media, condition);
     collectRules(
       element,
       nestedRules,
@@ -252,6 +285,7 @@ function collectRules(
       facts,
       state,
       budget,
+      activeStylesheets,
     );
     if (
       facts.length >= INSPECT_LIMITS.factsPerTarget ||
@@ -324,6 +358,95 @@ function collectDeclarations(
       continue;
     }
   }
+}
+
+function collectImportedStylesheet(
+  element: MatchableElement,
+  rule: RuleSource,
+  containingSourceUrl: string,
+  media: readonly string[],
+  depth: number,
+  facts: CssRuleFact[],
+  state: CollectionState,
+  budget: InspectByteBudget,
+  activeStylesheets: ReadonlySet<object>,
+): void {
+  if (
+    depth >= INSPECT_LIMITS.cssRuleDepth ||
+    facts.length >= INSPECT_LIMITS.factsPerTarget ||
+    state.stylesheetsVisited >= INSPECT_LIMITS.stylesheets ||
+    state.rulesVisited >= INSPECT_LIMITS.cssRules ||
+    budget.remainingBytes <= 0
+  ) {
+    return;
+  }
+
+  const stylesheetNamespace = state.stylesheetsVisited;
+  state.stylesheetsVisited += 1;
+
+  let importedStylesheet: StylesheetSource;
+  try {
+    const candidate = (rule as Partial<ImportRuleSource>).styleSheet;
+    if (!isStylesheetSource(candidate)) {
+      return;
+    }
+    importedStylesheet = candidate;
+  } catch (error) {
+    reportInaccessible(
+      state,
+      diagnosticImportUrl(rule, containingSourceUrl),
+      error,
+    );
+    return;
+  }
+
+  if (activeStylesheets.has(importedStylesheet)) {
+    return;
+  }
+
+  let sourceUrl: string | undefined;
+  try {
+    const stylesheetHref = importedStylesheet.href;
+    sourceUrl = stylesheetHref === null
+      ? exactImportRuleUrl(rule)
+      : exactBoundedUrl(stylesheetHref);
+  } catch (error) {
+    reportInaccessible(
+      state,
+      diagnosticImportUrl(rule, containingSourceUrl),
+      error,
+    );
+    return;
+  }
+  if (!sourceUrl) {
+    return;
+  }
+
+  let importedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
+  try {
+    importedRules = importedStylesheet.cssRules;
+  } catch (error) {
+    reportInaccessible(state, sourceUrl, error);
+    return;
+  }
+
+  const condition = readMediaCondition(rule as MediaConditionSource);
+  const nextMedia = appendMediaCondition(media, condition);
+  const nextActiveStylesheets = new Set(activeStylesheets);
+  nextActiveStylesheets.add(importedStylesheet);
+  collectRules(
+    element,
+    importedRules,
+    sourceUrl,
+    `${stylesheetNamespace}`,
+    nextMedia,
+    undefined,
+    depth + 1,
+    facts,
+    state,
+    budget,
+    nextActiveStylesheets,
+  );
 }
 
 function resolveStyleSelector(
@@ -512,11 +635,28 @@ function isStyleRule(rule: RuleSource): rule is StyleRuleSource {
   );
 }
 
-function isGroupRule(rule: RuleSource): rule is GroupRuleSource {
-  return "cssRules" in rule;
+function isImportRuleCandidate(rule: RuleSource): rule is ImportRuleSource {
+  return (
+    !hasProperty(rule, "selectorText") &&
+    !hasProperty(rule, "cssRules") &&
+    hasProperty(rule, "styleSheet")
+  );
 }
 
-function readMediaCondition(rule: GroupRuleSource): string {
+function isStylesheetSource(value: unknown): value is StylesheetSource {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    hasProperty(value, "href") &&
+    hasProperty(value, "cssRules")
+  );
+}
+
+function isGroupRule(rule: RuleSource): rule is GroupRuleSource {
+  return hasProperty(rule, "cssRules");
+}
+
+function readMediaCondition(rule: MediaConditionSource): string {
   try {
     const media = rule.media;
     if (
@@ -533,6 +673,57 @@ function readMediaCondition(rule: GroupRuleSource): string {
     return truncate(condition, INSPECT_LIMITS.valueLength).trim();
   } catch {
     return "";
+  }
+}
+
+function appendMediaCondition(
+  media: readonly string[],
+  condition: string,
+): readonly string[] {
+  return condition && media.length < INSPECT_LIMITS.mediaConditions
+    ? [...media, condition]
+    : media;
+}
+
+function exactImportRuleUrl(rule: RuleSource): string | undefined {
+  const href = (rule as Partial<ImportRuleSource>).href;
+  return typeof href === "string" ? exactBoundedUrl(href) : undefined;
+}
+
+function diagnosticImportUrl(
+  rule: RuleSource,
+  containingSourceUrl: string,
+): string {
+  try {
+    return exactImportRuleUrl(rule) ?? containingSourceUrl;
+  } catch {
+    return containingSourceUrl;
+  }
+}
+
+function reportInaccessible(
+  state: CollectionState,
+  sourceUrl: string,
+  error: unknown,
+): void {
+  if (
+    state.inaccessibleStylesheets.length >=
+    INSPECT_LIMITS.inaccessibleStylesheets
+  ) {
+    return;
+  }
+  state.inaccessibleStylesheets.push({
+    code: "browser.stylesheetInaccessible",
+    sourceUrl,
+    reason: truncate(messageOf(error), INSPECT_LIMITS.valueLength),
+  });
+}
+
+function hasProperty(value: object, property: PropertyKey): boolean {
+  try {
+    return property in value;
+  } catch {
+    return false;
   }
 }
 

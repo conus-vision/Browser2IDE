@@ -408,6 +408,428 @@ describe("collectCssFacts", () => {
     expect(result.facts[0].metadata.sourceUrl).toBe("inline-style://document/1");
   });
 
+  it("collects imported rules under their own source and local rule path", () => {
+    const importedUrl = "https://example.test/styles/imported.css";
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/styles/root.css",
+            cssRules: [
+              importRule(importedUrl, {
+                href: importedUrl,
+                cssRules: [styleRule(".imported", { color: "red" })],
+              }),
+              styleRule(".root", { display: "block" }),
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts).toEqual([
+      {
+        type: "css-rule",
+        selector: ".imported",
+        property: "color",
+        value: "red",
+        metadata: {
+          sourceUrl: importedUrl,
+          rulePath: "1.0",
+        },
+      },
+      {
+        type: "css-rule",
+        selector: ".root",
+        property: "display",
+        value: "block",
+        metadata: {
+          sourceUrl: "https://example.test/styles/root.css",
+          rulePath: "0.1",
+        },
+      },
+    ]);
+  });
+
+  it("preserves surrounding and import media through nested imports", () => {
+    const leafUrl = "https://example.test/styles/leaf.css";
+    const middleUrl = "https://example.test/styles/middle.css";
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/styles/root.css",
+            cssRules: [
+              mediaRule("screen", [
+                importRule(
+                  middleUrl,
+                  {
+                    href: middleUrl,
+                    cssRules: [
+                      importRule(
+                        leafUrl,
+                        {
+                          href: leafUrl,
+                          cssRules: [
+                            styleRule(".nested-import", { color: "green" }),
+                          ],
+                        },
+                        "(min-width: 40rem)",
+                      ),
+                    ],
+                  },
+                  "print",
+                ),
+              ]),
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts[0]).toEqual({
+      type: "css-rule",
+      selector: ".nested-import",
+      property: "color",
+      value: "green",
+      metadata: {
+        sourceUrl: leafUrl,
+        media: ["screen", "print", "(min-width: 40rem)"],
+        rulePath: "2.0",
+      },
+    });
+  });
+
+  it("reports inaccessible imported rules and continues the root sheet", () => {
+    const importedUrl = "https://cdn.example.test/inaccessible.css";
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/root.css",
+            cssRules: [
+              importRule(importedUrl, {
+                href: importedUrl,
+                get cssRules(): never {
+                  throw new Error("Imported sheet denied");
+                },
+              }),
+              styleRule(".after-import", { color: "blue" }),
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.inaccessibleStylesheets).toEqual([
+      {
+        code: "browser.stylesheetInaccessible",
+        sourceUrl: importedUrl,
+        reason: "Imported sheet denied",
+      },
+    ]);
+    expect(result.facts).toHaveLength(1);
+    expect(result.facts[0]?.selector).toBe(".after-import");
+  });
+
+  it("reports a throwing import styleSheet accessor with its import URL", () => {
+    const importedUrl = "https://cdn.example.test/style-sheet-denied.css";
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/root.css",
+            cssRules: [
+              {
+                href: importedUrl,
+                get styleSheet(): never {
+                  throw new Error("styleSheet denied");
+                },
+              },
+              styleRule(".after-import", { color: "blue" }),
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.inaccessibleStylesheets[0]).toEqual({
+      code: "browser.stylesheetInaccessible",
+      sourceUrl: importedUrl,
+      reason: "styleSheet denied",
+    });
+    expect(result.facts[0]?.selector).toBe(".after-import");
+  });
+
+  it("reports a throwing imported href accessor without reading its rules", () => {
+    const importedUrl = "https://cdn.example.test/href-denied.css";
+    let rulesRead = 0;
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/root.css",
+            cssRules: [
+              importRule(importedUrl, {
+                get href(): never {
+                  throw new Error("href denied");
+                },
+                get cssRules() {
+                  rulesRead += 1;
+                  return [styleRule(".unread", { color: "red" })];
+                },
+              }),
+              styleRule(".after-import", { color: "blue" }),
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(rulesRead).toBe(0);
+    expect(result.inaccessibleStylesheets[0]).toEqual({
+      code: "browser.stylesheetInaccessible",
+      sourceUrl: importedUrl,
+      reason: "href denied",
+    });
+    expect(result.facts[0]?.selector).toBe(".after-import");
+  });
+
+  it("does not confuse style or group rules carrying a styleSheet field", () => {
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/root.css",
+            cssRules: [
+              {
+                ...styleRule(".styled", { color: "red" }),
+                styleSheet: { href: "/not-an-import.css", cssRules: [] },
+              },
+              {
+                styleSheet: { href: "/not-an-import.css", cssRules: [] },
+                cssRules: [styleRule(".grouped", { display: "grid" })],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts.map((fact) => fact.selector)).toEqual([
+      ".styled",
+      ".grouped",
+    ]);
+  });
+
+  it("stops import cycles but revisits a shared sheet on another branch", () => {
+    const rootUrl = "https://example.test/root.css";
+    const sharedUrl = "https://example.test/shared.css";
+    const rootSheet: { href: string; cssRules: unknown[] } = {
+      href: rootUrl,
+      cssRules: [],
+    };
+    const sharedSheet: { href: string; cssRules: unknown[] } = {
+      href: sharedUrl,
+      cssRules: [],
+    };
+    sharedSheet.cssRules = [
+      importRule(rootUrl, rootSheet),
+      styleRule(".shared", { color: "purple" }),
+    ];
+    rootSheet.cssRules = [
+      importRule(sharedUrl, sharedSheet, "screen"),
+      importRule(sharedUrl, sharedSheet, "print"),
+    ];
+
+    const result = collectCssFacts(
+      { matches: () => true },
+      { pageUrl: "https://example.test/page", styleSheets: [rootSheet] },
+    );
+
+    expect(result.facts).toHaveLength(2);
+    expect(result.facts.map((fact) => fact.metadata.sourceUrl)).toEqual([
+      sharedUrl,
+      sharedUrl,
+    ]);
+    expect(result.facts.map((fact) => fact.metadata.media)).toEqual([
+      ["screen"],
+      ["print"],
+    ]);
+  });
+
+  it("applies the global stylesheet limit across imports", () => {
+    let styleSheetReads = 0;
+    let cssRulesReads = 0;
+    const imports = Array.from(
+      { length: INSPECT_LIMITS.stylesheets },
+      (_, index) => ({
+        href: `https://example.test/import-${index}.css`,
+        get styleSheet() {
+          styleSheetReads += 1;
+          return {
+            href: `https://example.test/import-${index}.css`,
+            get cssRules() {
+              cssRulesReads += 1;
+              return [];
+            },
+          };
+        },
+      }),
+    );
+
+    collectCssFacts(
+      { matches: () => false },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          { href: "https://example.test/root.css", cssRules: imports },
+        ],
+      },
+    );
+
+    expect(styleSheetReads).toBe(INSPECT_LIMITS.stylesheets - 1);
+    expect(cssRulesReads).toBe(INSPECT_LIMITS.stylesheets - 1);
+  });
+
+  it("bounds throwing import styleSheet accessors by the stylesheet limit", () => {
+    let styleSheetReads = 0;
+    const imports = Array.from(
+      { length: INSPECT_LIMITS.stylesheets },
+      (_, index) => ({
+        href: `https://example.test/denied-${index}.css`,
+        get styleSheet(): never {
+          styleSheetReads += 1;
+          throw new Error("denied");
+        },
+      }),
+    );
+
+    const result = collectCssFacts(
+      { matches: () => false },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          { href: "https://example.test/root.css", cssRules: imports },
+        ],
+      },
+    );
+
+    expect(styleSheetReads).toBe(INSPECT_LIMITS.stylesheets - 1);
+    expect(result.inaccessibleStylesheets).toHaveLength(
+      INSPECT_LIMITS.inaccessibleStylesheets,
+    );
+  });
+
+  it("applies the global rule limit across imported sheets", () => {
+    let importedRulesRead = 0;
+    let matchCalls = 0;
+    let rootRulesRead = 0;
+    const importedRules = {
+      *[Symbol.iterator]() {
+        for (let index = 0; index < INSPECT_LIMITS.cssRules; index += 1) {
+          importedRulesRead += 1;
+          yield styleRule(`.imported-${index}`, { color: "red" });
+        }
+      },
+    };
+    const rootRules = {
+      *[Symbol.iterator]() {
+        rootRulesRead += 1;
+        yield importRule("https://example.test/imported.css", {
+          href: "https://example.test/imported.css",
+          cssRules: importedRules,
+        });
+        rootRulesRead += 1;
+        yield styleRule(".must-not-be-read", { color: "blue" });
+      },
+    };
+
+    collectCssFacts(
+      {
+        matches() {
+          matchCalls += 1;
+          return false;
+        },
+      },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/root.css",
+            cssRules: rootRules,
+          },
+        ],
+      },
+    );
+
+    expect(importedRulesRead).toBe(INSPECT_LIMITS.cssRules - 1);
+    expect(matchCalls).toBe(INSPECT_LIMITS.cssRules - 1);
+    expect(rootRulesRead).toBe(1);
+  });
+
+  it("drops malformed and over-limit imported URLs before reading rules", () => {
+    let styleSheetReads = 0;
+    let rulesRead = 0;
+    const overLimitUrl = `${exactLengthUrl()}x`;
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "https://example.test/page",
+        styleSheets: [
+          {
+            href: "https://example.test/root.css",
+            cssRules: [
+              {
+                href: "https://example.test/malformed.css",
+                get styleSheet() {
+                  styleSheetReads += 1;
+                  return {
+                    href: "https://example.test/import%2.css",
+                    get cssRules() {
+                      rulesRead += 1;
+                      return [styleRule(".malformed", { color: "red" })];
+                    },
+                  };
+                },
+              },
+              {
+                href: "https://example.test/over-limit.css",
+                get styleSheet() {
+                  styleSheetReads += 1;
+                  return {
+                    href: overLimitUrl,
+                    get cssRules() {
+                      rulesRead += 1;
+                      return [styleRule(".over-limit", { color: "red" })];
+                    },
+                  };
+                },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(styleSheetReads).toBe(2);
+    expect(rulesRead).toBe(0);
+    expect(result.facts).toEqual([]);
+    expect(result.inaccessibleStylesheets).toEqual([]);
+  });
+
   it("skips over-limit selectors and properties before reading values", () => {
     let matchCalls = 0;
     let valueReads = 0;
@@ -805,6 +1227,18 @@ function mediaRule(conditionText: string, cssRules: readonly unknown[]) {
     conditionText,
     media: { mediaText: conditionText },
     cssRules,
+  };
+}
+
+function importRule(
+  href: string,
+  styleSheet: object,
+  mediaText = "",
+) {
+  return {
+    href,
+    ...(mediaText ? { media: { mediaText } } : {}),
+    styleSheet,
   };
 }
 
