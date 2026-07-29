@@ -7,7 +7,7 @@ import { PanelInspectTransport } from "../src/panelInspectTransport.js";
 describe("panel inspect transport", () => {
   it("correlates a background acknowledgement to its command", async () => {
     const port = new FakePort();
-    const transport = new PanelInspectTransport(port);
+    const transport = new PanelInspectTransport(() => port);
 
     const result = transport.send({
       type: "enableInspectMode",
@@ -33,7 +33,7 @@ describe("panel inspect transport", () => {
 
   it("rejects pending commands and disconnects synchronously on dispose", async () => {
     const port = new FakePort();
-    const transport = new PanelInspectTransport(port);
+    const transport = new PanelInspectTransport(() => port);
     const pending = transport.send({
       type: "disableInspectMode",
       tabId: 17,
@@ -43,6 +43,46 @@ describe("panel inspect transport", () => {
 
     expect(port.disconnected).toBe(true);
     await expect(pending).rejects.toThrow("Inspect connection is closed");
+  });
+
+  it("recreates an unexpectedly disconnected port for the next command", async () => {
+    const ports = [new FakePort(), new FakePort()];
+    let factoryCalls = 0;
+    let unexpectedDisconnects = 0;
+    const transport = new PanelInspectTransport(
+      () => ports[factoryCalls++]!,
+      () => {
+        unexpectedDisconnects += 1;
+      },
+    );
+
+    const interrupted = transport.send({
+      type: "enableInspectMode",
+      tabId: 17,
+    });
+    ports[0].disconnect();
+
+    await expect(interrupted).rejects.toThrow("Inspect connection is closed");
+    expect(unexpectedDisconnects).toBe(1);
+
+    const retried = transport.send({
+      type: "enableInspectMode",
+      tabId: 17,
+    });
+    ports[1].emitMessage({
+      type: "browser2ide.inspect.result",
+      requestId: "2",
+      ok: true,
+    });
+
+    await expect(retried).resolves.toEqual({ ok: true });
+    expect(factoryCalls).toBe(2);
+
+    transport.dispose();
+    await expect(
+      transport.send({ type: "enableInspectMode", tabId: 17 }),
+    ).rejects.toThrow("Inspect connection is closed");
+    expect(factoryCalls).toBe(2);
   });
 });
 

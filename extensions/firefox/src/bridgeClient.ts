@@ -312,6 +312,10 @@ export class BrowserBridgeClient {
         this.stopForProtocolError(sanitizedLinkError(message.code));
         return;
       }
+      if (isNonfatalServerError(message.code)) {
+        this.report(new BrowserProtocolError(message.code, message.message));
+        return;
+      }
       this.fail(new BrowserProtocolError(message.code, message.message));
     }
   }
@@ -343,6 +347,10 @@ export class BrowserBridgeClient {
 
   private fail(error: Error): void {
     this.setState("error");
+    this.report(error);
+  }
+
+  private report(error: Error): void {
     this.options.onError?.(error);
   }
 
@@ -490,4 +498,8 @@ function sanitizedLinkError(code: ProtocolErrorCode): BrowserProtocolError {
       ? "Link request rate limited"
       : "Link request rejected";
   return new BrowserProtocolError(code, message);
+}
+
+function isNonfatalServerError(code: ProtocolErrorCode): boolean {
+  return code === "bridge.noIdeClient";
 }

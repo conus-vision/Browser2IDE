@@ -4,6 +4,10 @@ import {
   type InspectPortRequest,
   type InspectPortResult,
 } from "./inspectPortProtocol.js";
+import {
+  BackgroundInspectLeaseRegistry,
+} from "./inspectLease.js";
+import type { ContentInspectPort } from "./inspectPortProtocol.js";
 
 export interface BackgroundInspectApi {
   executeScript(details: {
@@ -21,6 +25,7 @@ interface TabInspectState {
 
 export class BackgroundInspectCoordinator {
   private readonly tabs = new Map<number, TabInspectState>();
+  private readonly leases = new BackgroundInspectLeaseRegistry();
 
   public constructor(private readonly api: BackgroundInspectApi) {}
 
@@ -36,6 +41,7 @@ export class BackgroundInspectCoordinator {
     } else if (state.owner === owner) {
       state.owner = undefined;
       state.releasingOwner = owner;
+      this.leases.release(tabId);
     } else if (
       state.owner === undefined &&
       state.releasingOwner === owner
@@ -56,6 +62,19 @@ export class BackgroundInspectCoordinator {
 
   public release(owner: object, tabId: number): Promise<void> {
     return this.setEnabled(owner, tabId, false);
+  }
+
+  public attachContentLease(tabId: number, port: ContentInspectPort): void {
+    const state = this.tabs.get(tabId);
+    if (state?.owner === undefined) {
+      try {
+        port.disconnect();
+      } catch {
+        // The content script may have disappeared before registration.
+      }
+      return;
+    }
+    this.leases.attach(tabId, port);
   }
 
   public whenIdle(tabId: number): Promise<void> {
@@ -85,6 +104,7 @@ export class BackgroundInspectCoordinator {
       if (state.owner === owner) {
         state.owner = undefined;
         state.releasingOwner = owner;
+        this.leases.release(tabId);
       }
       const disabled = await this.tryDisable(tabId);
       if (

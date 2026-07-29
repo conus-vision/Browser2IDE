@@ -1,14 +1,17 @@
 import browser from "webextension-polyfill";
 import type { CssDocumentSource } from "./collectCssFacts.js";
 import { createInspectPayload } from "./inspectPayload.js";
+import { ContentInspectLease } from "./inspectLease.js";
 import {
   InspectMode,
   type InspectDocument,
   type InspectableElement,
 } from "./inspectMode.js";
+import { INSPECT_CONTENT_LEASE_PORT_NAME } from "./inspectPortProtocol.js";
 
 interface ContentScriptState {
   readonly mode: InspectMode;
+  readonly lease: ContentInspectLease;
 }
 
 const globalState = globalThis as typeof globalThis & {
@@ -25,18 +28,21 @@ if (!globalState.__browser2ideContentScript) {
         message: messageOf(error),
       }),
   });
+  const lease = new ContentInspectLease(mode, () =>
+    browser.runtime.connect({ name: INSPECT_CONTENT_LEASE_PORT_NAME }),
+  );
   browser.runtime.onMessage.addListener((message: unknown) => {
     if (!isRecord(message)) {
       return undefined;
     }
     if (message.type === "enableInspectMode") {
-      mode.enable();
+      lease.enable();
     } else if (message.type === "disableInspectMode") {
-      mode.disable();
+      lease.disable();
     }
     return undefined;
   });
-  globalState.__browser2ideContentScript = { mode };
+  globalState.__browser2ideContentScript = { mode, lease };
 }
 
 async function sendSelection(element: InspectableElement): Promise<void> {

@@ -436,6 +436,43 @@ describe("Firefox panel lifecycle", () => {
     ]);
     expect(dom.element("inspect-mode").checked).toBe(false);
   });
+
+  it("unchecks inspection after port loss and reconnects on retry", async () => {
+    const messages: unknown[] = [];
+    harness.runtimeSend = async (message) => {
+      messages.push(message);
+      return undefined;
+    };
+    await loadSettledPanel();
+    submitLink(dom, "4873507");
+    await flushAsync();
+    const current = harness.clients[0];
+    notifyRuntime({
+      type: "browser2ide.inspectedTab",
+      channel: "test-channel",
+      tabId: 12,
+    });
+    current?.emitState("connected");
+
+    dom.element("inspect-mode").checked = true;
+    dom.element("inspect-mode").dispatch("change");
+    await flushAsync();
+    harness.ports[0]?.disconnect();
+
+    expect(dom.element("inspect-mode").checked).toBe(false);
+
+    dom.element("inspect-mode").checked = true;
+    dom.element("inspect-mode").dispatch("change");
+    await flushAsync();
+
+    expect(harness.ports).toHaveLength(2);
+    expect(messageTypes(messages)).toEqual([
+      "browser2ide.panelReady",
+      "enableInspectMode",
+      "enableInspectMode",
+    ]);
+    expect(dom.element("inspect-mode").checked).toBe(true);
+  });
 });
 
 const ELEMENT_IDS = [

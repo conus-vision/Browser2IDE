@@ -42,6 +42,13 @@ export class PanelInspectController {
     await this.reconcile();
   }
 
+  public handleTransportDisconnect(): void {
+    this.desiredEnabled = false;
+    this.enabled = false;
+    this.remoteEnabled = false;
+    this.remoteDisablePending = false;
+  }
+
   private reconcile(): Promise<void> {
     if (this.reconcileRequest) {
       return this.reconcileRequest;
@@ -61,8 +68,7 @@ export class PanelInspectController {
   private async reconcileLoop(): Promise<void> {
     while (true) {
       if (this.desiredEnabled) {
-        if (this.remoteEnabled) {
-          this.remoteDisablePending = false;
+        if (this.remoteEnabled && !this.remoteDisablePending) {
           return;
         }
 
@@ -71,9 +77,9 @@ export class PanelInspectController {
         try {
           await this.sendMessage({ type: "enableInspectMode", tabId });
           this.remoteEnabled = true;
+          this.remoteDisablePending = false;
         } catch (error) {
           this.remoteEnabled = false;
-          this.remoteDisablePending = false;
           if (this.desiredEnabled) {
             this.desiredEnabled = false;
             this.enabled = false;

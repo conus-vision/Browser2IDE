@@ -4,7 +4,10 @@ import {
   BackgroundInspectCoordinator,
   attachBackgroundInspectSession,
 } from "./backgroundInspectSession.js";
-import { INSPECT_PORT_NAME } from "./inspectPortProtocol.js";
+import {
+  INSPECT_CONTENT_LEASE_PORT_NAME,
+  INSPECT_PORT_NAME,
+} from "./inspectPortProtocol.js";
 
 const route = createBackgroundRouter({
   sendRuntimeMessage: (message) => browser.runtime.sendMessage(message),
@@ -22,6 +25,15 @@ const inspectCoordinator = new BackgroundInspectCoordinator({
 });
 
 browser.runtime.onConnect.addListener((port) => {
+  if (port.name === INSPECT_CONTENT_LEASE_PORT_NAME) {
+    const tabId = port.sender?.tab?.id;
+    if (tabId === undefined) {
+      port.disconnect();
+      return;
+    }
+    inspectCoordinator.attachContentLease(tabId, port);
+    return;
+  }
   if (port.name !== INSPECT_PORT_NAME) {
     return;
   }

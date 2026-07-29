@@ -91,6 +91,32 @@ describe("background inspect session", () => {
     ]);
   });
 
+  it("disconnects the content lease synchronously for the current owner", async () => {
+    const calls: unknown[] = [];
+    const panelPort = new FakePort(INSPECT_PORT_NAME);
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(_tabId, message) {
+        calls.push(message);
+      },
+    });
+    const session = attachBackgroundInspectSession(panelPort, coordinator);
+
+    panelPort.emitMessage(request("enable", true));
+    await session.whenIdle();
+    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    coordinator.attachContentLease(17, contentLease);
+
+    panelPort.emitMessage(request("disable", false));
+
+    expect(contentLease.disconnected).toBe(true);
+    await session.whenIdle();
+    expect(calls).toEqual([
+      { type: "enableInspectMode" },
+      { type: "disableInspectMode" },
+    ]);
+  });
+
   it("does not let an old port disable a newer owner for the same tab", async () => {
     const firstEnable = deferred<void>();
     const calls: unknown[] = [];
@@ -119,8 +145,11 @@ describe("background inspect session", () => {
 
     oldPort.emitMessage(request("old", true));
     await flushAsync();
+    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    coordinator.attachContentLease(17, contentLease);
     newPort.emitMessage(request("new", true));
     oldPort.emitDisconnect();
+    expect(contentLease.disconnected).toBe(false);
     firstEnable.resolve();
     await coordinator.whenIdle(17);
 
@@ -137,6 +166,9 @@ describe("background inspect session", () => {
         ok: true,
       },
     ]);
+
+    newPort.emitDisconnect();
+    expect(contentLease.disconnected).toBe(true);
   });
 
   it("lets the same owner retry a failed disable", async () => {
@@ -195,6 +227,7 @@ describe("background inspect session", () => {
 
 class FakePort {
   public readonly sent: unknown[] = [];
+  public disconnected = false;
   public readonly onMessage = new FakeEvent<(message: unknown) => void>();
   public readonly onDisconnect = new FakeEvent<() => void>();
 
@@ -210,6 +243,14 @@ class FakePort {
 
   public emitDisconnect(): void {
     this.onDisconnect.emit();
+  }
+
+  public disconnect(): void {
+    if (this.disconnected) {
+      return;
+    }
+    this.disconnected = true;
+    this.emitDisconnect();
   }
 }
 

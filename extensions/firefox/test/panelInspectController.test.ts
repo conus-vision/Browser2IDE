@@ -54,6 +54,57 @@ describe("PanelInspectController", () => {
     expect(controller.enabled).toBe(false);
   });
 
+  it("re-enables remotely after a rejected disable left state uncertain", async () => {
+    const messages: unknown[] = [];
+    let rejectNextDisable = true;
+    const controller = new PanelInspectController(async (message) => {
+      messages.push(message);
+      if (
+        rejectNextDisable &&
+        isRecord(message) &&
+        message.type === "disableInspectMode"
+      ) {
+        rejectNextDisable = false;
+        throw new Error("Background did not disable inspection");
+      }
+    });
+
+    controller.setTabId(12);
+    await controller.setEnabled(true);
+    await expect(controller.disable()).rejects.toThrow(
+      "Background did not disable inspection",
+    );
+
+    await controller.setEnabled(true);
+
+    expect(messages).toEqual([
+      { type: "enableInspectMode", tabId: 12 },
+      { type: "disableInspectMode", tabId: 12 },
+      { type: "enableInspectMode", tabId: 12 },
+    ]);
+    expect(controller.enabled).toBe(true);
+  });
+
+  it("resets local and remote state after transport disconnect", async () => {
+    const messages: unknown[] = [];
+    const controller = new PanelInspectController(async (message) => {
+      messages.push(message);
+    });
+
+    controller.setTabId(12);
+    await controller.setEnabled(true);
+    controller.handleTransportDisconnect();
+
+    expect(controller.enabled).toBe(false);
+    await controller.setEnabled(true);
+
+    expect(messages).toEqual([
+      { type: "enableInspectMode", tabId: 12 },
+      { type: "enableInspectMode", tabId: 12 },
+    ]);
+    expect(controller.enabled).toBe(true);
+  });
+
   it("sends a trailing disable when toggled off during a pending enable", async () => {
     const messages: unknown[] = [];
     const enable = deferred<void>();

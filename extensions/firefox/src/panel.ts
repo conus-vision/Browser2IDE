@@ -61,11 +61,17 @@ let client: BrowserBridgeClient | undefined;
 let connected = false;
 let connectionIntent: ConnectionIntent = "none";
 const diagnostics = new PanelDiagnostics();
-const inspectTransport = new PanelInspectTransport(
-  browser.runtime.connect({ name: INSPECT_PORT_NAME }),
-);
+let inspectTransport: PanelInspectTransport;
 const inspectController = new PanelInspectController((message) =>
   inspectTransport.send(message),
+);
+inspectTransport = new PanelInspectTransport(
+  () => browser.runtime.connect({ name: INSPECT_PORT_NAME }),
+  () => {
+    inspectController.handleTransportDisconnect();
+    inspectToggle.checked = false;
+    updateControls();
+  },
 );
 const lifecycle = new PanelLifecycleCoordinator(updateControls);
 

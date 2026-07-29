@@ -1,4 +1,6 @@
 export const INSPECT_PORT_NAME = "browser2ide.inspect";
+export const INSPECT_CONTENT_LEASE_PORT_NAME =
+  "browser2ide.inspect.contentLease";
 
 export interface InspectPortRequest {
   readonly type: "browser2ide.inspect.setEnabled";
@@ -33,6 +35,11 @@ export interface BackgroundInspectPort {
 }
 
 export interface PanelInspectPort extends BackgroundInspectPort {
+  disconnect(): void;
+}
+
+export interface ContentInspectPort {
+  readonly onDisconnect: InspectPortEvent<() => void>;
   disconnect(): void;
 }
 

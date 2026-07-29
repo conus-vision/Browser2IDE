@@ -239,7 +239,7 @@ describe("BrowserBridgeClient", () => {
     expect(harness.delays).toEqual([]);
   });
 
-  it("preserves structured nonfatal errors for panel diagnostics", () => {
+  it("reports nonfatal application errors without disabling inspection", () => {
     const harness = createHarness();
 
     harness.client.connect(CREDENTIALS);
@@ -257,6 +257,13 @@ describe("BrowserBridgeClient", () => {
     expect(harness.errors.at(-1)).toMatchObject({
       code: "bridge.noIdeClient",
       message: "No IDE client is connected",
+    });
+    expect(harness.states.at(-1)).toBe("connected");
+    expect(harness.sockets[0].closed).toBe(false);
+    expect(harness.client.sendInspect(selection(".after-error"))).toBe(true);
+    expect(JSON.parse(harness.sockets[0].sent.at(-1) ?? "{}")).toMatchObject({
+      type: "inspect",
+      targets: [{ subject: { selector: ".after-error" } }],
     });
 
     harness.sockets[0].onmessage?.({ data: "{" });
