@@ -88,10 +88,12 @@ export function findMatchingCssRules(
 ): StylesheetRule[] {
   if (fact.source !== undefined) {
     if (!validSourcePosition(fact.source.line, fact.source.column)) return [];
-    const offset = document.offsetAt({
+    const requested = {
       line: fact.source.line - 1,
       character: fact.source.column - 1,
-    });
+    };
+    const offset = document.offsetAt(requested);
+    if (!samePosition(document.positionAt(offset), requested)) return [];
     const smallest = smallestRule(stylesheet.rules.filter(
       (rule) => rule.startOffset <= offset && offset < rule.endOffset,
     ));
@@ -199,11 +201,12 @@ function ruleFromNode(
 }
 
 type ContainerContext = "rules" | "keyframes";
-type RootPhase = "imports" | "namespaces" | "body";
+type RootPhase = "initial" | "imports" | "namespaces" | "body";
 
 interface AtRuleClassification {
   readonly kind: "count" | "drop" | "uncertain";
   readonly childContext?: ContainerContext;
+  readonly namespacePrefix?: string;
   readonly recurse?: boolean;
 }
 
@@ -236,6 +239,7 @@ class CssomIndexBuilder {
   public readonly fallbackMediaIndex: FallbackIndex;
 
   private readonly selectorValidity = new Map<Rule, boolean>();
+  private readonly namespaces = new Set<string>();
   private readonly fallback = new FallbackIndexBuilder();
   private visitedRules = 0;
 
@@ -262,7 +266,7 @@ class CssomIndexBuilder {
     let cssomIndex = 0;
     let cssRuleSeen = container.type !== "rule";
     let declarationsPending = false;
-    let rootPhase: RootPhase = "imports";
+    let rootPhase: RootPhase = "initial";
     const isRoot = container.type === "root" || container.type === "document";
 
     const flushDeclarations = (): void => {
@@ -302,7 +306,7 @@ class CssomIndexBuilder {
           cssRuleSeen = true;
           continue;
         }
-        if (!this.validSelector(node)) {
+        if (!this.validSelector(node, owner !== undefined)) {
           markUncertain();
           continue;
         }
@@ -343,6 +347,7 @@ class CssomIndexBuilder {
         isRoot,
         rootPhase,
         owner !== undefined,
+        this.namespaces,
       );
       if (classification.kind === "drop") continue;
       if (classification.kind === "uncertain") {
@@ -353,11 +358,10 @@ class CssomIndexBuilder {
       flushDeclarations();
       const name = node.name.toLowerCase();
       if (isRoot) {
-        rootPhase = name === "import"
-          ? rootPhase
-          : name === "namespace"
-            ? "namespaces"
-            : "body";
+        rootPhase = nextRootPhase(rootPhase, name, node.nodes !== undefined);
+        if (classification.namespacePrefix !== undefined) {
+          this.namespaces.add(classification.namespacePrefix);
+        }
       }
       const path = [...parentPath, cssomIndex];
       const withinBudget = this.visitRule();
@@ -381,21 +385,17 @@ class CssomIndexBuilder {
     flushDeclarations();
   }
 
-  private validSelector(rule: Rule): boolean {
+  private validSelector(rule: Rule, relativeAllowed: boolean): boolean {
     const cached = this.selectorValidity.get(rule);
     if (cached !== undefined) return cached;
     const selector = rule.selector;
     let valid = selector.length > 0 &&
       selector.length <= INSPECT_LIMITS.selectorLength;
-    if (valid) {
-      try {
-        const root = selectorParser().astSync(selector);
-        valid = root.nodes.length > 0 &&
-          root.nodes.every((entry) => entry.nodes.length > 0);
-      } catch {
-        valid = false;
-      }
-    }
+    if (valid) valid = validSelectorAst(
+      selector,
+      relativeAllowed,
+      this.namespaces,
+    );
     this.selectorValidity.set(rule, valid);
     return valid;
   }
@@ -471,26 +471,32 @@ function classifyAtRule(
   isRoot: boolean,
   rootPhase: RootPhase,
   nestedInStyle: boolean,
+  namespaces: ReadonlySet<string>,
 ): AtRuleClassification {
   const name = rule.name.toLowerCase();
   const hasBlock = rule.nodes !== undefined;
   const hasParameters = rule.params.trim().length > 0;
   if (name === "charset") return { kind: "drop" };
   if (name === "import") {
-    return !hasBlock && hasParameters && isRoot && rootPhase === "imports"
+    return !hasBlock && hasParameters && isRoot &&
+        (rootPhase === "initial" || rootPhase === "imports")
       ? { kind: "count" }
       : { kind: "uncertain" };
   }
   if (name === "namespace") {
-    return !hasBlock && hasParameters && isRoot && rootPhase !== "body"
-      ? { kind: "count" }
-      : { kind: "uncertain" };
-  }
-  if (GROUP_AT_RULES.has(name)) {
-    if (!hasBlock && !(name === "layer" && hasParameters)) {
+    if (hasBlock || !hasParameters || !isRoot || rootPhase === "body") {
       return { kind: "uncertain" };
     }
-    return { kind: "count", recurse: true, childContext: "rules" };
+    const prefix = namespacePrefix(rule.params);
+    return prefix === undefined
+      ? { kind: "uncertain" }
+      : { kind: "count", ...(prefix === null ? {} : { namespacePrefix: prefix }) };
+  }
+  if (GROUP_AT_RULES.has(name)) {
+    if (!validGroupAtRule(rule, namespaces)) {
+      return { kind: "uncertain" };
+    }
+    return { kind: "count", recurse: hasBlock, childContext: "rules" };
   }
   if (KEYFRAMES_AT_RULES.has(name)) {
     return nestedInStyle || !hasBlock || !hasParameters
@@ -505,11 +511,145 @@ function classifyAtRule(
   return { kind: "uncertain" };
 }
 
+function nextRootPhase(
+  phase: RootPhase,
+  name: string,
+  hasBlock: boolean,
+): RootPhase {
+  if (name === "import") return "imports";
+  if (name === "namespace") return "namespaces";
+  if (name === "layer" && !hasBlock && phase === "initial") return phase;
+  return "body";
+}
+
+function validSelectorAst(
+  value: string,
+  relativeAllowed: boolean,
+  namespaces: ReadonlySet<string>,
+): boolean {
+  try {
+    const root = selectorParser().astSync(value);
+    return root.nodes.length > 0 && root.nodes.every((selector) => {
+      if (
+        selector.nodes.length === 0 ||
+        (selector.first.type === "combinator" && !relativeAllowed)
+      ) return false;
+      let valid = true;
+      selector.walk((node) => {
+        if (node.type === "nesting") {
+          const next = node.next();
+          valid = relativeAllowed &&
+            next?.type !== "tag" && next?.type !== "universal";
+        } else if (
+          selectorParser.isNamespace(node) &&
+          typeof node.namespace === "string" &&
+          node.namespace !== "*" &&
+          !namespaces.has(node.namespace)
+        ) {
+          valid = false;
+        }
+        return valid;
+      });
+      return valid;
+    });
+  } catch {
+    return false;
+  }
+}
+
+function validGroupAtRule(
+  rule: AtRule,
+  namespaces: ReadonlySet<string>,
+): boolean {
+  const name = rule.name.toLowerCase();
+  const block = rule.nodes !== undefined;
+  const params = rule.params.trim();
+  if (params.length > INSPECT_LIMITS.valueLength) return false;
+  if (name === "media") return block && balancedParentheses(params);
+  if (name === "supports") return block && simpleCondition(params);
+  if (name === "container") return block && simpleContainer(params);
+  if (name === "starting-style") return block && params === "";
+  if (name === "layer") {
+    const names = params.split(",").map((entry) => entry.trim());
+    return block
+      ? params === "" || (names.length === 1 && layerName(names[0]!))
+      : names.length > 0 && names.every(layerName);
+  }
+  if (name === "scope") {
+    if (!block || params === "") return block;
+    const match = /^(?:\(([^()]+)\))?(?:\s+to\s+\(([^()]+)\))?$/i.exec(params);
+    const selectors = match?.slice(1).filter((entry): entry is string => !!entry);
+    return !!selectors?.length && selectors.every((selector) =>
+      validSelectorAst(selector, false, namespaces)
+    );
+  }
+  return false;
+}
+
+function simpleCondition(value: string): boolean {
+  if (!balancedParentheses(value)) return false;
+  const pattern = /^(?:not\s+)?\([^()]+\)(?:\s+(and|or)\s+\([^()]+\))*$/i;
+  if (!pattern.test(value)) return false;
+  const operators = [...value.matchAll(/\)\s+(and|or)\s+\(/gi)]
+    .map((match) => match[1]!.toLowerCase());
+  return new Set(operators).size <= 1;
+}
+
+function simpleContainer(value: string): boolean {
+  if (simpleCondition(value)) return true;
+  const match = /^([^\s(),]+)(?:\s+(.+))?$/.exec(value);
+  return !!match && simpleName(match[1]!) &&
+    (match[2] === undefined || simpleCondition(match[2]));
+}
+
+function layerName(value: string): boolean {
+  return value.split(".").every(simpleName);
+}
+
+function simpleName(value: string): boolean {
+  return /^-?[_A-Za-z][_A-Za-z0-9-]*$/.test(value) &&
+    !["initial", "inherit", "revert", "revert-layer", "unset"]
+      .includes(value.toLowerCase());
+}
+
+function namespacePrefix(value: string): string | null | undefined {
+  const match = /^(?:(-?[_A-Za-z][_A-Za-z0-9-]*)\s+)?(?:url\(\s*[^()'"\s]+\s*\)|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')$/i
+    .exec(value.trim());
+  return match ? match[1] ?? null : undefined;
+}
+
+function balancedParentheses(value: string): boolean {
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for (const character of value) {
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (quote) {
+      if (character === quote) quote = "";
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0 && quote === "" && !escaped;
+}
+
 function validSourcePosition(line: number, column: number): boolean {
   return Number.isSafeInteger(line) &&
     Number.isSafeInteger(column) &&
     line >= 1 &&
     column >= 1;
+}
+
+function samePosition(left: SourcePosition, right: SourcePosition): boolean {
+  return left.line === right.line && left.character === right.character;
 }
 
 function parseBrowserRulePath(value: unknown): string | undefined {

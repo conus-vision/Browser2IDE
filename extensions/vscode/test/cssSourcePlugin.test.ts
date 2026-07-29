@@ -74,6 +74,41 @@ describe("CssSourcePlugin", () => {
     expect(fallback.matches[0]?.confidence).toBe("heuristic");
   });
 
+  it.each([
+    [99, 1],
+    [1, 999],
+  ])("fails closed for oversized source position %i:%i", async (line, column) => {
+    const text = ".card {\n  color: red;\n}\n.final { color: blue; }";
+    const result = await resolveCss(
+      text,
+      selection([cssTarget("selected", ".card", "/dist/app.css", {
+        uri: "http://localhost:4173/dist/app.css",
+        line,
+        column,
+        metadata: {},
+      })]),
+    );
+
+    expect(result.matches).toEqual([]);
+  });
+
+  it("accepts a valid source position on the final line", async () => {
+    const text = ".card { color: red; }\n.final { color: blue; }";
+    const result = await resolveCss(
+      text,
+      selection([cssTarget("selected", ".final", "/dist/app.css", {
+        uri: "http://localhost:4173/dist/app.css",
+        line: 2,
+        column: 1,
+        metadata: {},
+      })]),
+    );
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".final { color: blue; }",
+    ]);
+  });
+
   it("uses precise source evidence and a namespaced rule path", async () => {
     const text = ".card,\n.featured { color: red; }\n.other { color: blue; }";
     const positioned = await resolveCss(
@@ -448,6 +483,91 @@ describe("CssSourcePlugin", () => {
   });
 
   it.each([
+    [
+      "root-relative selector",
+      "> .bad {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
+    [
+      "invalid nesting",
+      ".owner { &-title {} .duplicate { color: red; } .duplicate { color: blue; } }",
+      "0.0.1",
+    ],
+    [
+      "undeclared namespace",
+      "svg|a {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
+  ])("fails closed after %s", async (_name, text, path) => {
+    expect((await resolvePath(text, path)).matches).toEqual([]);
+  });
+
+  it.each([
+    [
+      "declared namespace",
+      "@namespace svg url(http://www.w3.org/2000/svg);\nsvg|a { color: red; }",
+      "svg|a",
+      "0.1",
+      "svg|a { color: red; }",
+    ],
+    [
+      "nested relative selector",
+      ".owner { > .valid { color: red; } }",
+      "& > .valid",
+      "0.0.0",
+      "> .valid { color: red; }",
+    ],
+  ])("trusts a %s", async (_name, text, selector, path, expected) => {
+    const result = await resolvePath(text, path, selector);
+    expect(snippets(text, result.matches)).toEqual([expected]);
+  });
+
+  it.each([
+    ["supports", "@supports display: grid { .ignored {} }"],
+    ["container", "@container card and { .ignored {} }"],
+    ["layer", "@layer reset, theme { .ignored {} }"],
+    ["scope", "@scope .root { .ignored {} }"],
+    ["starting-style", "@starting-style unexpected { .ignored {} }"],
+  ])("fails closed after malformed %s group", async (_name, prefix) => {
+    const text = `${prefix}\n.duplicate { color: red; }\n.duplicate { color: blue; }`;
+    expect((await resolvePath(text, "0.1")).matches).toEqual([]);
+  });
+
+  it.each([
+    ["@media (min-width: 40rem)", ".valid"],
+    ["@supports (display: grid)", ".valid"],
+    ["@container card (width > 20rem)", ".valid"],
+    ["@layer components", ".valid"],
+    ["@scope (.shell) to (.stop)", ".valid"],
+    ["@starting-style", ".valid"],
+  ])("trusts common valid group %s", async (prelude, selector) => {
+    const text = `${prelude} { ${selector} { color: red; } }`;
+    const result = await resolvePath(text, "0.0.0", selector);
+    expect(snippets(text, result.matches)).toEqual([
+      `${selector} { color: red; }`,
+    ]);
+  });
+
+  it("keeps a statement layer in the pre-import phase", async () => {
+    const text = [
+      "@LAYER reset;",
+      "@IMPORT url('theme.css');",
+      ".duplicate { color: red; }",
+      ".duplicate { color: blue; }",
+    ].join("\n");
+    const result = await resolvePath(text, "0.3");
+    expect(snippets(text, result.matches)).toEqual([
+      ".duplicate { color: blue; }",
+    ]);
+  });
+
+  it("fails closed when import follows a block layer", async () => {
+    const text = "@layer reset {}\n@import url('late.css');\n" +
+      ".duplicate { color: red; }\n.duplicate { color: blue; }";
+    expect((await resolvePath(text, "0.2")).matches).toEqual([]);
+  });
+
+  it.each([
     {
       name: "an unknown at-rule",
       prefix: "@unknown demo;",
@@ -678,6 +798,16 @@ async function resolveCss(
     workspace: workspace(resolution),
     signal: new AbortController().signal,
   });
+}
+
+async function resolvePath(
+  text: string,
+  path: string,
+  selector = ".duplicate",
+) {
+  const target = cssTarget("selected", selector, "/dist/app.css");
+  target.facts[0]!.metadata.rulePath = path;
+  return resolveCss(text, selection([target]));
 }
 
 function selection(targets: readonly InspectTarget[]): SelectionSnapshot {
