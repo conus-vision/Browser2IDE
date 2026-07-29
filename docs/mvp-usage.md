@@ -52,6 +52,12 @@ Firefox saves only:
 - the bridge instance ID;
 - the authenticated browser token.
 
+At this runtime milestone, those four values occupy one extension-profile
+record in `browser.storage.local`; they are not yet scoped per Firefox window.
+Opening a Browser2IDE panel in another Firefox window can therefore reuse or
+replace the saved record. Use one linked DevTools panel at a time until Plan 2
+adds window-scoped session storage and strict browser-window isolation.
+
 The code and PIN are not saved. On a later panel load, Firefox reconnects only
 to the saved endpoint and verifies the saved instance. It never searches other
 ports. If VS Code restarted the bridge, Firefox clears the stale credentials,
@@ -119,5 +125,8 @@ Firefox diagnostics do not display the saved token, PIN, or link code.
   does not guess nested SCSS selectors when mapping is missing.
 - Firefox selection uses Browser2IDE inspect mode instead of a native DevTools
   Inspector selection event.
-- The Browser2IDE DevTools panel must remain open for inspect mode and
-  selection events in the current Firefox-first MVP.
+- The open Browser2IDE panel owns inspect mode for its inspected tab through an
+  internal extension `runtime.Port`. Closing or reloading the panel, closing
+  DevTools, or losing that Port releases ownership and the background disables
+  inspect mode. Saved link credentials remain available for the next panel
+  load; inspect mode always returns off.

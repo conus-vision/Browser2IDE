@@ -12,6 +12,11 @@ checkout. Installed, terminal-free artifact verification is not performed
 here; it will be added and executed in Plan 3 as part of the distribution
 workflow.
 
+This Plan 1 runbook verifies explicit routing to a VS Code window, but not yet
+strict Firefox-window isolation. The current Firefox adapter stores one saved
+link per extension profile. Window-scoped browser storage and independent
+links for simultaneous Firefox windows are implemented in Plan 2.
+
 ## Prerequisites
 
 - Node.js 22 or newer;
@@ -203,17 +208,36 @@ and stale decoration does not remain on an unsupported file.
    the previously saved endpoint. It must not attach to Window B.
 4. Click the play icon in Window A. Confirm a grouped code appears again and
    VS Code diagnostics show a new bridge instance UUID.
-5. Firefox's saved token must be rejected for the new instance. Confirm Firefox
+5. Compare the first five digits of the old and new codes. They must match so
+   this test reaches a new bridge instance at the saved endpoint. If they do
+   not, this run proves endpoint isolation only: free the original port and
+   restart Window A until it reuses that port before continuing.
+6. Firefox's saved token must be rejected for the new instance. Confirm Firefox
    clears the saved link, shows `Not linked`, keeps inspect mode disabled, and
    reports a sanitized saved-link error.
-6. Compare the old and new codes. If the random two-digit PIN happened to
+7. Compare the old and new codes. If the random two-digit PIN happened to
    repeat, restart Window A once more before testing the old code.
-7. Enter the old code in Firefox and click `Link`. Confirm the bridge rejects
+8. Enter the old code in Firefox and click `Link`. Confirm the bridge rejects
    it without revealing whether the PIN was wrong.
-8. Copy Window A's current code from the status bar, link again, and confirm the
+9. Copy Window A's current code from the status bar, link again, and confirm the
    panel returns to `Linked`.
 
 This proves that a reused port does not preserve instance identity or tokens.
+
+## Verify Panel Teardown
+
+1. With Firefox linked again, enable inspect mode and make one selection. Note
+   the latest inspect timestamp in Window A diagnostics.
+2. Close Firefox DevTools with `F12` while inspect mode is still enabled. This
+   destroys the panel and disconnects its owning extension Port.
+3. Click the fixture card normally. Window A must receive no new selection and
+   its latest inspect timestamp must remain unchanged.
+4. Reopen DevTools and the `Browser2IDE` panel. Confirm the saved link
+   reconnects to the same endpoint, while inspect mode remains off.
+5. Enable inspect mode again and confirm a new card selection reaches Window A.
+
+This verifies that background-owned cleanup survives destruction of the panel
+JavaScript context without deleting saved link credentials.
 
 ## Verify Unlink
 
