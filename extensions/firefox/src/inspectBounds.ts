@@ -5,6 +5,7 @@ import {
 } from "@browser2ide/protocol";
 
 const INSPECT_ENVELOPE_RESERVE_BYTES = 256 * 1024;
+const URL_VALIDATION_BASE = "https://browser2ide.invalid/";
 
 export const INSPECT_COLLECTION_MAX_BYTES =
   INSPECT_ENVELOPE_MAX_BYTES - INSPECT_ENVELOPE_RESERVE_BYTES;
@@ -45,7 +46,8 @@ export function exactBoundedUrl(value: string): string | undefined {
     return undefined;
   }
   try {
-    decodeURIComponent(value);
+    const parsed = new URL(value, URL_VALIDATION_BASE);
+    decodeURIComponent(parsed.pathname);
     return value;
   } catch {
     return undefined;

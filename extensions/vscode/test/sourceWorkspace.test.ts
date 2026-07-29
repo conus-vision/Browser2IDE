@@ -50,7 +50,7 @@ describe("VsCodeSourceWorkspace", () => {
 
     await expect(
       workspace.resolveSourceUri(
-        "/src/My%20Card.scss?cache=1",
+        "/src/My%20Card.scss?coverage=100%#rule%",
         "http://localhost:4173/",
       ),
     ).resolves.toEqual({

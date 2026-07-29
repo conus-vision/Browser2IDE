@@ -193,7 +193,70 @@ describe("collectCssFacts", () => {
     }
   });
 
-  it("preserves exact valid source URLs and drops over-limit percent boundaries", () => {
+  it("preserves query and fragment percent characters verbatim", () => {
+    const sourceUrl = "https://example.test/app.css?v=100%#coverage%";
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: sourceUrl,
+            cssRules: [styleRule(".card", { color: "red" })],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts).toHaveLength(1);
+    expect(result.facts[0]?.metadata.sourceUrl).toBe(sourceUrl);
+  });
+
+  it("preserves valid percent escapes in source pathnames", () => {
+    const sourceUrl = "https://example.test/My%20Card.css?v=1";
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: sourceUrl,
+            cssRules: [styleRule(".card", { color: "red" })],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts[0]?.metadata.sourceUrl).toBe(sourceUrl);
+    expect(decodeURIComponent(new URL(sourceUrl).pathname)).toBe(
+      "/My Card.css",
+    );
+  });
+
+  it("drops malformed pathname escapes before reading stylesheet rules", () => {
+    let rulesRead = 0;
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "https://example.test/app%2.css?v=100%",
+            get cssRules() {
+              rulesRead += 1;
+              return [styleRule(".card", { color: "red" })];
+            },
+          },
+        ],
+      },
+    );
+
+    expect(rulesRead).toBe(0);
+    expect(result.facts).toEqual([]);
+    expect(result.inaccessibleStylesheets).toEqual([]);
+  });
+
+  it("preserves the exact URL limit and drops one crossing its boundary", () => {
     const prefix = "https://example.test/";
     const exactUrl = `${prefix}${"a".repeat(
       INSPECT_LIMITS.urlLength - prefix.length - 3,
@@ -222,12 +285,13 @@ describe("collectCssFacts", () => {
       },
     );
 
+    expect(exactUrl).toHaveLength(INSPECT_LIMITS.urlLength);
+    expect(overLimitUrl.length).toBeGreaterThan(INSPECT_LIMITS.urlLength);
     expect(overLimitUrl.slice(0, INSPECT_LIMITS.urlLength).endsWith("%"))
       .toBe(true);
     expect(overLimitRulesRead).toBe(0);
     expect(result.facts).toHaveLength(1);
     expect(result.facts[0]?.metadata.sourceUrl).toBe(exactUrl);
-    expect(() => decodeURIComponent(exactUrl)).not.toThrow();
     const resolved = new URL(
       String(result.facts[0]?.metadata.sourceUrl),
       "http://localhost:3000/page",
