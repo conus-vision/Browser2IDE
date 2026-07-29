@@ -513,6 +513,31 @@ describe("CssSourcePlugin", () => {
       ".bad::before::after {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
       "0.1",
     ],
+    [
+      "adjacent combinators",
+      ".bad > + .worse {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
+    [
+      "nested adjacent combinators",
+      ".bad:not(.x > + .y) {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
+    [
+      "non-terminal pseudo-element",
+      ".bad::before:hover {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
+    [
+      "pseudo-element before a descendant",
+      ".bad::before .child {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
+    [
+      "legacy non-terminal pseudo-element",
+      ".bad:before:hover {}\n.duplicate { color: red; }\n.duplicate { color: blue; }",
+      "0.1",
+    ],
   ])("fails closed after %s", async (_name, text, path) => {
     expect((await resolvePath(text, path)).matches).toEqual([]);
   });
@@ -539,6 +564,13 @@ describe("CssSourcePlugin", () => {
       "0.0",
       ".valid:not(.bad) { color: red; }",
     ],
+    [
+      "terminal pseudo-element",
+      ".valid::before { color: red; }",
+      ".valid::before",
+      "0.0",
+      ".valid::before { color: red; }",
+    ],
   ])("trusts a %s", async (_name, text, selector, path, expected) => {
     const result = await resolvePath(text, path, selector);
     expect(snippets(text, result.matches)).toEqual([expected]);
@@ -563,6 +595,24 @@ describe("CssSourcePlugin", () => {
       "container not-chain",
       "@container sidebar not (width > 10rem) and (height > 10rem) { .ignored {} }",
     ],
+    [
+      "supports semicolon",
+      "@supports (display: grid; color: red) { .ignored {} }",
+    ],
+    [
+      "supports braces",
+      "@supports (display: {grid}) { .ignored {} }",
+    ],
+    [
+      "container semicolon",
+      "@container sidebar (width: 1px; color: red) { .ignored {} }",
+    ],
+    [
+      "container braces",
+      "@container sidebar (width: {1px}) { .ignored {} }",
+    ],
+    ["reserved container name", "@container none (width > 1px) { .ignored {} }"],
+    ["condition keyword as name", "@container and (width > 1px) { .ignored {} }"],
   ])("fails closed after malformed %s group", async (_name, prefix) => {
     const text = `${prefix}\n.duplicate { color: red; }\n.duplicate { color: blue; }`;
     expect((await resolvePath(text, "0.1")).matches).toEqual([]);
@@ -616,6 +666,9 @@ describe("CssSourcePlugin", () => {
       "supported tail",
       "url(theme.css) layer(theme) supports(display: grid) screen and (min-width: 40rem)",
     ],
+    ["condition-only media", '"theme.css" (min-width: 1px)'],
+    ["comma media list", '"theme.css" screen, print'],
+    ["balanced supports not", '"theme.css" supports(not (display: grid))'],
   ])("counts a valid %s import", async (_name, params) => {
     const text = `@import ${params};\n` +
       ".duplicate { color: red; }\n.duplicate { color: blue; }";
@@ -628,6 +681,16 @@ describe("CssSourcePlugin", () => {
   it.each([
     ["source", "nonsense"],
     ["media tail", '"theme.css" screen and (:)'],
+    [
+      "supports semicolon",
+      '"theme.css" supports(display: grid; color: red)',
+    ],
+    ["supports braces", '"theme.css" supports(display: {grid})'],
+    [
+      "supports not-chain",
+      '"theme.css" supports(not (display: grid) and (gap: 1rem))',
+    ],
+    ["supports boundary", '"theme.css" supports(display: grid)screen'],
   ])("fails closed after a malformed import %s collision", async (_name, params) => {
     const text = `@import ${params};\n` +
       ".duplicate { color: red; }\n.duplicate { color: blue; }";
@@ -649,6 +712,7 @@ describe("CssSourcePlugin", () => {
     ["counter-style", "@counter-style custom {}"],
     ["page", "@page :first {}"],
     ["font-feature-values", "@font-feature-values Inter {}"],
+    ["font-feature-values multiword", "@font-feature-values Open Sans {}"],
   ])("counts a valid @%s leaf rule", async (_name, prefix) => {
     const text = `${prefix}\n.duplicate { color: red; }\n` +
       ".duplicate { color: blue; }";
@@ -667,6 +731,9 @@ describe("CssSourcePlugin", () => {
     ["counter-style name", "@counter-style -- {}"],
     ["page selector", "@page :hover {}"],
     ["font-feature-values family", "@font-feature-values {}"],
+    ["generic font-feature-values family", "@font-feature-values serif {}"],
+    ["system font-feature-values family", "@font-feature-values system-ui {}"],
+    ["system font shorthand family", "@font-feature-values caption {}"],
   ])("fails closed after malformed @%s", async (_name, prefix) => {
     const text = `${prefix}\n.duplicate { color: red; }\n` +
       ".duplicate { color: blue; }";

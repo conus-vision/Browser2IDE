@@ -232,6 +232,12 @@ const LEAF_AT_RULES = new Set([
   "view-transition",
 ]);
 const KEYFRAMES_AT_RULES = new Set(["keyframes", "-webkit-keyframes"]);
+const RESERVED_FONT_FAMILY_NAMES = new Set([
+  "caption", "cursive", "emoji", "fangsong", "fantasy", "icon", "math",
+  "menu", "message-box", "monospace", "sans-serif", "serif", "small-caption",
+  "status-bar", "system-ui", "ui-monospace", "ui-rounded", "ui-sans-serif",
+  "ui-serif",
+]);
 
 class CssomIndexBuilder {
   public readonly pathIndex = new Map<string, StylesheetRule | null>();
@@ -533,19 +539,14 @@ function validSelectorAst(
   try {
     const root = selectorParser().astSync(value);
     return root.nodes.length > 0 && root.nodes.every((selector) => {
-      if (
-        selector.nodes.length === 0 ||
-        (selector.first.type === "combinator" && !relativeAllowed) ||
-        selector.last.type === "combinator"
-      ) return false;
+      if (!validSelectorSequence(selector.nodes, relativeAllowed)) return false;
       let valid = true;
-      let pseudoElements = 0;
       selector.walk((node) => {
-        if (node.type === "selector" && node.nodes.length === 0) {
+        if (
+          node.type === "selector" &&
+          !validSelectorSequence(node.nodes, true)
+        ) {
           valid = false;
-        } else if (node.type === "pseudo" && node.value.startsWith("::")) {
-          pseudoElements += 1;
-          valid = pseudoElements <= 1;
         } else if (node.type === "nesting") {
           const next = node.next();
           valid = relativeAllowed &&
@@ -567,6 +568,27 @@ function validSelectorAst(
   }
 }
 
+function validSelectorSequence(
+  nodes: readonly { readonly type: string; readonly value?: string }[],
+  relativeAllowed: boolean,
+): boolean {
+  const significant = nodes.filter((node) => node.type !== "comment");
+  return significant.length > 0 && significant.every((node, index) => {
+    if (node.type === "combinator") {
+      return index < significant.length - 1 &&
+        significant[index + 1]!.type !== "combinator" &&
+        (relativeAllowed || index > 0);
+    }
+    return !isPseudoElement(node.value ?? "") || index === significant.length - 1;
+  });
+}
+
+function isPseudoElement(value: string): boolean {
+  return value.startsWith("::") ||
+    [":after", ":before", ":first-letter", ":first-line"]
+      .includes(value.toLowerCase());
+}
+
 function validLeafAtRule(rule: AtRule): boolean {
   const name = rule.name.toLowerCase();
   const params = rule.params.trim();
@@ -583,7 +605,9 @@ function validLeafAtRule(rule: AtRule): boolean {
   }
   if (name === "font-feature-values") {
     return params.split(",").every((family) =>
-      family.trim().split(/\s+/).every(simpleName)
+      family.trim().split(/\s+/).every((part) =>
+        simpleName(part) && !RESERVED_FONT_FAMILY_NAMES.has(part.toLowerCase())
+      )
     );
   }
   if (name === "page") {
@@ -626,7 +650,7 @@ function validGroupAtRule(
 }
 
 function simpleCondition(value: string): boolean {
-  if (!balancedParentheses(value)) return false;
+  if (/[;{}]/.test(value) || !balancedParentheses(value)) return false;
   const negated = /^not\s+/i.test(value);
   const pattern = /^(?:not\s+)?\([^()]+\)(?:\s+(and|or)\s+\([^()]+\))*$/i;
   if (!pattern.test(value)) return false;
@@ -638,8 +662,13 @@ function simpleCondition(value: string): boolean {
 function simpleContainer(value: string): boolean {
   if (simpleCondition(value)) return true;
   const match = /^([^\s(),]+)(?:\s+(.+))?$/.exec(value);
-  return !!match && simpleName(match[1]!) &&
+  return !!match && validContainerName(match[1]!) &&
     match[2] !== undefined && simpleCondition(match[2]);
+}
+
+function validContainerName(value: string): boolean {
+  return simpleName(value) &&
+    !["and", "none", "not", "or"].includes(value.toLowerCase());
 }
 
 function layerName(value: string): boolean {
@@ -669,17 +698,66 @@ function validImportParams(value: string): boolean {
     if (layer[1] !== undefined && !layerName(layer[1].trim())) return false;
     tail = tail.slice(layer[0].length).trim();
   }
-  const supports = /^supports\(\s*([^()]*)\s*\)(?:\s+|$)/i.exec(tail);
+  const supports = consumeFunction(tail, "supports");
   if (supports) {
-    const condition = supports[1]!.trim();
-    if (
-      !/^[-_A-Za-z][-_A-Za-z0-9]*\s*:\s*[^()\s][^()]*$/.test(condition) ||
-      !simpleCondition(`(${condition})`)
-    ) return false;
-    tail = tail.slice(supports[0].length).trim();
+    const condition = /^(?:not\s+|\()/i.test(supports[0])
+      ? supports[0]
+      : `(${supports[0]})`;
+    if (!simpleCondition(condition)) return false;
+    tail = supports[1];
   }
-  return tail === "" || /^(?:all|print|screen)(?:\s+and\s+\(\s*[-_A-Za-z][-_A-Za-z0-9]*(?:\s*:\s*[^()\s][^()]*)?\s*\))*$/i
-    .test(tail);
+  return tail === "" || validImportMedia(tail);
+}
+
+function consumeFunction(
+  value: string,
+  name: string,
+): readonly [body: string, rest: string] | undefined {
+  const prefix = `${name}(`;
+  if (!value.toLowerCase().startsWith(prefix.toLowerCase())) return undefined;
+  let depth = 1;
+  let quote = "";
+  let escaped = false;
+  for (let index = prefix.length; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (quote) {
+      if (character === quote) quote = "";
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        const rest = value.slice(index + 1);
+        if (rest !== "" && !/^\s/.test(rest)) return undefined;
+        return [
+          value.slice(prefix.length, index).trim(),
+          rest.trim(),
+        ];
+      }
+    }
+  }
+  return undefined;
+}
+
+function validImportMedia(value: string): boolean {
+  return value.split(",").every((entry) => {
+    const parts = entry.trim().split(/\s+and\s+/i);
+    if (parts.length === 1 && simpleMediaFeature(parts[0]!)) return true;
+    const type = parts.shift()?.toLowerCase();
+    return !!type && ["all", "print", "screen"].includes(type) &&
+      parts.every(simpleMediaFeature);
+  });
+}
+
+function simpleMediaFeature(value: string): boolean {
+  return /^\(\s*[-_A-Za-z][-_A-Za-z0-9]*(?:\s*:\s*[^(){};\s][^(){};]*)?\s*\)$/
+    .test(value.trim());
 }
 
 function balancedParentheses(value: string): boolean {
