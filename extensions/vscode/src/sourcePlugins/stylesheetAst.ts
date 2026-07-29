@@ -3,6 +3,8 @@ import postcss, {
   type AtRule,
   type ChildNode,
   type Container,
+  type Document,
+  type Root,
   type Rule,
 } from "postcss";
 import { parse as parseScss } from "postcss-scss";
@@ -11,7 +13,10 @@ import type {
   SourcePosition,
   SourceRange,
 } from "@browser2ide/plugin-api";
-import type { CssRuleFact } from "@browser2ide/protocol";
+import {
+  INSPECT_LIMITS,
+  type CssRuleFact,
+} from "@browser2ide/protocol";
 
 export type StylesheetSyntax = "css" | "scss";
 
@@ -23,6 +28,15 @@ export interface StylesheetRule {
   readonly endOffset: number;
   readonly media: readonly string[];
   readonly path: string;
+  readonly identities: readonly StylesheetRuleIdentity[];
+}
+
+interface StylesheetRuleIdentity {
+  readonly selector: string;
+  readonly normalizedSelector: string;
+  readonly media: readonly string[];
+  readonly path: string;
+  readonly nested: boolean;
 }
 
 export interface ParsedStylesheet {
@@ -88,25 +102,29 @@ export function findMatchingCssRules(
   }
 
   const rulePath = fact.metadata.rulePath;
-  if (typeof rulePath === "string" && rulePath.length > 0) {
-    const normalizedPath = rulePath.startsWith(".")
-      ? rulePath.slice(1)
-      : rulePath;
-    const exactPath = rules.filter((rule) => normalizedPath === rule.path);
-    if (exactPath.length > 0) return exactPath;
-
-    const suffixPath = rules.filter((rule) =>
-      normalizedPath.endsWith(`.${rule.path}`)
+  const browserPath = parseBrowserRulePath(rulePath);
+  if (browserPath !== undefined) {
+    const selector = fact.selector;
+    const media = factMedia(fact);
+    const exactPath = rules.filter((rule) =>
+      rule.identities.some((identity) =>
+        identity.path === browserPath &&
+        sameSelector(identity, selector) &&
+        (media === undefined || sameMedia(identity.media, media))
+      )
     );
-    if (suffixPath.length === 1) return suffixPath;
+    if (exactPath.length > 0) return exactPath;
   }
 
   const selector = normalizeSelector(fact.selector);
   const media = factMedia(fact);
   return rules.filter(
     (rule) =>
-      rule.normalizedSelector === selector &&
-      (media === undefined || sameMedia(rule.media, media)),
+      rule.identities.some((identity) =>
+        (identity.normalizedSelector === selector ||
+          sameSelector(identity, fact.selector)) &&
+        (media === undefined || sameMedia(identity.media, media))
+      ),
   );
 }
 
@@ -133,9 +151,10 @@ function parseStylesheet(
   const root = syntax === "scss"
     ? parseScss(text, { from: document.uri })
     : postcss.parse(text, { from: document.uri });
+  const identities = collectCssomIdentities(root);
   const rules: StylesheetRule[] = [];
   root.walkRules((node) => {
-    const rule = ruleFromNode(node, document);
+    const rule = ruleFromNode(node, document, identities.get(node) ?? []);
     if (rule) rules.push(rule);
   });
   return { uri: document.uri, syntax, document, rules };
@@ -144,6 +163,7 @@ function parseStylesheet(
 function ruleFromNode(
   node: Rule,
   document: SourceDocument,
+  identities: readonly StylesheetRuleIdentity[],
 ): StylesheetRule | undefined {
   const start = node.source?.start?.offset;
   const end = node.source?.end?.offset;
@@ -160,31 +180,208 @@ function ruleFromNode(
     startOffset: start,
     endOffset: end,
     media: containingMedia(node),
-    path: nodePath(node),
+    path: identities[0]?.path ?? "",
+    identities,
   };
 }
 
-function containingMedia(node: Rule): readonly string[] {
-  const media: string[] = [];
-  let parent: Rule["parent"] | undefined = node.parent;
-  while (parent) {
-    if (parent.type === "atrule" && (parent as AtRule).name === "media") {
-      media.unshift(normalizeMedia((parent as AtRule).params));
+function collectCssomIdentities(
+  root: Root,
+): ReadonlyMap<Rule, readonly StylesheetRuleIdentity[]> {
+  const identities = new Map<Rule, StylesheetRuleIdentity[]>();
+  indexCssomChildren(root, [], undefined, identities);
+  return identities;
+}
+
+function indexCssomChildren(
+  container: Container,
+  parentPath: readonly number[],
+  owner: Rule | undefined,
+  identities: Map<Rule, StylesheetRuleIdentity[]>,
+): void {
+  for (const [index, child] of cssomChildren(container, owner).entries()) {
+    const path = [...parentPath, index];
+    if (child.kind === "declarations") {
+      addIdentity(
+        identities,
+        child.owner,
+        path,
+        child.owner.selector,
+        containingMediaFrom(container),
+        hasRuleAncestor(child.owner),
+      );
+      continue;
     }
-    parent = parent.parent as Rule["parent"] | undefined;
+
+    if (child.node.type === "rule") {
+      addIdentity(
+        identities,
+        child.node,
+        path,
+        child.node.selector,
+        containingMedia(child.node),
+        owner !== undefined,
+      );
+      indexCssomChildren(child.node, path, child.node, identities);
+      continue;
+    }
+
+    indexCssomChildren(child.node, path, owner, identities);
+  }
+}
+
+type CssomChild =
+  | { readonly kind: "node"; readonly node: Rule | AtRule }
+  | { readonly kind: "declarations"; readonly owner: Rule };
+
+function cssomChildren(
+  container: Container,
+  owner: Rule | undefined,
+): CssomChild[] {
+  const result: CssomChild[] = [];
+  const canOwnDeclarations = owner !== undefined;
+  let cssRuleSeen = container.type !== "rule";
+  let declarationsPending = false;
+
+  const flushDeclarations = (): void => {
+    if (declarationsPending && owner) {
+      result.push({ kind: "declarations", owner });
+    }
+    declarationsPending = false;
+  };
+
+  for (const node of container.nodes ?? []) {
+    if (isCssomRuleNode(node)) {
+      flushDeclarations();
+      result.push({ kind: "node", node });
+      cssRuleSeen = true;
+      continue;
+    }
+    if (node.type === "decl" && canOwnDeclarations && cssRuleSeen) {
+      declarationsPending = true;
+    }
+  }
+  flushDeclarations();
+  return result;
+}
+
+function isCssomRuleNode(node: ChildNode): node is Rule | AtRule {
+  return node.type === "rule" || node.type === "atrule";
+}
+
+function addIdentity(
+  identities: Map<Rule, StylesheetRuleIdentity[]>,
+  rule: Rule,
+  path: readonly number[],
+  selector: string,
+  media: readonly string[],
+  nested: boolean,
+): void {
+  const entries = identities.get(rule) ?? [];
+  entries.push({
+    selector,
+    normalizedSelector: normalizeSelector(selector),
+    media,
+    path: path.join("."),
+    nested,
+  });
+  identities.set(rule, entries);
+}
+
+function containingMedia(node: Rule): readonly string[] {
+  return containingMediaFrom(node.parent);
+}
+
+function containingMediaFrom(
+  node: Container | Document | undefined,
+): readonly string[] {
+  const media: string[] = [];
+  let current: Container | Document | undefined = node;
+  while (current) {
+    if (current.type === "atrule" && (current as AtRule).name === "media") {
+      media.unshift(normalizeMedia((current as AtRule).params));
+    }
+    current = current.parent;
   }
   return media;
 }
 
-function nodePath(node: ChildNode): string {
-  const indexes: number[] = [];
-  let current: ChildNode | undefined = node;
-  while (current?.parent) {
-    const parent: Container = current.parent;
-    indexes.unshift(parent.index(current));
-    current = parent.type === "root" ? undefined : (parent as ChildNode);
+function hasRuleAncestor(node: Rule): boolean {
+  let parent: Container | Document | undefined = node.parent;
+  while (parent) {
+    if (parent.type === "rule") return true;
+    parent = parent.parent;
   }
-  return indexes.join(".");
+  return false;
+}
+
+function parseBrowserRulePath(value: unknown): string | undefined {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > INSPECT_LIMITS.selectorLength
+  ) {
+    return undefined;
+  }
+  const segments = value.split(".");
+  if (
+    segments.length < 2 ||
+    segments.length > INSPECT_LIMITS.cssRuleDepth + 2
+  ) {
+    return undefined;
+  }
+  for (const [index, segment] of segments.entries()) {
+    if (!/^(?:0|[1-9]\d*)$/.test(segment)) return undefined;
+    const numeric = Number(segment);
+    const upperBound = index === 0
+      ? INSPECT_LIMITS.stylesheets
+      : INSPECT_LIMITS.cssRules;
+    if (!Number.isSafeInteger(numeric) || numeric >= upperBound) {
+      return undefined;
+    }
+  }
+  return segments.slice(1).join(".");
+}
+
+function sameSelector(
+  identity: StylesheetRuleIdentity,
+  selector: string,
+): boolean {
+  const normalized = normalizeSelector(selector);
+  if (identity.normalizedSelector === normalized) return true;
+  return identity.nested &&
+    absolutizeNestedSelector(identity.selector) ===
+      absolutizeNestedSelector(selector);
+}
+
+function absolutizeNestedSelector(selector: string): string {
+  const normalized = normalizeSelector(selector);
+  return hasNestingSelector(normalized) ? normalized : `& ${normalized}`;
+}
+
+function hasNestingSelector(selector: string): boolean {
+  let quote: "\"" | "'" | undefined;
+  let escaped = false;
+  for (const character of selector) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "&") return true;
+  }
+  return false;
 }
 
 function factMedia(fact: CssRuleFact): readonly string[] | undefined {

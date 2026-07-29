@@ -65,7 +65,7 @@ describe("CssSourcePlugin", () => {
     expect(fallback.matches[0]?.confidence).toBe("heuristic");
   });
 
-  it("uses precise source evidence before comparing selector serialization", async () => {
+  it("uses precise source evidence and a namespaced rule path", async () => {
     const text = ".card,\n.featured { color: red; }\n.other { color: blue; }";
     const positioned = await resolveCss(
       text,
@@ -78,12 +78,8 @@ describe("CssSourcePlugin", () => {
         }),
       ]),
     );
-    const pathTarget = cssTarget(
-      "selected",
-      ".browser-serialized-selector",
-      "/dist/app.css",
-    );
-    pathTarget.facts[0]!.metadata.rulePath = "1";
+    const pathTarget = cssTarget("selected", ".other", "/dist/app.css");
+    pathTarget.facts[0]!.metadata.rulePath = "0.1";
     const byPath = await resolveCss(text, selection([pathTarget]));
 
     expect(snippets(text, positioned.matches)).toEqual([
@@ -102,17 +98,98 @@ describe("CssSourcePlugin", () => {
       "}",
       ".root { color: blue; }",
     ].join("\n");
-    const target = cssTarget(
-      "selected",
-      ".browser-serialized-selector",
-      "/dist/app.css",
-    );
-    target.facts[0]!.metadata.rulePath = ".0.1";
+    const target = cssTarget("selected", ".nested", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0.1";
 
     const result = await resolveCss(text, selection([target]));
 
     expect(snippets(text, result.matches)).toEqual([
       ".nested { color: red; }",
+    ]);
+  });
+
+  it("maps CSSOM nesting paths without confusing declarations or sibling parents", async () => {
+    const text = [
+      ".card {",
+      "  color: red;",
+      "  /* CSSOM does not count this comment as a rule. */",
+      "  > .title { color: blue; }",
+      "  background: silver;",
+      "}",
+      ".panel {",
+      "  color: black;",
+      "  > .title { color: green; }",
+      "  background: white;",
+      "}",
+    ].join("\n");
+    const target = cssTarget("selected", ".card", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0";
+    target.facts.push(
+      cssFact("& > .title", "color", "blue", "/dist/app.css", "0.0.0"),
+      cssFact(".card", "background", "silver", "/dist/app.css", "0.0.1"),
+    );
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      [
+        ".card {",
+        "  color: red;",
+        "  /* CSSOM does not count this comment as a rule. */",
+        "  > .title { color: blue; }",
+        "  background: silver;",
+        "}",
+      ].join("\n"),
+      "> .title { color: blue; }",
+      [
+        ".card {",
+        "  color: red;",
+        "  /* CSSOM does not count this comment as a rule. */",
+        "  > .title { color: blue; }",
+        "  background: silver;",
+        "}",
+      ].join("\n"),
+    ]);
+  });
+
+  it("uses CSSOM paths and media evidence for rules nested in a group", async () => {
+    const text = [
+      ".card {",
+      "  @media (min-width: 40rem) {",
+      "    .title { color: blue; }",
+      "  }",
+      "}",
+      ".panel {",
+      "  @media (min-width: 40rem) {",
+      "    .title { color: green; }",
+      "  }",
+      "}",
+    ].join("\n");
+    const target = cssTarget("selected", "& .title", "/dist/app.css");
+    target.facts[0]!.metadata.rulePath = "0.0.0.0";
+    target.facts[0]!.metadata.media = ["(min-width: 40rem)"];
+
+    const result = await resolveCss(text, selection([target]));
+
+    expect(snippets(text, result.matches)).toEqual([
+      ".title { color: blue; }",
+    ]);
+  });
+
+  it("falls back safely when an untrusted rule path is malformed or excessive", async () => {
+    const malformed = cssTarget("selected", ".card", "/dist/app.css");
+    malformed.facts[0]!.metadata.rulePath = "0.not-an-index";
+    const excessive = cssTarget("parent", ".layout", "/dist/app.css");
+    excessive.facts[0]!.metadata.rulePath = `0.${"1.".repeat(1000)}1`;
+
+    const result = await resolveCss(
+      ".layout { display: grid; }\n.card { color: red; }",
+      selection([malformed, excessive]),
+    );
+
+    expect(result.matches.map((match) => [match.targetRole, match.label])).toEqual([
+      ["selected", ".card"],
+      ["parent", ".layout"],
     ]);
   });
 
@@ -226,6 +303,22 @@ function cssTarget(
       },
     ],
     metadata: {},
+  };
+}
+
+function cssFact(
+  selector: string,
+  property: string,
+  value: string,
+  sourceUrl: string,
+  rulePath: string,
+): CssRuleFact {
+  return {
+    type: "css-rule",
+    selector,
+    property,
+    value,
+    metadata: { sourceUrl, rulePath },
   };
 }
 
