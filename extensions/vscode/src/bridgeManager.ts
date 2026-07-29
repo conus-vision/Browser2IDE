@@ -45,6 +45,8 @@ interface DisposableLike {
 
 export interface BridgeManagerOptions {
   readonly configuration: BridgeConfiguration;
+  readonly managedPortStart?: number;
+  readonly managedPortCount?: number;
   readonly createAuthenticator?: (
     options: LinkAuthenticatorOptions,
   ) => LinkAuthenticator;
@@ -219,9 +221,11 @@ export class BridgeManager {
     authenticator: LinkAuthenticator,
   ): Promise<{ readonly bridge: ManagedBridge; readonly port: number }> {
     let lastError: NodeJS.ErrnoException | undefined;
+    const managedPortStart = this.options.managedPortStart ?? MANAGED_PORT_START;
+    const managedPortCount = this.options.managedPortCount ?? MANAGED_PORT_COUNT;
 
-    for (let offset = 0; offset < MANAGED_PORT_COUNT; offset += 1) {
-      const port = MANAGED_PORT_START + offset;
+    for (let offset = 0; offset < managedPortCount; offset += 1) {
+      const port = managedPortStart + offset;
       let bridge: ManagedBridge | undefined;
       try {
         bridge = this.createBridge({

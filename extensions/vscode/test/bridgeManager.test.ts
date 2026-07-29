@@ -1,5 +1,5 @@
-import { createServer } from "node:net";
-import { describe, expect, it } from "vitest";
+import { createServer, type Server } from "node:net";
+import { describe, expect, it, onTestFinished } from "vitest";
 import {
   LinkAuthenticator,
   type BridgeServerOptions,
@@ -84,62 +84,82 @@ describe("BridgeManager", () => {
     await manager.stop();
   });
 
-  it("authenticates the IDE after an occupied first managed port", async () => {
-    const blocker = createServer();
-    await new Promise<void>((resolve, reject) => {
-      blocker.once("error", reject);
-      blocker.listen(MANAGED_PORT_START, "127.0.0.1", () => {
-        blocker.off("error", reject);
-        resolve();
-      });
+  it("uses an injected managed port range", async () => {
+    const managedPortStart = 40_000;
+    const attempts: number[] = [];
+    const manager = new BridgeManager({
+      configuration: { sessionId: SESSION_ID },
+      managedPortStart,
+      managedPortCount: 2,
+      createBridge: (options) =>
+        new FakeBridge(options, {
+          start: () => {
+            const port = requiredPort(options);
+            attempts.push(port);
+            if (port === managedPortStart) {
+              throw errno("EADDRINUSE");
+            }
+          },
+        }),
     });
 
+    await manager.start();
+
+    expect(attempts).toEqual([managedPortStart, managedPortStart + 1]);
+    expect(manager.snapshot().port).toBe(managedPortStart + 1);
+    await manager.stop();
+  });
+
+  it("authenticates the IDE after an occupied first managed port", async () => {
+    const reservation = await reserveAdjacentPorts();
     const authenticators = deterministicAuthenticators([
       { bridgeInstanceId: INSTANCE_A, pin: "07" },
     ]);
     const manager = new BridgeManager({
       configuration: { sessionId: SESSION_ID },
+      managedPortStart: reservation.startPort,
+      managedPortCount: 2,
       createAuthenticator: authenticators.create,
     });
     let client: BridgeClient | undefined;
-
-    try {
-      await manager.start();
-      expect(manager.snapshot().port).toBe(MANAGED_PORT_START + 1);
-
-      const credentials = manager.getIdeCredentials();
-      if (!credentials) {
-        throw new Error("Expected IDE credentials from the running bridge");
-      }
-
-      const states: string[] = [];
-      client = new BridgeClient({
-        url: manager.snapshot().url ?? "",
-        ...credentials,
-      });
-      client.onConnectionStateChanged((state) => states.push(state));
-      client.connect();
-
-      await eventually(() => expect(states).toContain("connected"));
-
-      client.dispose();
-      client = undefined;
-      await manager.stop();
-      expect(
-        authenticators.created[0]?.validateToken(
-          SESSION_ID,
-          "ide",
-          credentials.authToken,
-          INSTANCE_A,
-        ),
-      ).toBe("rejected");
-    } finally {
+    onTestFinished(async () => {
       client?.dispose();
-      await manager.stop();
-      await new Promise<void>((resolve, reject) => {
-        blocker.close((error) => (error ? reject(error) : resolve()));
-      });
+      try {
+        await manager.stop();
+      } finally {
+        await closeServer(reservation.nextPort);
+        await closeServer(reservation.blocker);
+      }
+    });
+
+    await closeServer(reservation.nextPort);
+    await manager.start();
+    expect(manager.snapshot().port).toBe(reservation.startPort + 1);
+
+    const credentials = manager.getIdeCredentials();
+    if (!credentials) {
+      throw new Error("Expected IDE credentials from the running bridge");
     }
+
+    client = new BridgeClient({
+      url: manager.snapshot().url ?? "",
+      ...credentials,
+    });
+    const connected = waitForConnected(client);
+    client.connect();
+    await connected;
+
+    client.dispose();
+    client = undefined;
+    await manager.stop();
+    expect(
+      authenticators.created[0]?.validateToken(
+        SESSION_ID,
+        "ide",
+        credentials.authToken,
+        INSTANCE_A,
+      ),
+    ).toBe("rejected");
   });
 
   it("stops each occupied-port bridge before trying the next port", async () => {
@@ -658,6 +678,79 @@ function managedPorts(): number[] {
     { length: MANAGED_PORT_COUNT },
     (_, index) => MANAGED_PORT_START + index,
   );
+}
+
+async function reserveAdjacentPorts(): Promise<{
+  readonly startPort: number;
+  readonly blocker: Server;
+  readonly nextPort: Server;
+}> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const blocker = createServer();
+    const nextPort = createServer();
+
+    try {
+      await listen(blocker, 0);
+      const address = blocker.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected a TCP address for managed port reservation");
+      }
+      if (address.port === 65_535) {
+        await closeServer(blocker);
+        continue;
+      }
+
+      await listen(nextPort, address.port + 1);
+      return { startPort: address.port, blocker, nextPort };
+    } catch (error) {
+      await closeServer(nextPort);
+      await closeServer(blocker);
+      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error("Could not reserve adjacent managed ports");
+}
+
+async function listen(server: Server, port: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error): void => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = (): void => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+async function closeServer(server: Server): Promise<void> {
+  if (!server.listening) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function waitForConnected(client: BridgeClient): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const dispose = client.onConnectionStateChanged((state) => {
+      if (state === "connected") {
+        dispose();
+        resolve();
+      } else if (state === "error") {
+        dispose();
+        reject(new Error("IDE client failed to authenticate"));
+      }
+    });
+  });
 }
 
 function errno(code: string): NodeJS.ErrnoException {
