@@ -60,7 +60,10 @@ vi.mock("webextension-polyfill", () => ({
   },
 }));
 
-vi.mock("../src/bridgeClient.js", () => {
+vi.mock("@browser2ide/browser-extension-core", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@browser2ide/browser-extension-core")>();
+
   class FakeBrowserProtocolError extends Error {
     public constructor(
       public readonly code: string,
@@ -153,6 +156,7 @@ vi.mock("../src/bridgeClient.js", () => {
   }
 
   return {
+    ...actual,
     BrowserBridgeClient: FakeBrowserBridgeClient,
     BrowserProtocolError: FakeBrowserProtocolError,
     InspectPublisher: FakeInspectPublisher,

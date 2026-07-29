@@ -1,5 +1,5 @@
 import browser from "webextension-polyfill";
-import { registerDevtoolsPanel } from "./devtoolsRuntime.js";
+import { registerDevtoolsPanel } from "@browser2ide/browser-extension-core";
 
 const channelId = globalThis.crypto.randomUUID();
 

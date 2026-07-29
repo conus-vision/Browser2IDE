@@ -20,6 +20,9 @@ importers:
 
   extensions/firefox:
     dependencies:
+      '@browser2ide/browser-extension-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-extension-core
       '@browser2ide/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -120,6 +123,12 @@ importers:
       '@types/ws':
         specifier: ^8.5.12
         version: 8.18.1
+
+  packages/browser-extension-core:
+    dependencies:
+      '@browser2ide/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/plugin-api:
     dependencies:

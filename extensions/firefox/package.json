@@ -10,6 +10,7 @@
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@browser2ide/browser-extension-core": "workspace:*",
     "@browser2ide/protocol": "workspace:*",
     "webextension-polyfill": "^0.12.0"
   },

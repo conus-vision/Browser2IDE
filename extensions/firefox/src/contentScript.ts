@@ -1,12 +1,12 @@
 import browser from "webextension-polyfill";
-import type { CssDocumentSource } from "./collectCssFacts.js";
-import { createInspectPayload } from "./inspectPayload.js";
-import { ContentInspectLease } from "./inspectLease.js";
 import {
+  createInspectPayload,
   InspectMode,
+  type CssDocumentSource,
   type InspectDocument,
   type InspectableElement,
-} from "./inspectMode.js";
+} from "@browser2ide/browser-extension-core";
+import { ContentInspectLease } from "./inspectLease.js";
 import { INSPECT_CONTENT_LEASE_PORT_NAME } from "./inspectPortProtocol.js";
 
 interface ContentScriptState {

@@ -1,12 +1,14 @@
 import browser from "webextension-polyfill";
-import type { InspectPayload } from "./bridgeClient.js";
 import {
   BrowserBridgeClient,
   BrowserProtocolError,
   InspectPublisher,
+  PanelDiagnostics,
+  PanelInspectController,
   type BrowserConnectionState,
   type BrowserCredentials,
-} from "./bridgeClient.js";
+  type InspectPayload,
+} from "@browser2ide/browser-extension-core";
 import {
   loadPanelSettings,
   parseLinkCode,
@@ -16,8 +18,6 @@ import {
   type PanelSettings,
   type PanelStorage,
 } from "./panelState.js";
-import { PanelDiagnostics } from "./panelDiagnostics.js";
-import { PanelInspectController } from "./panelInspectController.js";
 import { INSPECT_PORT_NAME } from "./inspectPortProtocol.js";
 import { PanelInspectTransport } from "./panelInspectTransport.js";
 import {

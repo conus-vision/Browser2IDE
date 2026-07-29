@@ -1,4 +1,4 @@
-import type { BrowserCredentials } from "./bridgeClient.js";
+import type { BrowserCredentials } from "@browser2ide/browser-extension-core";
 
 export interface PanelStorage {
   get(keys: string[]): Promise<Record<string, unknown>>;
