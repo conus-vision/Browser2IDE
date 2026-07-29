@@ -17,6 +17,10 @@ import {
 } from "./panelState.js";
 import { PanelDiagnostics } from "./panelDiagnostics.js";
 import { PanelInspectController } from "./panelInspectController.js";
+import {
+  PanelLifecycleCoordinator,
+  type PanelLifecycleContext,
+} from "./panelLifecycle.js";
 
 const linkForm = required<HTMLFormElement>("link-form");
 const linkCodeInput = required<HTMLInputElement>("link-code");
@@ -53,11 +57,11 @@ let inspectedTabId: number | undefined;
 let client: BrowserBridgeClient | undefined;
 let connected = false;
 let connectionIntent: ConnectionIntent = "none";
-let storageQueue = Promise.resolve();
 const diagnostics = new PanelDiagnostics();
 const inspectController = new PanelInspectController((message) =>
   browser.runtime.sendMessage(message),
 );
+const lifecycle = new PanelLifecycleCoordinator(updateControls);
 
 const publisher = new InspectPublisher({
   send: (payload) => {
@@ -70,13 +74,16 @@ const publisher = new InspectPublisher({
 
 linkForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  void linkToBridge().catch(showError);
+  const code = linkCodeInput.value;
+  void lifecycle
+    .start((context) => linkToBridge(code, context))
+    .catch(showError);
 });
 
 linkCodeInput.addEventListener("input", updateControls);
 
 unlinkButton.addEventListener("click", () => {
-  void unlinkFromBridge().catch(showError);
+  void lifecycle.start(unlinkFromBridge).catch(showError);
 });
 
 inspectToggle.addEventListener("change", () => {
@@ -88,35 +95,53 @@ inspectToggle.addEventListener("change", () => {
 
 window.addEventListener("unload", dispose);
 
-void initialize().catch(showError);
+browser.runtime.onMessage.addListener(handleRuntimeMessage);
+void lifecycle.start(initialize).catch(showError);
 
-async function initialize(): Promise<void> {
-  settings = await loadPanelSettings(storage);
-  if (settings) {
-    diagnostics.setLink(toLinkDetails(settings));
-  }
-  renderDiagnostics();
-  updateControls();
-
-  browser.runtime.onMessage.addListener(handleRuntimeMessage);
+async function initialize(context: PanelLifecycleContext): Promise<void> {
   await browser.runtime.sendMessage({
     type: "browser2ide.panelReady",
     channel,
   });
+  if (!context.isCurrent()) {
+    return;
+  }
 
-  if (settings === undefined) {
+  const loadedSettings = await loadPanelSettings(storage);
+  if (!context.isCurrent()) {
+    return;
+  }
+  settings = loadedSettings;
+  if (loadedSettings) {
+    diagnostics.setLink(toLinkDetails(loadedSettings));
+  }
+  renderDiagnostics();
+  updateControls();
+
+  if (loadedSettings === undefined) {
     renderConnectionStatus();
     return;
   }
 
   connectionIntent = "reconnect";
-  client = createClient(settings.bridgeUrl);
-  client.connect(settings.credentials);
+  const createdClient = createClient(
+    loadedSettings.bridgeUrl,
+    context.generation,
+  );
+  client = createdClient;
+  createdClient.connect(loadedSettings.credentials);
 }
 
-async function linkToBridge(): Promise<void> {
-  const parsed = parseLinkCode(linkCodeInput.value);
+async function linkToBridge(
+  code: string,
+  context: PanelLifecycleContext,
+): Promise<void> {
+  const parsed = parseLinkCode(code);
   const disableError = await tryDisableInspectMode();
+  if (!context.isCurrent()) {
+    return;
+  }
+
   const previousClient = client;
   client = undefined;
   previousClient?.unlink();
@@ -128,22 +153,33 @@ async function linkToBridge(): Promise<void> {
   selectedSummary.value = "None";
   renderDiagnostics();
   updateControls();
-  await queueStorage(() => resetPanelSettings(storage));
+  await resetPanelSettings(storage);
+  if (!context.isCurrent()) {
+    return;
+  }
 
   if (disableError) {
     throw disableError;
   }
 
   connectionIntent = "link";
-  client = createClient(parsed.url);
-  client.link(parsed.pin);
+  const createdClient = createClient(parsed.url, context.generation);
+  client = createdClient;
+  createdClient.link(parsed.pin);
   updateControls();
 }
 
-async function unlinkFromBridge(): Promise<void> {
+async function unlinkFromBridge(
+  context: PanelLifecycleContext,
+): Promise<void> {
   const disableError = await tryDisableInspectMode();
-  client?.unlink();
+  if (!context.isCurrent()) {
+    return;
+  }
+
+  const previousClient = client;
   client = undefined;
+  previousClient?.unlink();
   connected = false;
   connectionIntent = "none";
   settings = undefined;
@@ -153,32 +189,56 @@ async function unlinkFromBridge(): Promise<void> {
   linkCodeInput.value = "";
   renderDiagnostics();
   updateControls();
-  await queueStorage(() => resetPanelSettings(storage));
+  await resetPanelSettings(storage);
+  if (!context.isCurrent()) {
+    return;
+  }
 
   if (disableError) {
     throw disableError;
   }
 }
 
-function createClient(url: string): BrowserBridgeClient {
+function createClient(
+  url: string,
+  generation: number,
+): BrowserBridgeClient {
   let createdClient: BrowserBridgeClient;
   createdClient = new BrowserBridgeClient({
     url,
     sourceId,
     onCredentials: (credentials) => {
-      if (client !== createdClient) {
+      if (
+        client !== createdClient ||
+        !lifecycle.isCurrent(generation)
+      ) {
         return;
       }
-      void storeCredentials(credentials, url, createdClient).catch(showError);
+      void lifecycle
+        .continue(generation, (context) =>
+          storeCredentials(
+            credentials,
+            url,
+            createdClient,
+            context,
+          ),
+        )
+        .catch(showError);
     },
     onStateChanged: (state) => {
-      if (client === createdClient) {
-        updateConnectionState(state);
+      if (
+        client === createdClient &&
+        lifecycle.isCurrent(generation)
+      ) {
+        updateConnectionState(state, createdClient, generation);
       }
     },
     onError: (error) => {
-      if (client === createdClient) {
-        handleClientError(error, createdClient);
+      if (
+        client === createdClient &&
+        lifecycle.isCurrent(generation)
+      ) {
+        handleClientError(error, createdClient, generation);
       }
     },
   });
@@ -189,10 +249,16 @@ async function storeCredentials(
   credentials: BrowserCredentials,
   bridgeUrl: string,
   owner: BrowserBridgeClient,
+  context: PanelLifecycleContext,
 ): Promise<void> {
+  if (!isCurrentOwner(context, owner)) {
+    return;
+  }
+
   const nextSettings: PanelSettings = { bridgeUrl, credentials };
-  await queueStorage(() => savePanelSettings(storage, nextSettings));
-  if (client !== owner) {
+  await savePanelSettings(storage, nextSettings);
+  if (!isCurrentOwner(context, owner)) {
+    await resetPanelSettings(storage);
     return;
   }
 
@@ -207,13 +273,18 @@ async function storeCredentials(
 function handleClientError(
   error: Error,
   owner: BrowserBridgeClient,
+  generation: number,
 ): void {
   if (
     error instanceof BrowserProtocolError &&
     (error.code === "auth.instanceChanged" ||
       error.code === "auth.tokenRejected")
   ) {
-    void invalidateSavedLink(error, owner).catch(showError);
+    void lifecycle
+      .continue(generation, (context) =>
+        invalidateSavedLink(error, owner, context),
+      )
+      .catch(showError);
     return;
   }
 
@@ -221,10 +292,20 @@ function handleClientError(
     error instanceof BrowserProtocolError &&
     error.code.startsWith("link.")
   ) {
-    client = undefined;
-    owner.disconnect();
-    connected = false;
-    connectionIntent = "none";
+    void lifecycle
+      .continue(generation, async (context) => {
+        if (!isCurrentOwner(context, owner)) {
+          return;
+        }
+        client = undefined;
+        owner.disconnect();
+        connected = false;
+        connectionIntent = "none";
+        showError(error);
+        updateControls();
+      })
+      .catch(showError);
+    return;
   }
   showError(error);
   updateControls();
@@ -233,12 +314,17 @@ function handleClientError(
 async function invalidateSavedLink(
   error: BrowserProtocolError,
   owner: BrowserBridgeClient,
+  context: PanelLifecycleContext,
 ): Promise<void> {
-  if (client !== owner) {
+  if (!isCurrentOwner(context, owner)) {
     return;
   }
 
   const disableError = await tryDisableInspectMode();
+  if (!isCurrentOwner(context, owner)) {
+    return;
+  }
+
   client = undefined;
   owner.disconnect();
   connected = false;
@@ -250,19 +336,37 @@ async function invalidateSavedLink(
   selectedSummary.value = "None";
   renderDiagnostics();
   updateControls();
-  await queueStorage(() => resetPanelSettings(storage));
+  await resetPanelSettings(storage);
+  if (!context.isCurrent()) {
+    return;
+  }
 
   if (disableError) {
     throw disableError;
   }
 }
 
-function updateConnectionState(state: BrowserConnectionState): void {
+function updateConnectionState(
+  state: BrowserConnectionState,
+  owner: BrowserBridgeClient,
+  generation: number,
+): void {
   diagnostics.setConnectionState(state);
   publisher.reset();
   connected = state === "connected";
   if (!connected && inspectController.enabled) {
-    void disableInspectMode().catch(showError);
+    void lifecycle
+      .continue(generation, async (context) => {
+        if (!isCurrentOwner(context, owner)) {
+          return;
+        }
+        await disableInspectMode();
+        if (!isCurrentOwner(context, owner)) {
+          return;
+        }
+        updateControls();
+      })
+      .catch(showError);
   }
   renderDiagnostics();
   updateControls();
@@ -270,9 +374,12 @@ function updateConnectionState(state: BrowserConnectionState): void {
 
 function updateControls(): void {
   const hasLinkCode = linkCodeInput.value.replace(/[\s-]/g, "").length > 0;
-  linkButton.disabled = !hasLinkCode;
-  unlinkButton.disabled = client === undefined && settings === undefined;
-  inspectToggle.disabled = !connected || inspectedTabId === undefined;
+  const blocked = lifecycle.busy || lifecycle.isDisposed;
+  linkButton.disabled = blocked || !hasLinkCode;
+  unlinkButton.disabled =
+    blocked || (client === undefined && settings === undefined);
+  inspectToggle.disabled =
+    blocked || !connected || inspectedTabId === undefined;
   inspectToggle.checked = inspectController.enabled;
 }
 
@@ -444,13 +551,18 @@ function toLinkDetails(value: PanelSettings) {
   };
 }
 
-function queueStorage(operation: () => Promise<void>): Promise<void> {
-  const queued = storageQueue.then(operation);
-  storageQueue = queued.catch(() => undefined);
-  return queued;
+function isCurrentOwner(
+  context: PanelLifecycleContext,
+  owner: BrowserBridgeClient,
+): boolean {
+  return context.isCurrent() && client === owner;
 }
 
 function dispose(): void {
+  if (lifecycle.isDisposed) {
+    return;
+  }
+  lifecycle.dispose();
   browser.runtime.onMessage.removeListener(handleRuntimeMessage);
   void inspectController.disable().catch(() => undefined);
   inspectToggle.checked = false;

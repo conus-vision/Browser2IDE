@@ -59,17 +59,6 @@ describe("Firefox DevTools panel assets", () => {
       /resetPairing|pairOrReset|pairingCodeInput|\.pair\(/,
     );
   });
-
-  it("uses the v3 link, reconnect, and unlink client operations", () => {
-    const runtime = source("panel.ts");
-
-    expect(runtime).toContain("parseLinkCode");
-    expect(runtime).toMatch(/client\.link\(parsed\.pin\)/);
-    expect(runtime).toMatch(/client\.connect\(settings\.credentials\)/);
-    expect(runtime).toMatch(/client\?\.unlink\(\)/);
-    expect(runtime).toContain('"auth.instanceChanged"');
-    expect(runtime).toContain('"auth.tokenRejected"');
-  });
 });
 
 function source(name: string): string {

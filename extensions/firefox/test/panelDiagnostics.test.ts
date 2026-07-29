@@ -43,8 +43,23 @@ describe("PanelDiagnostics", () => {
   it.each([
     ["auth.instanceChanged", "Saved link is no longer valid"],
     ["auth.tokenRejected", "Saved link is no longer valid"],
+    ["link.invalidCode", "Link request was rejected"],
+    ["link.unreachable", "Link request was rejected"],
     ["link.rejected", "Link request was rejected"],
     ["link.rateLimited", "Link requests are temporarily rate-limited"],
+    [
+      "protocol.invalidMessage",
+      "Bridge sent an invalid protocol message",
+    ],
+    ["bridge.noIdeClient", "No IDE client is connected"],
+    ["bridge.noBrowserClient", "No browser client is connected"],
+    ["bridge.offline", "Bridge is offline"],
+    ["resolver.fileNotFound", "Source file was not found"],
+    ["resolver.sourceMapFailed", "Source map resolution failed"],
+    [
+      "browser.stylesheetInaccessible",
+      "A stylesheet could not be inspected",
+    ],
   ] as const)("sanitizes %s without retaining supplied secrets", (code, message) => {
     const diagnostics = new PanelDiagnostics();
     const sensitive = "4873507/browser-token";

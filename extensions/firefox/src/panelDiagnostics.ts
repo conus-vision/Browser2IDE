@@ -82,17 +82,29 @@ export class PanelDiagnostics {
 }
 
 function sanitizedErrorMessage(error: PanelErrorSummary): string {
-  if (
-    error.code === "auth.instanceChanged" ||
-    error.code === "auth.tokenRejected"
-  ) {
-    return "Saved link is no longer valid";
+  if (error.code === undefined) {
+    return error.message;
   }
-  if (error.code === "link.rateLimited") {
-    return "Link requests are temporarily rate-limited";
-  }
-  if (error.code?.startsWith("link.")) {
-    return "Link request was rejected";
-  }
-  return error.message;
+  return (
+    PROTOCOL_ERROR_MESSAGES[error.code] ?? "Browser2IDE protocol error"
+  );
 }
+
+const PROTOCOL_ERROR_MESSAGES: Readonly<
+  Record<ProtocolErrorCode, string>
+> = {
+  "link.invalidCode": "Link request was rejected",
+  "link.unreachable": "Link request was rejected",
+  "link.rejected": "Link request was rejected",
+  "link.rateLimited": "Link requests are temporarily rate-limited",
+  "auth.tokenRejected": "Saved link is no longer valid",
+  "auth.instanceChanged": "Saved link is no longer valid",
+  "protocol.invalidMessage": "Bridge sent an invalid protocol message",
+  "bridge.noIdeClient": "No IDE client is connected",
+  "bridge.noBrowserClient": "No browser client is connected",
+  "bridge.offline": "Bridge is offline",
+  "resolver.fileNotFound": "Source file was not found",
+  "resolver.sourceMapFailed": "Source map resolution failed",
+  "browser.stylesheetInaccessible":
+    "A stylesheet could not be inspected",
+};
