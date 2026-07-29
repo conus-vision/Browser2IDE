@@ -78,7 +78,9 @@ export function createBridgeServer(
     throw new Error("Bridge heartbeat interval must be a positive number");
   }
   const maxPayloadBytes =
-    options.maxPayloadBytes ?? BRIDGE_MAX_PAYLOAD_BYTES;
+    options.maxPayloadBytes === undefined
+      ? BRIDGE_MAX_PAYLOAD_BYTES
+      : options.maxPayloadBytes;
   if (
     !Number.isInteger(maxPayloadBytes) ||
     maxPayloadBytes <= 0 ||

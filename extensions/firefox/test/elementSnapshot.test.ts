@@ -91,7 +91,10 @@ describe("createElementSnapshot", () => {
           },
           ...Array.from(
             { length: INSPECT_LIMITS.subjectAttributes },
-            (_, index) => ({ name: `data-${index}`, value: "value" }),
+            (_, index) => ({
+              name: `data-${index}`,
+              value: "v".repeat(INSPECT_LIMITS.valueLength + 1),
+            }),
           ),
         ],
       },
@@ -102,7 +105,9 @@ describe("createElementSnapshot", () => {
       INSPECT_LIMITS.selectorLength,
     );
     expect(subject.nodeId).toHaveLength(INSPECT_LIMITS.nodeIdLength);
-    expect(subject.attributes).toHaveLength(INSPECT_LIMITS.subjectAttributes);
+    expect(subject.attributes?.length).toBeLessThan(
+      INSPECT_LIMITS.subjectAttributes,
+    );
     expect(subject.attributes?.[0]?.name.length).toBeLessThanOrEqual(
       INSPECT_LIMITS.attributeNameLength,
     );
@@ -110,7 +115,8 @@ describe("createElementSnapshot", () => {
       INSPECT_LIMITS.valueLength,
     );
     expect(subject.metadata.classes).toHaveLength(INSPECT_LIMITS.classNames);
-    expect(subject.metadata.pageUrl).toHaveLength(INSPECT_LIMITS.urlLength);
+    expect(subject.metadata.pageUrl).toBe("about:blank");
+    expect(() => decodeURIComponent(String(subject.metadata.pageUrl))).not.toThrow();
     expect(InspectSubjectSchema.parse(subject)).toEqual(subject);
   });
 });

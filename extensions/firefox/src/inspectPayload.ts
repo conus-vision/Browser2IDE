@@ -10,7 +10,12 @@ import {
 } from "./collectCssFacts.js";
 import { createElementSnapshot } from "./elementSnapshot.js";
 import type { InspectableElement } from "./inspectMode.js";
-import { joinBounded, truncate } from "./inspectBounds.js";
+import {
+  boundedPageUrl,
+  createInspectByteBudget,
+  joinBounded,
+  type InspectByteBudget,
+} from "./inspectBounds.js";
 
 export interface LocationSource {
   readonly href: string;
@@ -32,13 +37,15 @@ export function createInspectPayload(
   document: CssDocumentSource,
   location: LocationSource,
 ): InspectPayloadWithDiagnostics {
-  const pageUrl = truncate(location.href, INSPECT_LIMITS.urlLength);
+  const pageUrl = boundedPageUrl(location.href);
+  const budget = createInspectByteBudget();
   const selected = collectTarget(
     "selected",
     0,
     element,
     document,
     pageUrl,
+    budget,
   );
   const parent = element.parentElement
     ? collectTarget(
@@ -47,6 +54,7 @@ export function createInspectPayload(
         element.parentElement,
         document,
         pageUrl,
+        budget,
       )
     : undefined;
   const collected = parent ? [selected, parent] : [selected];
@@ -67,7 +75,6 @@ export function createInspectPayload(
       ),
       metadata: {
         inaccessibleStylesheetCount: inaccessibleStylesheets.length,
-        browserErrors: inaccessibleStylesheets,
       },
     },
     metadata: {},
@@ -81,15 +88,21 @@ function collectTarget(
   element: InspectableElement,
   document: CssDocumentSource,
   pageUrl: string,
+  budget: InspectByteBudget,
 ): CollectedTarget {
-  const collection = collectCssFacts(element, {
-    pageUrl,
-    styleSheets: document.styleSheets,
-  });
+  const subject = createElementSnapshot(element, pageUrl, budget);
+  const collection = collectCssFacts(
+    element,
+    {
+      pageUrl,
+      styleSheets: document.styleSheets,
+    },
+    budget,
+  );
   return {
     role,
     depth,
-    subject: createElementSnapshot(element, pageUrl),
+    subject,
     facts: collection.facts,
     metadata: {},
     inaccessibleStylesheets: collection.inaccessibleStylesheets,

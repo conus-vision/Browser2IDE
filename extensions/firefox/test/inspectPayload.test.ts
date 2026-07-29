@@ -1,9 +1,13 @@
 import {
+  Browser2IdeMessageSchema,
+  INSPECT_ENVELOPE_MAX_BYTES,
   INSPECT_LIMITS,
   InspectContextSchema,
   InspectTargetSchema,
+  PROTOCOL_VERSION,
 } from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
+import { INSPECT_COLLECTION_MAX_BYTES } from "../src/inspectBounds.js";
 import { createInspectPayload } from "../src/inspectPayload.js";
 import type { InspectableElement } from "../src/inspectMode.js";
 
@@ -78,16 +82,14 @@ describe("createInspectPayload", () => {
     const inaccessible = Array.from(
       { length: INSPECT_LIMITS.inaccessibleStylesheets + 1 },
       (_, index) => ({
-        href: `https://cdn.example/${index}/${"u".repeat(
-          INSPECT_LIMITS.urlLength,
-        )}`,
+        href: exactLengthUrl(index),
         get cssRules(): never {
           throw new Error("r".repeat(INSPECT_LIMITS.valueLength + 1));
         },
       }),
     );
     const location = {
-      href: "u".repeat(INSPECT_LIMITS.urlLength + 1),
+      href: "http://localhost:3000/page",
       pathname: `/${"p".repeat(INSPECT_LIMITS.routeLength)}`,
       search: "?overflow=true",
       hash: "#target",
@@ -105,14 +107,150 @@ describe("createInspectPayload", () => {
     expect(payload.inaccessibleStylesheets).toHaveLength(
       INSPECT_LIMITS.inaccessibleStylesheets,
     );
-    expect(payload.context.url).toHaveLength(INSPECT_LIMITS.urlLength);
+    expect(payload.context.metadata).toEqual({
+      inaccessibleStylesheetCount: INSPECT_LIMITS.inaccessibleStylesheets,
+    });
     expect(payload.context.route).toHaveLength(INSPECT_LIMITS.routeLength);
     for (const target of payload.targets) {
       expect(InspectTargetSchema.parse(target)).toEqual(target);
     }
     expect(InspectContextSchema.parse(payload.context)).toEqual(payload.context);
+
+    const message = fullInspectMessage(payload);
+    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
+      INSPECT_ENVELOPE_MAX_BYTES,
+    );
+  });
+
+  it("keeps worst-case selected and parent CSS output within the wire budget", () => {
+    expect(INSPECT_COLLECTION_MAX_BYTES).toBe(512 * 1024);
+    expect(INSPECT_COLLECTION_MAX_BYTES).toBeLessThan(
+      INSPECT_ENVELOPE_MAX_BYTES,
+    );
+    let valueReads = 0;
+    const parent = element("main", "", ["shared"], null);
+    const selected = element("article", "", ["shared"], parent);
+    const declarationCount = INSPECT_LIMITS.declarationsPerRule;
+    const names = Array.from(
+      { length: declarationCount },
+      (_, index) => `--property-${index}`,
+    );
+    let cssRule: unknown = {
+      selectorText: ".shared",
+      cssText: "x".repeat(INSPECT_LIMITS.valueLength),
+      style: {
+        length: declarationCount,
+        item: (index: number) => names[index] ?? "",
+        getPropertyValue() {
+          valueReads += 1;
+          return "v".repeat(INSPECT_LIMITS.valueLength);
+        },
+        getPropertyPriority: () =>
+          "p".repeat(INSPECT_LIMITS.propertyNameLength),
+      },
+    };
+    for (let index = 0; index < INSPECT_LIMITS.mediaConditions; index += 1) {
+      cssRule = {
+        media: {
+          conditionText: `media-${index}-${"m".repeat(
+            INSPECT_LIMITS.valueLength,
+          )}`,
+        },
+        cssRules: [cssRule],
+      };
+    }
+    const payload = createInspectPayload(
+      selected,
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: exactLengthUrl(0),
+            cssRules: [cssRule],
+          },
+        ],
+      },
+      locationSource(),
+    );
+
+    const facts = payload.targets.flatMap((target) => target.facts);
+    expect(facts.length).toBeLessThan(declarationCount * 2);
+    expect(valueReads).toBeLessThan(declarationCount * 2);
+    for (const fact of facts) {
+      expect(fact.metadata).not.toHaveProperty("cssText");
+      expect(fact.metadata).not.toHaveProperty("declarationNames");
+      expect(fact.metadata).not.toHaveProperty("priority");
+      expect(fact.metadata.sourceUrl).toBe(exactLengthUrl(0));
+      expect(fact.metadata.rulePath).toMatch(/^0(?:\.0)+$/);
+      expect(fact.metadata.media).toHaveLength(INSPECT_LIMITS.mediaConditions);
+    }
+
+    const message = fullInspectMessage(payload);
+    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
+      INSPECT_ENVELOPE_MAX_BYTES,
+    );
+  });
+
+  it("shares the wire budget across maximal selected and parent attributes", () => {
+    const attributes = Array.from(
+      { length: INSPECT_LIMITS.subjectAttributes },
+      (_, index) => ({
+        name: `data-boundary-${index}`,
+        value: "v".repeat(INSPECT_LIMITS.valueLength),
+      }),
+    );
+    const parent = {
+      ...element("main", "", ["layout"], null),
+      attributes,
+    };
+    const selected = {
+      ...element("article", "", ["card"], parent),
+      attributes,
+    };
+    const payload = createInspectPayload(
+      selected,
+      fakeDocument([]),
+      locationSource(),
+    );
+
+    expect(payload.targets).toHaveLength(2);
+    const collectedAttributes = payload.targets.flatMap(
+      (target) => target.subject.attributes ?? [],
+    );
+    expect(collectedAttributes.length).toBeGreaterThan(0);
+    expect(collectedAttributes.length).toBeLessThan(
+      INSPECT_LIMITS.subjectAttributes * 2,
+    );
+
+    const message = fullInspectMessage(payload);
+    expect(Browser2IdeMessageSchema.parse(message)).toEqual(message);
+    expect(Buffer.byteLength(JSON.stringify(message), "utf8")).toBeLessThanOrEqual(
+      INSPECT_ENVELOPE_MAX_BYTES,
+    );
   });
 });
+
+function fullInspectMessage(
+  payload: ReturnType<typeof createInspectPayload>,
+) {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: "inspect" as const,
+    messageId: "inspect-max",
+    sessionId: "session-1",
+    source: { role: "browser" as const, id: "firefox-test", metadata: {} },
+    targets: payload.targets,
+    context: payload.context,
+    metadata: payload.metadata,
+  };
+}
+
+function exactLengthUrl(index: number): string {
+  const prefix = `https://cdn.example/${index}/`;
+  return `${prefix}${"u".repeat(INSPECT_LIMITS.urlLength - prefix.length)}`;
+}
 
 function element(
   tagName: string,

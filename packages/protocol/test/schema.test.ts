@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  INSPECT_ENVELOPE_MAX_BYTES,
   INSPECT_LIMITS,
   InspectMessageSchema,
   PROTOCOL_VERSION,
@@ -312,6 +313,7 @@ describe("Browser2IDE protocol schemas", () => {
   });
 
   it("exports practical inspect collection limits", () => {
+    expect(INSPECT_ENVELOPE_MAX_BYTES).toBe(768 * 1024);
     expect(INSPECT_LIMITS).toEqual({
       targets: 2,
       factsPerTarget: 256,
@@ -333,6 +335,41 @@ describe("Browser2IDE protocol schemas", () => {
       mediaConditions: 16,
       inaccessibleStylesheets: 64,
     });
+  });
+
+  it("enforces the aggregate serialized inspect envelope budget", () => {
+    const createMessage = (paddingLength: number) => ({
+      ...inspectMessage([target("selected", 0, ".card", [])]),
+      metadata: { padding: "x".repeat(paddingLength) },
+    });
+    const emptyBytes = Buffer.byteLength(
+      JSON.stringify(createMessage(0)),
+      "utf8",
+    );
+    const atLimit = createMessage(INSPECT_ENVELOPE_MAX_BYTES - emptyBytes);
+    const oneByteOver = createMessage(
+      INSPECT_ENVELOPE_MAX_BYTES - emptyBytes + 1,
+    );
+
+    expect(Buffer.byteLength(JSON.stringify(atLimit), "utf8")).toBe(
+      INSPECT_ENVELOPE_MAX_BYTES,
+    );
+    expect(() => parseMessage(atLimit)).not.toThrow();
+    expect(Buffer.byteLength(JSON.stringify(oneByteOver), "utf8")).toBe(
+      INSPECT_ENVELOPE_MAX_BYTES + 1,
+    );
+    expect(() => parseMessage(oneByteOver)).toThrow();
+
+    const multibyte = {
+      ...inspectMessage([target("selected", 0, ".card", [])]),
+      metadata: {
+        padding: "\u{1F642}".repeat(INSPECT_ENVELOPE_MAX_BYTES / 4),
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(multibyte), "utf8")).toBeGreaterThan(
+      INSPECT_ENVELOPE_MAX_BYTES,
+    );
+    expect(() => parseMessage(multibyte)).toThrow();
   });
 
   it("rejects inspect target arrays over the exported limit", () => {

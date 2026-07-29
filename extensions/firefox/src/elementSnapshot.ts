@@ -2,7 +2,15 @@ import {
   INSPECT_LIMITS,
   type InspectSubject,
 } from "@browser2ide/protocol";
-import { takeBounded, truncate } from "./inspectBounds.js";
+import {
+  boundedPageUrl,
+  consumeJsonBudget,
+  createInspectByteBudget,
+  iterateBounded,
+  takeBounded,
+  type InspectByteBudget,
+  truncate,
+} from "./inspectBounds.js";
 
 export interface ElementSnapshotSource {
   readonly tagName: string;
@@ -14,6 +22,7 @@ export interface ElementSnapshotSource {
 export function createElementSnapshot(
   element: ElementSnapshotSource,
   pageUrl: string,
+  budget: InspectByteBudget = createInspectByteBudget(),
 ): InspectSubject {
   const tag = truncate(
     element.tagName.toLowerCase(),
@@ -28,16 +37,24 @@ export function createElementSnapshot(
       truncate(className, INSPECT_LIMITS.attributeNameLength),
     );
   const id = truncate(element.id, INSPECT_LIMITS.nodeIdLength);
-  const attributes = takeBounded(
+  const attributes: NonNullable<InspectSubject["attributes"]> = [];
+  for (const { name, value } of iterateBounded(
     element.attributes,
     INSPECT_LIMITS.subjectAttributes,
-  )
-    .filter(({ name }) => isSafeAttribute(name))
-    .map(({ name, value }) => ({
+  )) {
+    if (!isSafeAttribute(name)) {
+      continue;
+    }
+    const attribute = {
       name: truncate(name.toLowerCase(), INSPECT_LIMITS.attributeNameLength),
       value: truncate(value, INSPECT_LIMITS.valueLength),
       metadata: {},
-    }));
+    };
+    if (!consumeJsonBudget(budget, attribute)) {
+      break;
+    }
+    attributes.push(attribute);
+  }
 
   return {
     selector: selectorFor(tag, id, classes),
@@ -47,7 +64,7 @@ export function createElementSnapshot(
       tag,
       id,
       classes,
-      pageUrl: truncate(pageUrl, INSPECT_LIMITS.urlLength),
+      pageUrl: boundedPageUrl(pageUrl),
     },
   };
 }

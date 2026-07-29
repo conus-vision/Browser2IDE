@@ -1,7 +1,11 @@
 import { once } from "node:events";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { PROTOCOL_VERSION, type ClientRole } from "@browser2ide/protocol";
+import {
+  INSPECT_ENVELOPE_MAX_BYTES,
+  PROTOCOL_VERSION,
+  type ClientRole,
+} from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import * as bridgeExports from "../src/index.js";
@@ -816,6 +820,7 @@ describe("bridge server send safety", () => {
 
 describe("bridge server network policy", () => {
   it.each([
+    ["null", null],
     ["zero", 0],
     ["negative", -1],
     ["fractional", 1.5],
@@ -823,7 +828,9 @@ describe("bridge server network policy", () => {
     ["infinite", Number.POSITIVE_INFINITY],
     ["above the production ceiling", BRIDGE_MAX_PAYLOAD_BYTES + 1],
   ])("rejects a %s maxPayloadBytes option", (_name, maxPayloadBytes) => {
-    expect(() => createBridgeServer({ maxPayloadBytes })).toThrow(
+    expect(() =>
+      createBridgeServer({ maxPayloadBytes: maxPayloadBytes as number }),
+    ).toThrow(
       `Bridge max payload must be an integer from 1 to ${BRIDGE_MAX_PAYLOAD_BYTES} bytes`,
     );
   });
@@ -854,6 +861,9 @@ describe("bridge server network policy", () => {
       const [code] = await overLimitClosed;
       expect(code).toBe(1009);
       expect(received).toEqual([]);
+      expect(INSPECT_ENVELOPE_MAX_BYTES).toBeLessThan(
+        BRIDGE_MAX_PAYLOAD_BYTES,
+      );
     } finally {
       await server.stop();
     }

@@ -1,4 +1,8 @@
-import { Browser2IdeMessageSchema, PROTOCOL_VERSION } from "@browser2ide/protocol";
+import {
+  Browser2IdeMessageSchema,
+  INSPECT_ENVELOPE_MAX_BYTES,
+  PROTOCOL_VERSION,
+} from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import {
   BrowserBridgeClient,
@@ -152,6 +156,31 @@ describe("BrowserBridgeClient", () => {
       type: "pong",
       pingMessageId: "ping-1",
     });
+  });
+
+  it("rejects an over-budget inspect payload without sending or leaking it", () => {
+    const harness = createHarness();
+    const padding = "sensitive-marker".repeat(
+      Math.ceil(INSPECT_ENVELOPE_MAX_BYTES / "sensitive-marker".length),
+    );
+
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+
+    let sent: boolean | undefined;
+    expect(() => {
+      sent = harness.client.sendInspect({
+        ...selection(".card"),
+        metadata: { padding },
+      });
+    }).not.toThrow();
+    expect(sent).toBe(false);
+    expect(harness.sockets[0].sent).toHaveLength(1);
+    expect(harness.errors.at(-1)).toMatchObject({
+      code: "protocol.invalidMessage",
+    });
+    expect(harness.errors.at(-1)?.message).not.toContain("sensitive-marker");
   });
 
   it.each([

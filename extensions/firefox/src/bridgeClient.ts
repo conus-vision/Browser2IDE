@@ -139,7 +139,7 @@ export class BrowserBridgeClient {
     ) {
       return false;
     }
-    this.send({
+    const message = Browser2IdeMessageSchema.safeParse({
       protocolVersion: PROTOCOL_VERSION,
       type: "inspect",
       messageId: this.messageId(),
@@ -153,6 +153,16 @@ export class BrowserBridgeClient {
       context: payload.context,
       metadata: payload.metadata,
     });
+    if (!message.success) {
+      this.report(
+        new BrowserProtocolError(
+          "protocol.invalidMessage",
+          "Inspect message exceeds protocol limits",
+        ),
+      );
+      return false;
+    }
+    this.socket.send(JSON.stringify(message.data));
     return true;
   }
 

@@ -1,3 +1,5 @@
+export const INSPECT_ENVELOPE_MAX_BYTES = 768 * 1024;
+
 export const INSPECT_LIMITS = {
   targets: 2,
   factsPerTarget: 256,

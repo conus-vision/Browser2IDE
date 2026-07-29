@@ -5,7 +5,11 @@ import {
 } from "@browser2ide/protocol";
 import {
   boundedLength,
+  consumeJsonBudget,
+  createInspectByteBudget,
   enumerateBounded,
+  exactBoundedUrl,
+  type InspectByteBudget,
   truncate,
 } from "./inspectBounds.js";
 
@@ -22,7 +26,6 @@ export interface StyleDeclarationSource {
 
 export interface StyleRuleSource {
   readonly selectorText: string;
-  readonly cssText: string;
   readonly style: StyleDeclarationSource;
 }
 
@@ -60,6 +63,7 @@ export interface CssFactCollection {
 export function collectCssFacts(
   element: MatchableElement,
   document: CssDocumentSource,
+  budget: InspectByteBudget = createInspectByteBudget(),
 ): CssFactCollection {
   const facts: CssRuleFact[] = [];
   const inaccessibleStylesheets: InaccessibleStylesheet[] = [];
@@ -69,14 +73,24 @@ export function collectCssFacts(
     document.styleSheets,
     INSPECT_LIMITS.stylesheets,
   )) {
-    if (facts.length >= INSPECT_LIMITS.factsPerTarget) {
+    if (
+      facts.length >= INSPECT_LIMITS.factsPerTarget ||
+      budget.remainingBytes <= 0
+    ) {
       break;
     }
 
-    const sourceUrl = truncate(
-      stylesheet.href ?? `inline-style://document/${stylesheetIndex}`,
-      INSPECT_LIMITS.urlLength,
-    );
+    let sourceUrl: string | undefined;
+    try {
+      sourceUrl = exactBoundedUrl(
+        stylesheet.href ?? `inline-style://document/${stylesheetIndex}`,
+      );
+    } catch {
+      continue;
+    }
+    if (!sourceUrl) {
+      continue;
+    }
     try {
       collectRules(
         element,
@@ -87,6 +101,7 @@ export function collectCssFacts(
         0,
         facts,
         state,
+        budget,
       );
     } catch (error) {
       if (
@@ -114,11 +129,13 @@ function collectRules(
   depth: number,
   facts: CssRuleFact[],
   state: { rulesVisited: number },
+  budget: InspectByteBudget,
 ): void {
   if (
     depth > INSPECT_LIMITS.cssRuleDepth ||
     facts.length >= INSPECT_LIMITS.factsPerTarget ||
-    state.rulesVisited >= INSPECT_LIMITS.cssRules
+    state.rulesVisited >= INSPECT_LIMITS.cssRules ||
+    budget.remainingBytes <= 0
   ) {
     return;
   }
@@ -130,7 +147,8 @@ function collectRules(
   )) {
     if (
       facts.length >= INSPECT_LIMITS.factsPerTarget ||
-      state.rulesVisited >= INSPECT_LIMITS.cssRules
+      state.rulesVisited >= INSPECT_LIMITS.cssRules ||
+      budget.remainingBytes <= 0
     ) {
       return;
     }
@@ -138,10 +156,19 @@ function collectRules(
     const rulePath = `${parentPath}.${ruleIndex}`;
     try {
       if (isStyleRule(rule)) {
-        collectStyleRule(element, rule, sourceUrl, rulePath, media, facts);
+        collectStyleRule(
+          element,
+          rule,
+          sourceUrl,
+          rulePath,
+          media,
+          facts,
+          budget,
+        );
         if (
           facts.length >= INSPECT_LIMITS.factsPerTarget ||
-          state.rulesVisited >= INSPECT_LIMITS.cssRules
+          state.rulesVisited >= INSPECT_LIMITS.cssRules ||
+          budget.remainingBytes <= 0
         ) {
           return;
         }
@@ -164,9 +191,9 @@ function collectRules(
       continue;
     }
     const condition = truncate(
-      rule.media?.conditionText.trim() ?? "",
+      rule.media?.conditionText ?? "",
       INSPECT_LIMITS.valueLength,
-    );
+    ).trim();
     const nextMedia =
       condition && media.length < INSPECT_LIMITS.mediaConditions
         ? [...media, condition]
@@ -180,10 +207,12 @@ function collectRules(
       depth + 1,
       facts,
       state,
+      budget,
     );
     if (
       facts.length >= INSPECT_LIMITS.factsPerTarget ||
-      state.rulesVisited >= INSPECT_LIMITS.cssRules
+      state.rulesVisited >= INSPECT_LIMITS.cssRules ||
+      budget.remainingBytes <= 0
     ) {
       return;
     }
@@ -197,6 +226,7 @@ function collectStyleRule(
   rulePath: string,
   media: readonly string[],
   facts: CssRuleFact[],
+  budget: InspectByteBudget,
 ): void {
   const selector = rule.selectorText;
   if (
@@ -236,31 +266,32 @@ function collectStyleRule(
   }
 
   for (const property of declarationNames) {
-    if (facts.length >= INSPECT_LIMITS.factsPerTarget) {
+    if (
+      facts.length >= INSPECT_LIMITS.factsPerTarget ||
+      budget.remainingBytes <= 0
+    ) {
       return;
     }
 
     try {
-      facts.push({
+      const fact: CssRuleFact = {
         type: "css-rule",
         selector,
         property,
         value: truncate(
-          rule.style.getPropertyValue(property).trim(),
+          rule.style.getPropertyValue(property),
           INSPECT_LIMITS.valueLength,
-        ),
+        ).trim(),
         metadata: {
           sourceUrl,
-          cssText: truncate(rule.cssText, INSPECT_LIMITS.valueLength),
-          declarationNames: [...declarationNames],
           ...(media.length > 0 ? { media: [...media] } : {}),
           rulePath: truncate(rulePath, INSPECT_LIMITS.selectorLength),
-          priority: truncate(
-            rule.style.getPropertyPriority(property),
-            INSPECT_LIMITS.propertyNameLength,
-          ),
         },
-      });
+      };
+      if (!consumeJsonBudget(budget, fact)) {
+        return;
+      }
+      facts.push(fact);
     } catch {
       continue;
     }
@@ -271,7 +302,6 @@ function isStyleRule(rule: RuleSource): rule is StyleRuleSource {
   const candidate = rule as Partial<StyleRuleSource>;
   return (
     typeof candidate.selectorText === "string" &&
-    typeof candidate.cssText === "string" &&
     typeof candidate.style === "object" &&
     candidate.style !== null
   );

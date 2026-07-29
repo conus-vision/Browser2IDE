@@ -5,8 +5,11 @@ import {
   SourceReferenceSchema,
 } from "./references.js";
 import { ProtocolCapabilitySchema } from "./capabilities.js";
-import { JsonObjectSchema } from "./json.js";
-import { INSPECT_LIMITS } from "./limits.js";
+import { JsonObjectSchema, utf8ByteLength } from "./json.js";
+import {
+  INSPECT_ENVELOPE_MAX_BYTES,
+  INSPECT_LIMITS,
+} from "./limits.js";
 
 export const PROTOCOL_VERSION = 3 as const;
 
@@ -186,6 +189,25 @@ export const InspectMessageSchema = baseMessageSchema
         code: z.ZodIssueCode.custom,
         path: ["targets"],
         message: "inspect permits one parent target at depth 1",
+      });
+    }
+
+    try {
+      if (
+        utf8ByteLength(JSON.stringify(message)) >
+        INSPECT_ENVELOPE_MAX_BYTES
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [],
+          message: "inspect message exceeds serialized byte limit",
+        });
+      }
+    } catch {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: "inspect message must be JSON serializable",
       });
     }
   });

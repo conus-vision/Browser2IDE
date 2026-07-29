@@ -47,11 +47,8 @@ describe("collectCssFacts", () => {
         value: "flex",
         metadata: {
           sourceUrl: "http://localhost:3000/dist/app.css",
-          cssText: ".card { display: flex; padding: 1rem !important; }",
-          declarationNames: ["display", "padding"],
           media: ["(min-width: 40rem)"],
           rulePath: "0.0.0",
-          priority: "",
         },
       },
       {
@@ -61,11 +58,8 @@ describe("collectCssFacts", () => {
         value: "1rem",
         metadata: {
           sourceUrl: "http://localhost:3000/dist/app.css",
-          cssText: ".card { display: flex; padding: 1rem !important; }",
-          declarationNames: ["display", "padding"],
           media: ["(min-width: 40rem)"],
           rulePath: "0.0.0",
-          priority: "important",
         },
       },
     ]);
@@ -149,8 +143,10 @@ describe("collectCssFacts", () => {
     expect(valueReads).toBe(0);
   });
 
-  it("bounds declaration and priority metadata", () => {
+  it("omits repeated declaration metadata while retaining source evidence", () => {
     const declarationCount = INSPECT_LIMITS.declarationsPerRule + 1;
+    let cssTextReads = 0;
+    let priorityReads = 0;
     const result = collectCssFacts(
       { matches: () => true },
       {
@@ -161,7 +157,10 @@ describe("collectCssFacts", () => {
             cssRules: [
               {
                 selectorText: ".card",
-                cssText: ".card { color: red; }",
+                get cssText() {
+                  cssTextReads += 1;
+                  return ".card { color: red; }";
+                },
                 style: {
                   length: declarationCount,
                   item(index: number) {
@@ -171,8 +170,10 @@ describe("collectCssFacts", () => {
                     )}`;
                   },
                   getPropertyValue: () => "value",
-                  getPropertyPriority: () =>
-                    "p".repeat(INSPECT_LIMITS.propertyNameLength + 1),
+                  getPropertyPriority() {
+                    priorityReads += 1;
+                    return "p".repeat(INSPECT_LIMITS.propertyNameLength + 1);
+                  },
                 },
               },
             ],
@@ -182,19 +183,56 @@ describe("collectCssFacts", () => {
     );
 
     expect(result.facts).toHaveLength(INSPECT_LIMITS.declarationsPerRule);
+    expect(cssTextReads).toBe(0);
+    expect(priorityReads).toBe(0);
     for (const fact of result.facts) {
-      expect(fact.metadata.declarationNames).toHaveLength(
-        INSPECT_LIMITS.declarationsPerRule,
-      );
-      expect(
-        (fact.metadata.declarationNames as string[]).every(
-          (name) => name.length === INSPECT_LIMITS.propertyNameLength,
-        ),
-      ).toBe(true);
-      expect(fact.metadata.priority).toHaveLength(
-        INSPECT_LIMITS.propertyNameLength,
-      );
+      expect(fact.metadata).toEqual({
+        sourceUrl: "/metadata.css",
+        rulePath: "0.0",
+      });
     }
+  });
+
+  it("preserves exact valid source URLs and drops over-limit percent boundaries", () => {
+    const prefix = "https://example.test/";
+    const exactUrl = `${prefix}${"a".repeat(
+      INSPECT_LIMITS.urlLength - prefix.length - 3,
+    )}%20`;
+    const overLimitUrl = `${prefix}${"a".repeat(
+      INSPECT_LIMITS.urlLength - prefix.length - 1,
+    )}%20`;
+    let overLimitRulesRead = 0;
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: overLimitUrl,
+            get cssRules() {
+              overLimitRulesRead += 1;
+              return [styleRule(".over-limit", { color: "red" })];
+            },
+          },
+          {
+            href: exactUrl,
+            cssRules: [styleRule(".exact", { color: "blue" })],
+          },
+        ],
+      },
+    );
+
+    expect(overLimitUrl.slice(0, INSPECT_LIMITS.urlLength).endsWith("%"))
+      .toBe(true);
+    expect(overLimitRulesRead).toBe(0);
+    expect(result.facts).toHaveLength(1);
+    expect(result.facts[0]?.metadata.sourceUrl).toBe(exactUrl);
+    expect(() => decodeURIComponent(exactUrl)).not.toThrow();
+    const resolved = new URL(
+      String(result.facts[0]?.metadata.sourceUrl),
+      "http://localhost:3000/page",
+    );
+    expect(() => decodeURIComponent(resolved.pathname)).not.toThrow();
   });
 
   it("truncates inaccessible stylesheet diagnostic reasons", () => {
@@ -333,7 +371,7 @@ describe("collectCssFacts", () => {
         pageUrl: "http://localhost:3000/page",
         styleSheets: [
           {
-            href: "u".repeat(INSPECT_LIMITS.urlLength + 1),
+            href: exactLengthUrl(),
             cssRules: [nestedRule(INSPECT_LIMITS.cssRuleDepth, true)],
           },
         ],
@@ -343,7 +381,6 @@ describe("collectCssFacts", () => {
 
     expect(fact).toBeDefined();
     expect(fact?.metadata.sourceUrl).toHaveLength(INSPECT_LIMITS.urlLength);
-    expect(fact?.metadata.cssText).toHaveLength(INSPECT_LIMITS.valueLength);
     expect(fact?.metadata.media).toHaveLength(INSPECT_LIMITS.mediaConditions);
     expect(RuntimeFactSchema.parse(fact)).toEqual(fact);
 
@@ -387,6 +424,11 @@ function nestedRule(depth: number, oversizedMetadata: boolean): unknown {
     };
   }
   return nested;
+}
+
+function exactLengthUrl(): string {
+  const prefix = "https://example.test/";
+  return `${prefix}${"u".repeat(INSPECT_LIMITS.urlLength - prefix.length)}`;
 }
 
 function styleRule(

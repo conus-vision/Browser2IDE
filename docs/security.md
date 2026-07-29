@@ -173,17 +173,23 @@ schema processing. The configured ceiling may be lowered but cannot be raised.
 
 Protocol v3 also bounds known inspect data per message:
 
+- the complete serialized inspect envelope is at most 768 KiB, leaving 256 KiB
+  below the WebSocket frame ceiling;
 - at most 2 targets, 256 facts per target, and 64 subject attributes;
 - selectors up to 2,048 characters, names up to 256, IDs up to 1,024, and
   values or text up to 16,384;
 - URLs and routes up to 8,192 characters and frame IDs up to 256.
 
-Firefox applies the same wire limits while collecting and truncates known
-metadata fields. Per target it examines at most 256 stylesheets and 4,096 CSS
-rules, descends at most 32 group-rule levels, reads at most 128 declarations
-per rule, retains at most 16 media conditions and 64 inaccessible stylesheet
-diagnostics, and records at most 128 class names. Collection stops as soon as
-the 256-fact budget is full. These ceilings accommodate ordinary development
+Firefox applies the same wire limits while collecting and reserves 512 KiB for
+page-controlled facts and subject attributes across the selected element and
+its parent. Per target it examines at most 256 stylesheets and 4,096 CSS rules,
+descends at most 32 group-rule levels, reads at most 128 declarations per rule,
+retains at most 16 media conditions and 64 inaccessible stylesheet diagnostics,
+and records at most 128 class names. Collection stops when either the fact or
+byte budget is full. Verbose stylesheet errors remain local to the Firefox
+panel; only their count crosses the bridge. Syntax-bearing source URLs are
+preserved exactly when valid and within bounds, otherwise their source facts
+and diagnostics are omitted. These ceilings accommodate ordinary development
 pages while bounding page-controlled traversal and allocation. The 1 MiB frame
 limit remains the backstop for arbitrary metadata and namespaced plugin
 payloads.
