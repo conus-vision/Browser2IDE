@@ -9,6 +9,7 @@ describe("Chrome extension manifest", () => {
       manifest_version: 3,
       name: "Browser2IDE",
       version: "0.2.0",
+      minimum_chrome_version: "116",
       devtools_page: "dist/devtools.html",
       background: { service_worker: "dist/background.js" },
     });
@@ -33,11 +34,12 @@ describe("Chrome extension manifest", () => {
     expect(hostPermissions).toEqual([
       "http://localhost/*",
       "http://127.0.0.1/*",
+      "<all_urls>",
     ]);
     expect(
       hostPermissions.some((permission) => /^wss?:\/\//.test(permission)),
     ).toBe(false);
-    expect(manifest.optional_host_permissions).toEqual(["<all_urls>"]);
+    expect(manifest).not.toHaveProperty("optional_host_permissions");
   });
 
   it("allows extension pages to connect only to loopback WebSockets", () => {

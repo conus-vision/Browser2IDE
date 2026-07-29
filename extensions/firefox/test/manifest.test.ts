@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("Firefox extension manifest", () => {
-  it("declares a Firefox-first MV3 DevTools adapter with loopback-only defaults", () => {
+  it("declares a Firefox-first MV3 DevTools adapter with inspected-page access", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../manifest.json", import.meta.url), "utf8"),
     ) as Record<string, any>;
@@ -33,15 +33,12 @@ describe("Firefox extension manifest", () => {
     expect(manifest.permissions).not.toEqual(
       expect.arrayContaining(["nativeMessaging", "debugger"]),
     );
-    expect(manifest.host_permissions).toEqual(
-      expect.arrayContaining([
-        "http://localhost/*",
-        "http://127.0.0.1/*",
-        "ws://localhost/*",
-        "ws://127.0.0.1/*",
-      ]),
-    );
-    expect(manifest.optional_host_permissions).toEqual(["<all_urls>"]);
+    expect(manifest.host_permissions).toEqual([
+      "http://localhost/*",
+      "http://127.0.0.1/*",
+      "<all_urls>",
+    ]);
+    expect(manifest).not.toHaveProperty("optional_host_permissions");
 
     const csp = manifest.content_security_policy.extension_pages as string;
     expect(csp).toContain("script-src 'self'");
