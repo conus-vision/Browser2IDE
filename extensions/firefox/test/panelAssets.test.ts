@@ -48,16 +48,25 @@ describe("shared DevTools panel assets", () => {
     const runtime = firefoxSource("panel.ts");
     const build = firefoxSource("../esbuild.mjs");
     const controller = sharedSource("panelController.ts");
+    const panelRuntime = sharedSource("panelRuntime.ts");
 
-    expect(runtime).toContain("new PanelController");
-    expect(runtime).toContain("new PanelInspectTransport");
-    expect(runtime).toContain("createPanelIcons");
+    expect(runtime).toContain("startPanelRuntime");
+    expect(runtime).not.toContain("new PanelController");
+    expect(runtime).not.toContain("new PanelInspectTransport");
+    expect(panelRuntime).toContain("new PanelController");
+    expect(panelRuntime).toContain("new PanelInspectTransport");
+    expect(panelRuntime).toContain("createPanelIcons");
     expect(controller).toContain("createIcons");
     expect(runtime).toContain("navigator.clipboard.readText");
     expect(runtime).not.toContain("BrowserBridgeClient");
     expect(runtime).not.toContain("storage.local");
     expect(runtime).not.toContain("PanelLifecycleCoordinator");
     expect(build).toContain("packages/browser-extension-core/assets");
+    expect(build).toContain('format: "iife"');
+    expect(build).toContain("sourcemap: true");
+    for (const entry of ["background", "contentScript", "devtools", "panel"]) {
+      expect(build).toContain(`${entry}: "src/${entry}.ts"`);
+    }
   });
 });
 

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { registerDevtoolsPanel } from "../src/devtoolsRuntime.js";
+import {
+  registerDevtoolsPanel,
+  startDevtoolsRuntime,
+} from "../src/devtoolsRuntime.js";
 
 describe("registerDevtoolsPanel", () => {
   it("registers a trusted source and re-announces it for panel recovery", async () => {
@@ -93,5 +96,87 @@ describe("registerDevtoolsPanel", () => {
     ).rejects.toThrow("panel unavailable");
 
     expect(removed).toEqual(["runtime"]);
+  });
+});
+
+describe("startDevtoolsRuntime", () => {
+  it("owns registration startup and unload cleanup", async () => {
+    const sent: unknown[] = [];
+    const removals: string[] = [];
+    let unload: (() => void) | undefined;
+    let nextId = 0;
+    const runtime = startDevtoolsRuntime({
+      inspectedTabId: 42,
+      sourcePrefix: "firefox",
+      createId: () => `id-${++nextId}`,
+      async createPanel() {
+        return {
+          addShownListener() {},
+          removeShownListener: () => removals.push("shown"),
+        };
+      },
+      subscribeRuntimeMessages() {
+        return () => removals.push("runtime");
+      },
+      async sendRuntimeMessage(message) {
+        sent.push(message);
+      },
+      subscribeUnload(listener) {
+        unload = listener;
+        return () => removals.push("unload");
+      },
+    });
+
+    await runtime.ready;
+    expect(sent).toEqual([
+      {
+        type: "browser2ide.registerDevtools",
+        channel: "id-1",
+        tabId: 42,
+        sourceId: "firefox-id-2",
+      },
+    ]);
+
+    unload?.();
+    runtime.dispose();
+    expect(removals).toEqual(["unload", "shown", "runtime"]);
+  });
+
+  it("disposes a late registration after unload during panel creation", async () => {
+    let resolvePanel!: (panel: {
+      addShownListener(): void;
+      removeShownListener(): void;
+    }) => void;
+    let unload: (() => void) | undefined;
+    const removed: string[] = [];
+    const panelPromise = new Promise<{
+      addShownListener(): void;
+      removeShownListener(): void;
+    }>((resolve) => {
+      resolvePanel = resolve;
+    });
+    const runtime = startDevtoolsRuntime({
+      inspectedTabId: 42,
+      sourcePrefix: "firefox",
+      createId: (() => {
+        let id = 0;
+        return () => `id-${++id}`;
+      })(),
+      createPanel: () => panelPromise,
+      subscribeRuntimeMessages: () => () => removed.push("runtime"),
+      sendRuntimeMessage: async () => undefined,
+      subscribeUnload(listener) {
+        unload = listener;
+        return () => removed.push("unload");
+      },
+    });
+
+    unload?.();
+    resolvePanel({
+      addShownListener() {},
+      removeShownListener: () => removed.push("shown"),
+    });
+    await runtime.ready;
+    expect(removed).toEqual(["unload", "shown", "runtime"]);
   });
 });

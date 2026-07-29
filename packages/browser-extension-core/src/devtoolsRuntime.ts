@@ -17,6 +17,24 @@ export interface DevtoolsRuntimeOptions {
   readonly onError?: (error: unknown) => void;
 }
 
+export interface DevtoolsAdapterRuntimeOptions {
+  readonly inspectedTabId: number;
+  readonly sourcePrefix: string;
+  readonly createId: () => string;
+  readonly createPanel: DevtoolsRuntimeOptions["createPanel"];
+  readonly subscribeRuntimeMessages: (
+    listener: (message: unknown) => void,
+  ) => () => void;
+  readonly sendRuntimeMessage: (message: unknown) => Promise<unknown>;
+  readonly subscribeUnload: (listener: () => void) => () => void;
+  readonly onError?: (error: unknown) => void;
+}
+
+export interface DevtoolsAdapterRuntime {
+  readonly ready: Promise<void>;
+  dispose(): void;
+}
+
 export async function registerDevtoolsPanel(
   options: DevtoolsRuntimeOptions,
 ): Promise<{ dispose(): void }> {
@@ -70,6 +88,55 @@ export async function registerDevtoolsPanel(
   };
 }
 
+export function startDevtoolsRuntime(
+  options: DevtoolsAdapterRuntimeOptions,
+): DevtoolsAdapterRuntime {
+  const channelId = options.createId();
+  const sourceId = `${options.sourcePrefix}-${options.createId()}`;
+  let disposed = false;
+  let registration: { dispose(): void } | undefined;
+  let removeUnload: (() => void) | undefined;
+
+  const dispose = (): void => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    const remove = removeUnload;
+    removeUnload = undefined;
+    remove?.();
+    registration?.dispose();
+    registration = undefined;
+  };
+  const unloadSubscription = options.subscribeUnload(dispose);
+  if (disposed) {
+    unloadSubscription();
+  } else {
+    removeUnload = unloadSubscription;
+  }
+
+  const ready = registerDevtoolsPanel({
+    inspectedTabId: options.inspectedTabId,
+    channelId,
+    sourceId,
+    createPanel: options.createPanel,
+    addRuntimeMessageListener: options.subscribeRuntimeMessages,
+    sendRuntimeMessage: options.sendRuntimeMessage,
+    onError: options.onError,
+  }).then(
+    (created) => {
+      if (disposed) {
+        created.dispose();
+      } else {
+        registration = created;
+      }
+    },
+    (error) => reportAdapterError(options, error),
+  );
+
+  return { ready, dispose };
+}
+
 function assertRegistrationOptions(options: DevtoolsRuntimeOptions): void {
   if (
     !Number.isSafeInteger(options.inspectedTabId) ||
@@ -107,6 +174,17 @@ function reportError(
     options.onError?.(error);
   } catch {
     // Error reporting cannot break panel registration recovery.
+  }
+}
+
+function reportAdapterError(
+  options: DevtoolsAdapterRuntimeOptions,
+  error: unknown,
+): void {
+  try {
+    options.onError?.(error);
+  } catch {
+    // Error reporting cannot break adapter startup.
   }
 }
 

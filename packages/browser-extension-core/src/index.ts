@@ -9,6 +9,11 @@ export {
   BackgroundInspectSession,
 } from "./backgroundInspectSession.js";
 export type { BackgroundInspectApi } from "./backgroundInspectSession.js";
+export { startBackgroundRuntime } from "./backgroundRuntime.js";
+export type {
+  BackgroundRuntime,
+  BackgroundRuntimeOptions,
+} from "./backgroundRuntime.js";
 export {
   BackgroundRouter,
   createBackgroundRouter,
@@ -48,11 +53,23 @@ export type {
   StyleRuleSource,
   StylesheetSource,
 } from "./collectCssFacts.js";
-export { registerDevtoolsPanel } from "./devtoolsRuntime.js";
+export { startContentScriptRuntime } from "./contentScriptRuntime.js";
 export type {
+  ContentScriptDocument,
+  ContentScriptRuntime,
+  ContentScriptRuntimeOptions,
+} from "./contentScriptRuntime.js";
+export {
+  registerDevtoolsPanel,
+  startDevtoolsRuntime,
+} from "./devtoolsRuntime.js";
+export type {
+  DevtoolsAdapterRuntime,
+  DevtoolsAdapterRuntimeOptions,
   DevtoolsPanelHandle,
   DevtoolsRuntimeOptions,
 } from "./devtoolsRuntime.js";
+export { sanitizeErrorMessage } from "./errorSanitizer.js";
 export { createElementSnapshot } from "./elementSnapshot.js";
 export type { ElementSnapshotSource } from "./elementSnapshot.js";
 export {
@@ -128,6 +145,12 @@ export type {
 } from "./panelController.js";
 export { PanelInspectController } from "./panelInspectController.js";
 export { PanelInspectTransport } from "./panelInspectTransport.js";
+export { startPanelRuntime } from "./panelRuntime.js";
+export type {
+  PanelDocument,
+  PanelRuntime,
+  PanelRuntimeOptions,
+} from "./panelRuntime.js";
 export { WindowConnectionCoordinator } from "./windowConnectionCoordinator.js";
 export type {
   BrowserWindowConnectionState,

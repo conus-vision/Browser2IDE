@@ -1,69 +1,23 @@
 import browser from "webextension-polyfill";
 import {
-  createInspectPayload,
-  ContentInspectLease,
-  INSPECT_CONTENT_LEASE_PORT_NAME,
-  InspectMode,
-  type CssDocumentSource,
-  type InspectDocument,
-  type InspectableElement,
+  sanitizeErrorMessage,
+  startContentScriptRuntime,
+  type ContentInspectPort,
+  type ContentScriptDocument,
 } from "@browser2ide/browser-extension-core";
 
-interface ContentScriptState {
-  readonly mode: InspectMode;
-  readonly lease: ContentInspectLease;
-}
-
-const globalState = globalThis as typeof globalThis & {
-  __browser2ideContentScript?: ContentScriptState;
-};
-
-if (!globalState.__browser2ideContentScript) {
-  const mode = new InspectMode({
-    document: document as unknown as InspectDocument,
-    onSelect: sendSelection,
-    onError: (error) =>
-      void browser.runtime.sendMessage({
-        type: "contentScriptError",
-        message: messageOf(error),
-      }),
-  });
-  const lease = new ContentInspectLease(mode, () =>
-    browser.runtime.connect({ name: INSPECT_CONTENT_LEASE_PORT_NAME }),
-  );
-  browser.runtime.onMessage.addListener((message: unknown) => {
-    if (!isRecord(message)) {
-      return undefined;
-    }
-    if (message.type === "enableInspectMode") {
-      lease.enable();
-    } else if (message.type === "disableInspectMode") {
-      lease.disable();
-    }
-    return undefined;
-  });
-  globalState.__browser2ideContentScript = { mode, lease };
-}
-
-async function sendSelection(element: InspectableElement): Promise<void> {
-  const pageUrl = location.href;
-  await browser.runtime.sendMessage({
-    type: "elementSelected",
-    payload: createInspectPayload(
-      element,
-      {
-        pageUrl,
-        styleSheets: document.styleSheets,
-      } as unknown as CssDocumentSource,
-      location,
-    ),
-  });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object");
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+startContentScriptRuntime({
+  globalScope: globalThis,
+  document: document as unknown as ContentScriptDocument,
+  location,
+  connectRuntimePort: (name) =>
+    browser.runtime.connect({ name }) as unknown as ContentInspectPort,
+  sendRuntimeMessage: (message) => browser.runtime.sendMessage(message),
+  subscribeRuntimeMessages(listener) {
+    const wrapped = (message: unknown): void => listener(message);
+    browser.runtime.onMessage.addListener(wrapped);
+    return () => browser.runtime.onMessage.removeListener(wrapped);
+  },
+  onError: (error) =>
+    console.error("Browser2IDE content script:", sanitizeErrorMessage(error)),
+});

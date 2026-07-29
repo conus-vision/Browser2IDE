@@ -23,9 +23,13 @@ describe("Firefox extension manifest", () => {
       },
     });
     expect(manifest.background.service_worker).toBeUndefined();
-    expect(manifest.permissions).toEqual(
-      expect.arrayContaining(["activeTab", "scripting", "storage"]),
-    );
+    expect(manifest.permissions).toEqual([
+      "activeTab",
+      "clipboardRead",
+      "scripting",
+      "storage",
+      "tabs",
+    ]);
     expect(manifest.permissions).not.toEqual(
       expect.arrayContaining(["nativeMessaging", "debugger"]),
     );

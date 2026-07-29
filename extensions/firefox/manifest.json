@@ -7,7 +7,7 @@
   "background": {
     "scripts": ["dist/background.js"]
   },
-  "permissions": ["activeTab", "scripting", "storage"],
+  "permissions": ["activeTab", "clipboardRead", "scripting", "storage", "tabs"],
   "host_permissions": [
     "http://localhost/*",
     "http://127.0.0.1/*",

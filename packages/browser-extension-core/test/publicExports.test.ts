@@ -14,6 +14,11 @@ import {
   PanelInspectTransport,
   parseLinkCode,
   registerDevtoolsPanel,
+  sanitizeErrorMessage,
+  startBackgroundRuntime,
+  startContentScriptRuntime,
+  startDevtoolsRuntime,
+  startPanelRuntime,
   WindowConnectionCoordinator,
 } from "../src/index.js";
 
@@ -33,6 +38,11 @@ describe("browser extension core exports", () => {
     expect(PanelController).toBeTypeOf("function");
     expect(PanelInspectTransport).toBeTypeOf("function");
     expect(registerDevtoolsPanel).toBeTypeOf("function");
+    expect(sanitizeErrorMessage).toBeTypeOf("function");
+    expect(startBackgroundRuntime).toBeTypeOf("function");
+    expect(startContentScriptRuntime).toBeTypeOf("function");
+    expect(startDevtoolsRuntime).toBeTypeOf("function");
+    expect(startPanelRuntime).toBeTypeOf("function");
     expect(WindowConnectionCoordinator).toBeTypeOf("function");
   });
 });

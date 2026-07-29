@@ -14,6 +14,11 @@ import {
   parseLinkCode,
   PanelInspectTransport,
   registerDevtoolsPanel,
+  sanitizeErrorMessage,
+  startBackgroundRuntime,
+  startContentScriptRuntime,
+  startDevtoolsRuntime,
+  startPanelRuntime,
   WindowConnectionCoordinator,
 } from "@browser2ide/browser-extension-core";
 
@@ -31,4 +36,9 @@ assert.equal(typeof PanelController, "function");
 assert.equal(typeof parseLinkCode, "function");
 assert.equal(typeof PanelInspectTransport, "function");
 assert.equal(typeof registerDevtoolsPanel, "function");
+assert.equal(typeof sanitizeErrorMessage, "function");
+assert.equal(typeof startBackgroundRuntime, "function");
+assert.equal(typeof startContentScriptRuntime, "function");
+assert.equal(typeof startDevtoolsRuntime, "function");
+assert.equal(typeof startPanelRuntime, "function");
 assert.equal(typeof WindowConnectionCoordinator, "function");
