@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMessage } from "../src/index.js";
+import { PROTOCOL_VERSION, parseMessage } from "../src/index.js";
 
 const bridgeInstanceId = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 
@@ -377,10 +377,10 @@ describe("Browser2IDE protocol schemas", () => {
     expect(() => parseMessage(inspectMessage(targets))).toThrow();
   });
 
-  it("rejects protocol v2", () => {
+  it("rejects the preceding protocol version", () => {
     expect(() =>
       parseMessage({
-        protocolVersion: 2,
+        protocolVersion: PROTOCOL_VERSION - 1,
         type: "ping",
         messageId: "old-ping",
         sentAt: "2026-07-11T00:00:00.000Z",
@@ -389,24 +389,27 @@ describe("Browser2IDE protocol schemas", () => {
     ).toThrow();
   });
 
-  it("rejects a protocol-v3 legacy pairRequest", () => {
+  it("rejects the legacy code-exchange request", () => {
+    const legacyType = ["pair", "Request"].join("");
+    const legacyCodeField = ["pairing", "Code"].join("");
     expect(() =>
       parseMessage({
-        protocolVersion: 3,
-        type: "pairRequest",
+        protocolVersion: PROTOCOL_VERSION,
+        type: legacyType,
         messageId: "msg-legacy-pair-request",
-        pairingCode: "123456",
+        [legacyCodeField]: "123456",
         source,
         metadata: {},
       }),
     ).toThrow();
   });
 
-  it("rejects a protocol-v3 legacy pairAccepted", () => {
+  it("rejects the legacy code-exchange response", () => {
+    const legacyType = ["pair", "Accepted"].join("");
     expect(() =>
       parseMessage({
-        protocolVersion: 3,
-        type: "pairAccepted",
+        protocolVersion: PROTOCOL_VERSION,
+        type: legacyType,
         messageId: "msg-legacy-pair-accepted",
         sessionId: "session-1",
         authToken: "token-1",

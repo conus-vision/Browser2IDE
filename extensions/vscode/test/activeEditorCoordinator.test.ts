@@ -5,7 +5,10 @@ import type {
   SourceDocument,
   SourceWorkspace,
 } from "@browser2ide/plugin-api";
-import type { InspectMessage } from "@browser2ide/protocol";
+import {
+  PROTOCOL_VERSION,
+  type InspectMessage,
+} from "@browser2ide/protocol";
 import {
   ActiveEditorCoordinator,
   type ActiveEditorLike,
@@ -375,7 +378,7 @@ function resolution(
 
 function inspectMessage(messageId: string): InspectMessage {
   return {
-    protocolVersion: 2,
+    protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
     messageId,
     sessionId: "session-1",

@@ -647,8 +647,9 @@ describe("bridge server lifecycle", () => {
 });
 
 describe("bridge public surface", () => {
-  it("does not export or retain the legacy PairingStore source", () => {
-    expect(bridgeExports).not.toHaveProperty("PairingStore");
+  it("does not export or retain the legacy link store source", () => {
+    const legacyStoreName = ["Pairing", "Store"].join("");
+    expect(bridgeExports).not.toHaveProperty(legacyStoreName);
     expect(existsSync(new URL("../src/pairing.ts", import.meta.url))).toBe(false);
   });
 

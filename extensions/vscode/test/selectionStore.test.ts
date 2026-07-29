@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { InspectMessage } from "@browser2ide/protocol";
+import {
+  PROTOCOL_VERSION,
+  type InspectMessage,
+} from "@browser2ide/protocol";
 import { SelectionStore } from "../src/presenter/selectionStore.js";
 
 describe("SelectionStore", () => {
@@ -24,7 +27,7 @@ describe("SelectionStore", () => {
 
 function inspectMessage(messageId: string): InspectMessage {
   return {
-    protocolVersion: 2,
+    protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
     messageId,
     sessionId: "session-1",

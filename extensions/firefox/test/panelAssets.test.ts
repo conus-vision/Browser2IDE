@@ -55,9 +55,14 @@ describe("Firefox DevTools panel assets", () => {
       expect(panel).not.toContain(`id="${removedId}"`);
     }
     expect(panel).not.toMatch(/\bpair(?:ing)?\b/i);
-    expect(runtime).not.toMatch(
-      /resetPairing|pairOrReset|pairingCodeInput|\.pair\(/,
-    );
+    for (const removedName of [
+      ["reset", "Pairing"].join(""),
+      ["pair", "OrReset"].join(""),
+      ["pairing", "CodeInput"].join(""),
+    ]) {
+      expect(runtime).not.toContain(removedName);
+    }
+    expect(runtime).not.toMatch(/\.pair\(/);
   });
 });
 

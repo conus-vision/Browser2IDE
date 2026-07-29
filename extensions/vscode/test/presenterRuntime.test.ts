@@ -5,7 +5,10 @@ import {
   type SourcePlugin,
   type SourceWorkspace,
 } from "@browser2ide/plugin-api";
-import type { InspectMessage } from "@browser2ide/protocol";
+import {
+  PROTOCOL_VERSION,
+  type InspectMessage,
+} from "@browser2ide/protocol";
 import { createPresenterRuntime } from "../src/presenter/runtime.js";
 import { SourcePluginRegistry } from "../src/sourcePlugins/registry.js";
 
@@ -173,7 +176,7 @@ function inspectMessageWithCustomFact(): InspectMessage {
 
 function inspect(targets: InspectMessage["targets"]): InspectMessage {
   return {
-    protocolVersion: 2,
+    protocolVersion: PROTOCOL_VERSION,
     type: "inspect",
     messageId: "inspect-1",
     sessionId: "session-1",
