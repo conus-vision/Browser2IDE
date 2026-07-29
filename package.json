@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "pnpm -r build",
-    "test": "pnpm -r test",
+    "build": "pnpm -r --workspace-concurrency=1 build",
+    "test": "pnpm -r --workspace-concurrency=1 test",
     "test:integration": "pnpm --filter browser2ide-vscode test:integration",
-    "typecheck": "pnpm -r typecheck",
-    "lint": "pnpm -r lint"
+    "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
+    "lint": "pnpm -r --workspace-concurrency=1 lint"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
