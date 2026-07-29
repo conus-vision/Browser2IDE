@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   BrowserBridgeClient,
   InspectPublisher,
+  type BrowserBridgeClientOptions,
   type BrowserCredentials,
 } from "../src/bridgeClient.js";
 
@@ -124,6 +125,18 @@ describe("BrowserBridgeClient", () => {
     expect(harness.credentials).toEqual([CREDENTIALS]);
   });
 
+  it("lets an external owner disable automatic reconnect timing", () => {
+    const harness = createHarness({ autoReconnect: false });
+
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    authenticate(harness.sockets[0]);
+    harness.sockets[0].serverClose();
+
+    expect(harness.states.at(-1)).toBe("disconnected");
+    expect(harness.delays).toEqual([]);
+  });
+
   it("reuses complete credentials, then sends inspect and answers ping", () => {
     const harness = createHarness();
 
@@ -155,6 +168,43 @@ describe("BrowserBridgeClient", () => {
     expect(JSON.parse(harness.sockets[0].sent[2])).toMatchObject({
       type: "pong",
       pingMessageId: "ping-1",
+    });
+  });
+
+  it("uses a per-inspect source without changing the connection source", () => {
+    const harness = createHarness({
+      source: {
+        role: "browser",
+        id: "window-10",
+        label: "Firefox window 10",
+        metadata: { windowId: 10 },
+      },
+    });
+
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].open();
+    expect(JSON.parse(harness.sockets[0].sent[0])).toMatchObject({
+      type: "hello",
+      source: {
+        role: "browser",
+        id: "window-10",
+        label: "Firefox window 10",
+        metadata: { windowId: 10 },
+      },
+    });
+    authenticate(harness.sockets[0]);
+
+    expect(harness.client.sendInspect(selection(".card"), "panel-101")).toBe(
+      true,
+    );
+    expect(JSON.parse(harness.sockets[0].sent[1])).toMatchObject({
+      type: "inspect",
+      source: {
+        role: "browser",
+        id: "panel-101",
+        label: "Firefox window 10",
+        metadata: { windowId: 10 },
+      },
     });
   });
 
@@ -351,7 +401,9 @@ describe("InspectPublisher", () => {
   });
 });
 
-function createHarness() {
+function createHarness(
+  options: Pick<BrowserBridgeClientOptions, "autoReconnect" | "source"> = {},
+) {
   const sockets: FakeSocket[] = [];
   const states: string[] = [];
   const errors: Error[] = [];
@@ -380,6 +432,7 @@ function createHarness() {
     onCredentials: (value) => credentials.push(value),
     onStateChanged: (state) => states.push(state),
     onError: (error) => errors.push(error),
+    ...options,
   });
 
   return {

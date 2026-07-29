@@ -6,6 +6,7 @@ import {
   InspectMode,
   parseLinkCode,
   registerDevtoolsPanel,
+  WindowConnectionCoordinator,
 } from "../src/index.js";
 
 describe("browser extension core exports", () => {
@@ -16,5 +17,6 @@ describe("browser extension core exports", () => {
     expect(InspectMode).toBeTypeOf("function");
     expect(parseLinkCode).toBeTypeOf("function");
     expect(registerDevtoolsPanel).toBeTypeOf("function");
+    expect(WindowConnectionCoordinator).toBeTypeOf("function");
   });
 });

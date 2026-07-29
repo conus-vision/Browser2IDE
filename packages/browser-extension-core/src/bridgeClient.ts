@@ -1,6 +1,8 @@
 import {
   Browser2IdeMessageSchema,
+  ClientSourceSchema,
   PROTOCOL_VERSION,
+  type ClientSource,
   type InspectMessage,
   type ProtocolErrorCode,
 } from "@browser2ide/protocol";
@@ -42,6 +44,8 @@ export interface BrowserSocket {
 export interface BrowserBridgeClientOptions {
   readonly url: string;
   readonly sourceId: string;
+  readonly source?: ClientSource;
+  readonly autoReconnect?: boolean;
   readonly socketFactory?: (url: string) => BrowserSocket;
   readonly messageId?: () => string;
   readonly now?: () => Date;
@@ -68,6 +72,7 @@ export class BrowserBridgeClient {
   private readonly socketFactory: (url: string) => BrowserSocket;
   private readonly messageId: () => string;
   private readonly now: () => Date;
+  private readonly connectionSource: ClientSource;
   private readonly scheduleTimer: NonNullable<BrowserBridgeClientOptions["setTimeout"]>;
   private readonly cancelTimer: NonNullable<BrowserBridgeClientOptions["clearTimeout"]>;
   private socket: BrowserSocket | undefined;
@@ -85,6 +90,13 @@ export class BrowserBridgeClient {
       options.socketFactory ?? ((url) => new WebSocket(url) as BrowserSocket);
     this.messageId = options.messageId ?? defaultMessageId;
     this.now = options.now ?? (() => new Date());
+    this.connectionSource = ClientSourceSchema.parse(
+      options.source ?? {
+        role: "browser",
+        id: options.sourceId,
+        metadata: {},
+      },
+    );
     this.scheduleTimer = options.setTimeout ?? setTimeout;
     this.cancelTimer = options.clearTimeout ?? clearTimeout;
   }
@@ -130,7 +142,10 @@ export class BrowserBridgeClient {
     this.disconnect();
   }
 
-  public sendInspect(payload: InspectPayload): boolean {
+  public sendInspect(
+    payload: InspectPayload,
+    sourceId = this.connectionSource.id,
+  ): boolean {
     if (
       !this.socket ||
       !this.credentials ||
@@ -145,9 +160,8 @@ export class BrowserBridgeClient {
       messageId: this.messageId(),
       sessionId: this.credentials.sessionId,
       source: {
-        role: "browser",
-        id: this.options.sourceId,
-        metadata: {},
+        ...this.connectionSource,
+        id: sourceId,
       },
       targets: payload.targets,
       context: payload.context,
@@ -207,11 +221,7 @@ export class BrowserBridgeClient {
           type: "linkRequest",
           messageId: this.messageId(),
           pin: intent.pin,
-          source: {
-            role: "browser",
-            id: this.options.sourceId,
-            metadata: {},
-          },
+          source: this.connectionSource,
           metadata: {},
         });
         return;
@@ -341,11 +351,7 @@ export class BrowserBridgeClient {
       sessionId: this.credentials.sessionId,
       authToken: this.credentials.authToken,
       bridgeInstanceId: this.credentials.bridgeInstanceId,
-      source: {
-        role: "browser",
-        id: this.options.sourceId,
-        metadata: {},
-      },
+      source: this.connectionSource,
       capabilities: ["inspect", "link"],
       metadata: {},
     });
@@ -392,6 +398,10 @@ export class BrowserBridgeClient {
     this.authenticated = false;
     this.detach(socket);
     if (!this.reconnectEnabled || !this.connectionIntent) {
+      this.setState("disconnected");
+      return;
+    }
+    if (this.options.autoReconnect === false) {
       this.setState("disconnected");
       return;
     }

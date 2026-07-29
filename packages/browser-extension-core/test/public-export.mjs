@@ -6,6 +6,7 @@ import {
   InspectMode,
   parseLinkCode,
   registerDevtoolsPanel,
+  WindowConnectionCoordinator,
 } from "@browser2ide/browser-extension-core";
 
 assert.equal(typeof BrowserBridgeClient, "function");
@@ -14,3 +15,4 @@ assert.equal(typeof createInspectPayload, "function");
 assert.equal(typeof InspectMode, "function");
 assert.equal(typeof parseLinkCode, "function");
 assert.equal(typeof registerDevtoolsPanel, "function");
+assert.equal(typeof WindowConnectionCoordinator, "function");

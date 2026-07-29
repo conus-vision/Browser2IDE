@@ -70,3 +70,11 @@ export type {
   PanelLinkDetails,
 } from "./panelDiagnostics.js";
 export { PanelInspectController } from "./panelInspectController.js";
+export { WindowConnectionCoordinator } from "./windowConnectionCoordinator.js";
+export type {
+  BrowserWindowConnectionState,
+  PanelRegistration,
+  WindowConnectionClient,
+  WindowConnectionClientFactory,
+  WindowConnectionCoordinatorOptions,
+} from "./windowConnectionCoordinator.js";
