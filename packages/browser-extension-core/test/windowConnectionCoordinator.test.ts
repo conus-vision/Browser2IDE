@@ -244,6 +244,45 @@ describe("WindowConnectionCoordinator", () => {
     expect(() => harness.timers.runNext()).toThrow("Expected a pending timer");
   });
 
+  it("does not install a stale reconnect timer after a state callback relinks", async () => {
+    const harness = coordinatorHarness();
+    let relinking: Promise<void> | undefined;
+    let didRelink = false;
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+      onStateChanged: (state) => {
+        if (state === "reconnecting" && !didRelink) {
+          didRelink = true;
+          relinking = harness.coordinator.linkWindow(
+            10,
+            "4873608",
+            browserSource("window-10-replacement"),
+          );
+        }
+      },
+    });
+    const original = await harness.link(10, "4873507");
+    await harness.authenticate(original, windowLink());
+
+    original.emitState("disconnected");
+    await relinking;
+    await harness.flush();
+
+    expect(harness.createdClients).toHaveLength(2);
+    expect(harness.timers.pendingCount()).toBe(0);
+    const replacement = harness.createdClients[1];
+
+    replacement.emitState("disconnected");
+
+    expect(harness.coordinator.state(10)).toBe("reconnecting");
+    expect(harness.timers.pendingCount()).toBe(1);
+    expect(harness.timers.delays).toEqual([1_000]);
+    harness.timers.runNext();
+    expect(replacement.linkCalls).toEqual(["08", "08"]);
+  });
+
   it("revokes and deletes links on unlink and browser-window removal", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.registerPanel({
@@ -341,6 +380,64 @@ describe("WindowConnectionCoordinator", () => {
     expect(
       harness.coordinator.publishInspect(10, "panel-101", payload),
     ).toBe(false);
+  });
+
+  it("snapshots registration identity, metadata, callback, and disposal", async () => {
+    const harness = coordinatorHarness();
+    const originalStates: string[] = [];
+    const replacementStates: string[] = [];
+    const registration = {
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+      onStateChanged: (state: string) => originalStates.push(state),
+    };
+    const handle = harness.coordinator.registerPanel(registration);
+    originalStates.length = 0;
+
+    registration.windowId = 20;
+    registration.tabId = 201;
+    registration.sourceId = "panel-201";
+    registration.onStateChanged = (state) => replacementStates.push(state);
+
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+    expect(originalStates).toContain("linking");
+    expect(originalStates).toContain("linked");
+    expect(replacementStates).toEqual([]);
+
+    expect(
+      harness.coordinator.publishInspect(
+        10,
+        "panel-101",
+        selection(".stable-registration"),
+      ),
+    ).toBe(true);
+    expect(client.inspectCalls.at(-1)).toMatchObject({
+      sourceId: "panel-101",
+      payload: {
+        metadata: {
+          browserWindowId: 10,
+          tabId: 101,
+        },
+      },
+    });
+
+    handle.dispose();
+    expect(client.disconnectCalls).toBe(1);
+
+    const reusedStates: string[] = [];
+    const reused = harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+      onStateChanged: (state) => reusedStates.push(state),
+    });
+    await harness.flush();
+
+    expect(harness.createdClients).toHaveLength(2);
+    expect(reusedStates).toEqual(["offline", "linking"]);
+    reused.dispose();
   });
 
   it("does not connect a saved mapping whose load finishes after unlink", async () => {

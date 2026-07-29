@@ -199,20 +199,24 @@ export class WindowConnectionCoordinator {
   }
 
   public registerPanel(registration: PanelRegistration): { dispose(): void } {
+    if (this.disposed) {
+      return inertRegistrationHandle;
+    }
+
+    const snapshot = snapshotRegistration(registration);
     if (
-      this.disposed ||
-      !isValidRegistration(registration) ||
-      this.sourceOwners.has(registration.sourceId) ||
-      this.tabOwners.has(registration.tabId)
+      !snapshot ||
+      this.sourceOwners.has(snapshot.sourceId) ||
+      this.tabOwners.has(snapshot.tabId)
     ) {
       return inertRegistrationHandle;
     }
 
-    const record = this.recordFor(registration.windowId);
-    const entry: RegistrationEntry = { registration };
-    record.registrations.set(registration.sourceId, entry);
-    this.sourceOwners.set(registration.sourceId, entry);
-    this.tabOwners.set(registration.tabId, entry);
+    const record = this.recordFor(snapshot.windowId);
+    const entry: RegistrationEntry = { registration: snapshot };
+    record.registrations.set(snapshot.sourceId, entry);
+    this.sourceOwners.set(snapshot.sourceId, entry);
+    this.tabOwners.set(snapshot.tabId, entry);
     notifyRegistration(entry, record.state);
 
     if (record.registrations.size === 1) {
@@ -630,18 +634,15 @@ export class WindowConnectionCoordinator {
     generation: number,
     token: object | undefined,
   ): void {
-    if (
-      !token ||
-      record.reconnectTimer !== undefined ||
-      record.registrations.size === 0 ||
-      !this.hasReconnectIntent(record) ||
-      !record.client ||
-      !this.isCurrentToken(record, generation, token)
-    ) {
+    if (!token || !this.canScheduleReconnect(record, generation, token)) {
       return;
     }
 
     this.setState(record, "reconnecting");
+    if (!token || !this.canScheduleReconnect(record, generation, token)) {
+      return;
+    }
+
     const delay = Math.min(
       RECONNECT_BASE_DELAY_MS * 2 ** record.reconnectAttempts,
       RECONNECT_MAX_DELAY_MS,
@@ -668,6 +669,20 @@ export class WindowConnectionCoordinator {
         this.scheduleReconnect(record, generation, token);
       }
     }, delay);
+  }
+
+  private canScheduleReconnect(
+    record: WindowRecord,
+    generation: number,
+    token: object,
+  ): boolean {
+    return (
+      record.reconnectTimer === undefined &&
+      record.registrations.size > 0 &&
+      this.hasReconnectIntent(record) &&
+      record.client !== undefined &&
+      this.isCurrentToken(record, generation, token)
+    );
   }
 
   private disposeRegistration(
@@ -869,7 +884,9 @@ function isValidRegistration(
     !isWindowId(registration.windowId) ||
     !isWindowId(registration.tabId) ||
     typeof registration.sourceId !== "string" ||
-    registration.sourceId.trim().length === 0
+    registration.sourceId.trim().length === 0 ||
+    (registration.onStateChanged !== undefined &&
+      typeof registration.onStateChanged !== "function")
   ) {
     return false;
   }
@@ -878,6 +895,22 @@ function isValidRegistration(
     id: registration.sourceId,
     metadata: {},
   }).success;
+}
+
+function snapshotRegistration(
+  registration: PanelRegistration,
+): PanelRegistration | undefined {
+  try {
+    const snapshot: PanelRegistration = {
+      windowId: registration.windowId,
+      tabId: registration.tabId,
+      sourceId: registration.sourceId,
+      onStateChanged: registration.onStateChanged,
+    };
+    return isValidRegistration(snapshot) ? Object.freeze(snapshot) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function assertWindowId(windowId: number): void {
