@@ -1,4 +1,3 @@
-import { once } from "node:events";
 import { describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import {
@@ -17,6 +16,10 @@ const SESSION_ID = "session-1";
 const INSTANCE_ID = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 const OTHER_INSTANCE_ID = "7bf95c9f-cf72-4831-bdf0-2a248253c617";
 const AUTH_TOKEN = "a".repeat(64);
+const TEST_PORT_MIN = 20_000;
+const TEST_PORT_MAX = 39_999;
+let nextTestPort =
+  TEST_PORT_MIN + (process.pid % (TEST_PORT_MAX - TEST_PORT_MIN + 1));
 
 describe("inspect-card fixture", () => {
   it("builds a valid inspect message with the required card facts", () => {
@@ -333,12 +336,11 @@ interface BridgeHarness {
 }
 
 async function createBridgeHarness(): Promise<BridgeHarness> {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  await once(server, "listening");
+  const server = await createTestServer();
   const address = server.address();
-  if (!address || typeof address === "string" || address.port < 10_000) {
+  if (!address || typeof address === "string") {
     await closeServer(server);
-    throw new Error("Expected a five-digit ephemeral test port");
+    throw new Error("Expected a TCP test server address");
   }
 
   const queued: Record<string, unknown>[] = [];
@@ -385,6 +387,51 @@ async function createBridgeHarness(): Promise<BridgeHarness> {
     },
     close: () => closeServer(server),
   };
+}
+
+async function createTestServer(): Promise<WebSocketServer> {
+  const attempts = TEST_PORT_MAX - TEST_PORT_MIN + 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const port = nextTestPort;
+    nextTestPort = port === TEST_PORT_MAX ? TEST_PORT_MIN : port + 1;
+    const server = new WebSocketServer({ host: "127.0.0.1", port });
+    try {
+      await waitForServer(server);
+      return server;
+    } catch (error) {
+      if (!isAddressInUse(error)) {
+        throw error;
+      }
+    }
+  }
+  throw new Error("No five-digit simulator test port is available");
+}
+
+function waitForServer(server: WebSocketServer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onListening = (): void => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = (): void => {
+      server.off("listening", onListening);
+      server.off("error", onError);
+    };
+    server.once("listening", onListening);
+    server.once("error", onError);
+  });
+}
+
+function isAddressInUse(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      (error as NodeJS.ErrnoException).code === "EADDRINUSE",
+  );
 }
 
 function linkAccepted() {
