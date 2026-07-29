@@ -22,16 +22,13 @@ describe("collectCssFacts", () => {
           {
             href: "http://localhost:3000/dist/app.css",
             cssRules: [
-              {
-                media: { conditionText: "(min-width: 40rem)" },
-                cssRules: [
-                  styleRule(".card", {
-                    display: "flex",
-                    padding: "1rem !important",
-                  }),
-                  styleRule(":invalid(", { color: "red" }),
-                ],
-              },
+              mediaRule("(min-width: 40rem)", [
+                styleRule(".card", {
+                  display: "flex",
+                  padding: "1rem !important",
+                }),
+                styleRule(":invalid(", { color: "red" }),
+              ]),
             ],
           },
         ],
@@ -131,12 +128,9 @@ describe("collectCssFacts", () => {
               {
                 ...styleRule(".card", {}),
                 cssRules: [
-                  {
-                    media: { conditionText: "(width >= 40rem)" },
-                    cssRules: [
-                      styleRule("& .icon", { display: "block" }),
-                    ],
-                  },
+                  mediaRule("(width >= 40rem)", [
+                    styleRule("& .icon", { display: "block" }),
+                  ]),
                 ],
               },
             ],
@@ -261,10 +255,9 @@ describe("collectCssFacts", () => {
               {
                 ...styleRule(".card", {}),
                 cssRules: [
-                  {
-                    media: { conditionText: "(prefers-color-scheme: dark)" },
-                    cssRules: [{ style: nestedDeclarations }],
-                  },
+                  mediaRule("(prefers-color-scheme: dark)", [
+                    { style: nestedDeclarations },
+                  ]),
                 ],
               },
             ],
@@ -324,6 +317,28 @@ describe("collectCssFacts", () => {
 
     expect(matchedSelectors).toEqual([parentSelector]);
     expect(result.facts).toEqual([]);
+  });
+
+  it("does not report supports conditions as media metadata", () => {
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/supports.css",
+            cssRules: [
+              {
+                conditionText: "(display: grid)",
+                cssRules: [styleRule(".card", { display: "grid" })],
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts[0]?.metadata).not.toHaveProperty("media");
   });
 
   it("does not let a trailing escape cross the resolved selector limit", () => {
@@ -775,16 +790,22 @@ function nestedRule(depth: number, oversizedMetadata: boolean): unknown {
   }
 
   for (let index = 0; index < depth; index += 1) {
-    nested = {
-      media: {
-        conditionText: `screen-${index}${"x".repeat(
-          INSPECT_LIMITS.valueLength,
-        )}`,
-      },
-      cssRules: [nested],
-    };
+    nested = mediaRule(
+      `screen-${index}${"x".repeat(
+        INSPECT_LIMITS.valueLength,
+      )}`,
+      [nested],
+    );
   }
   return nested;
+}
+
+function mediaRule(conditionText: string, cssRules: readonly unknown[]) {
+  return {
+    conditionText,
+    media: { mediaText: conditionText },
+    cssRules,
+  };
 }
 
 function exactLengthUrl(): string {

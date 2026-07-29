@@ -36,7 +36,8 @@ interface NestedDeclarationsSource {
 
 export interface GroupRuleSource {
   readonly cssRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
-  readonly media?: { readonly conditionText: string };
+  readonly conditionText?: string;
+  readonly media?: { readonly mediaText: string };
 }
 
 export type RuleSource = StyleRuleSource | GroupRuleSource | object;
@@ -235,10 +236,7 @@ function collectRules(
     if (depth >= INSPECT_LIMITS.cssRuleDepth) {
       continue;
     }
-    const condition = truncate(
-      rule.media?.conditionText ?? "",
-      INSPECT_LIMITS.valueLength,
-    ).trim();
+    const condition = readMediaCondition(rule);
     const nextMedia =
       condition && media.length < INSPECT_LIMITS.mediaConditions
         ? [...media, condition]
@@ -516,6 +514,26 @@ function isStyleRule(rule: RuleSource): rule is StyleRuleSource {
 
 function isGroupRule(rule: RuleSource): rule is GroupRuleSource {
   return "cssRules" in rule;
+}
+
+function readMediaCondition(rule: GroupRuleSource): string {
+  try {
+    const media = rule.media;
+    if (
+      typeof media !== "object" ||
+      media === null ||
+      typeof media.mediaText !== "string"
+    ) {
+      return "";
+    }
+    const condition =
+      typeof rule.conditionText === "string"
+        ? rule.conditionText
+        : media.mediaText;
+    return truncate(condition, INSPECT_LIMITS.valueLength).trim();
+  } catch {
+    return "";
+  }
 }
 
 function isNestedDeclarationsRule(

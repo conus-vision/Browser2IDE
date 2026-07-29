@@ -151,12 +151,12 @@ describe("createInspectPayload", () => {
       },
     };
     for (let index = 0; index < INSPECT_LIMITS.mediaConditions; index += 1) {
+      const conditionText = `media-${index}-${"m".repeat(
+        INSPECT_LIMITS.valueLength,
+      )}`;
       cssRule = {
-        media: {
-          conditionText: `media-${index}-${"m".repeat(
-            INSPECT_LIMITS.valueLength,
-          )}`,
-        },
+        conditionText,
+        media: { mediaText: conditionText },
         cssRules: [cssRule],
       };
     }
