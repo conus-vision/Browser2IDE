@@ -4,10 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter @browser2ide/protocol build && pnpm run typecheck && node ./esbuild.mjs",
-    "test": "pnpm --filter @browser2ide/protocol build && vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "tsc --noEmit -p tsconfig.json"
+    "build:deps": "pnpm --filter @browser2ide/protocol build && pnpm --filter @browser2ide/browser-extension-core build",
+    "build": "pnpm run build:deps && tsc --noEmit -p tsconfig.json && node ./esbuild.mjs",
+    "test": "pnpm run build:deps && vitest run",
+    "typecheck": "pnpm run build:deps && tsc --noEmit -p tsconfig.json",
+    "lint": "pnpm run build:deps && tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@browser2ide/browser-extension-core": "workspace:*",
