@@ -1,9 +1,4 @@
 export interface BackgroundRouterApi {
-  executeScript(details: {
-    target: { tabId: number };
-    files: string[];
-  }): Promise<unknown>;
-  sendTabMessage(tabId: number, message: unknown): Promise<unknown>;
   sendRuntimeMessage(message: unknown): Promise<unknown>;
 }
 
@@ -18,20 +13,6 @@ export function createBackgroundRouter(api: BackgroundRouterApi) {
   ): Promise<{ ok: true } | undefined> => {
     if (!isRecord(message) || typeof message.type !== "string") {
       return undefined;
-    }
-    if (
-      (message.type === "enableInspectMode" ||
-        message.type === "disableInspectMode") &&
-      typeof message.tabId === "number"
-    ) {
-      if (message.type === "enableInspectMode") {
-        await api.executeScript({
-          target: { tabId: message.tabId },
-          files: ["dist/contentScript.js"],
-        });
-      }
-      await api.sendTabMessage(message.tabId, { type: message.type });
-      return { ok: true };
     }
     if (message.type === "elementSelected" && sender.tabId !== undefined) {
       await api.sendRuntimeMessage({

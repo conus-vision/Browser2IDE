@@ -18,6 +18,8 @@ import {
 } from "./panelState.js";
 import { PanelDiagnostics } from "./panelDiagnostics.js";
 import { PanelInspectController } from "./panelInspectController.js";
+import { INSPECT_PORT_NAME } from "./inspectPortProtocol.js";
+import { PanelInspectTransport } from "./panelInspectTransport.js";
 import {
   PanelLifecycleCoordinator,
   type PanelLifecycleContext,
@@ -59,8 +61,11 @@ let client: BrowserBridgeClient | undefined;
 let connected = false;
 let connectionIntent: ConnectionIntent = "none";
 const diagnostics = new PanelDiagnostics();
+const inspectTransport = new PanelInspectTransport(
+  browser.runtime.connect({ name: INSPECT_PORT_NAME }),
+);
 const inspectController = new PanelInspectController((message) =>
-  browser.runtime.sendMessage(message),
+  inspectTransport.send(message),
 );
 const lifecycle = new PanelLifecycleCoordinator(updateControls);
 
@@ -569,6 +574,7 @@ function dispose(): void {
   lifecycle.dispose();
   browser.runtime.onMessage.removeListener(handleRuntimeMessage);
   void inspectController.disable().catch(() => undefined);
+  inspectTransport.dispose();
   inspectToggle.checked = false;
   publisher.dispose();
   const activeClient = client;

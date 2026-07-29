@@ -2,38 +2,31 @@ import { describe, expect, it } from "vitest";
 import { createBackgroundRouter } from "../src/backgroundRouter.js";
 
 describe("background routing", () => {
-  it("injects and toggles inspect mode for the requested tab", async () => {
+  it("does not accept inspect commands outside an owning port", async () => {
     const calls: unknown[] = [];
     const route = createBackgroundRouter({
-      async executeScript(details) {
-        calls.push(["inject", details]);
-      },
-      async sendTabMessage(tabId, message) {
-        calls.push(["tab", tabId, message]);
-      },
       async sendRuntimeMessage(message) {
         calls.push(["runtime", message]);
       },
     });
 
-    await route({ type: "enableInspectMode", tabId: 17 }, {});
-    await route({ type: "disableInspectMode", tabId: 17 }, {});
+    const enabled = await route(
+      { type: "enableInspectMode", tabId: 17 },
+      {},
+    );
+    const disabled = await route(
+      { type: "disableInspectMode", tabId: 17 },
+      {},
+    );
 
-    expect(calls).toEqual([
-      [
-        "inject",
-        { target: { tabId: 17 }, files: ["dist/contentScript.js"] },
-      ],
-      ["tab", 17, { type: "enableInspectMode" }],
-      ["tab", 17, { type: "disableInspectMode" }],
-    ]);
+    expect(enabled).toBeUndefined();
+    expect(disabled).toBeUndefined();
+    expect(calls).toEqual([]);
   });
 
   it("forwards selected payloads using the sender tab identity", async () => {
     const forwarded: unknown[] = [];
     const route = createBackgroundRouter({
-      async executeScript() {},
-      async sendTabMessage() {},
       async sendRuntimeMessage(message) {
         forwarded.push(message);
       },

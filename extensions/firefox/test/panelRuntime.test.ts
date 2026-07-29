@@ -20,11 +20,15 @@ type RuntimeListener = (message: unknown) => void;
 
 const harness = vi.hoisted(() => ({
   clients: [] as FakeClient[],
+  ports: [] as TestRuntimePort[],
   runtimeListeners: [] as RuntimeListener[],
   storageGet: async (_keys: string[]): Promise<Record<string, unknown>> => ({}),
   storageSet: async (_values: Record<string, unknown>): Promise<void> => {},
   storageRemove: async (_keys: string[]): Promise<void> => {},
   runtimeSend: async (_message: unknown): Promise<unknown> => undefined,
+  runtimeConnect: (_options: { name: string }): TestRuntimePort => {
+    throw new Error("Runtime connect is not configured");
+  },
 }));
 
 vi.mock("webextension-polyfill", () => ({
@@ -38,6 +42,8 @@ vi.mock("webextension-polyfill", () => ({
     },
     runtime: {
       sendMessage: (message: unknown) => harness.runtimeSend(message),
+      connect: (options: { name: string }) =>
+        harness.runtimeConnect(options),
       onMessage: {
         addListener: (listener: RuntimeListener) => {
           harness.runtimeListeners.push(listener);
@@ -136,11 +142,19 @@ describe("Firefox panel lifecycle", () => {
   beforeEach(() => {
     vi.resetModules();
     harness.clients.length = 0;
+    harness.ports.length = 0;
     harness.runtimeListeners.length = 0;
     harness.storageGet = async () => ({});
     harness.storageSet = async () => {};
     harness.storageRemove = async () => {};
     harness.runtimeSend = async () => undefined;
+    harness.runtimeConnect = ({ name }) => {
+      const port = new TestRuntimePort(name, (message) =>
+        harness.runtimeSend(message),
+      );
+      harness.ports.push(port);
+      return port;
+    };
     dom = installFakeDom();
   });
 
@@ -386,7 +400,7 @@ describe("Firefox panel lifecycle", () => {
     expect(dom.element("inspect-mode").checked).toBe(false);
   });
 
-  it("disables inspection after unload during a pending enable", async () => {
+  it("disconnects its inspect port on unload during a pending enable", async () => {
     const messages: unknown[] = [];
     const enable = deferred<unknown>();
     harness.runtimeSend = (message) => {
@@ -410,13 +424,15 @@ describe("Firefox panel lifecycle", () => {
     dom.element("inspect-mode").dispatch("change");
     await flushAsync();
     dom.window.dispatch("unload");
+
+    expect(harness.ports[0]?.disconnected).toBe(true);
+
     enable.resolve(undefined);
     await flushAsync();
 
     expect(messageTypes(messages)).toEqual([
       "browser2ide.panelReady",
       "enableInspectMode",
-      "disableInspectMode",
     ]);
     expect(dom.element("inspect-mode").checked).toBe(false);
   });
@@ -481,6 +497,82 @@ class FakeWindow {
   public dispatch(type: string): void {
     for (const listener of this.listeners.get(type) ?? []) {
       listener();
+    }
+  }
+}
+
+class TestRuntimePort {
+  public disconnected = false;
+  public readonly onMessage = new FakePortEvent<
+    (message: unknown) => void
+  >();
+  public readonly onDisconnect = new FakePortEvent<() => void>();
+
+  public constructor(
+    public readonly name: string,
+    private readonly sendMessage: (message: unknown) => Promise<unknown>,
+  ) {}
+
+  public postMessage(message: unknown): void {
+    if (this.disconnected) {
+      throw new Error("Port is disconnected");
+    }
+    if (
+      !isRecord(message) ||
+      message.type !== "browser2ide.inspect.setEnabled" ||
+      typeof message.requestId !== "string" ||
+      typeof message.tabId !== "number" ||
+      typeof message.enabled !== "boolean"
+    ) {
+      return;
+    }
+
+    const requestId = message.requestId;
+    void this.sendMessage({
+      type: message.enabled
+        ? "enableInspectMode"
+        : "disableInspectMode",
+      tabId: message.tabId,
+    }).then(
+      () =>
+        this.onMessage.emit({
+          type: "browser2ide.inspect.result",
+          requestId,
+          ok: true,
+        }),
+      () =>
+        this.onMessage.emit({
+          type: "browser2ide.inspect.result",
+          requestId,
+          ok: false,
+          error: "Inspect mode update failed",
+        }),
+    );
+  }
+
+  public disconnect(): void {
+    if (this.disconnected) {
+      return;
+    }
+    this.disconnected = true;
+    this.onDisconnect.emit();
+  }
+}
+
+class FakePortEvent<T extends (...args: never[]) => void> {
+  private readonly listeners = new Set<T>();
+
+  public addListener(listener: T): void {
+    this.listeners.add(listener);
+  }
+
+  public removeListener(listener: T): void {
+    this.listeners.delete(listener);
+  }
+
+  public emit(...args: Parameters<T>): void {
+    for (const listener of this.listeners) {
+      listener(...args);
     }
   }
 }
