@@ -31,6 +31,45 @@ describe("BrowserWindowLinkStore", () => {
     });
   });
 
+  it("treats an inherited storage key as absent", async () => {
+    const key = "browser2ide.windowLink.10";
+    const removals: string[] = [];
+    const storage: SessionStorage = {
+      async get() {
+        return Object.create({ [key]: link() }) as Record<string, unknown>;
+      },
+      async set() {},
+      async remove(removedKey) {
+        removals.push(removedKey);
+      },
+    };
+    const store = new BrowserWindowLinkStore(storage);
+
+    await expect(store.load(10)).resolves.toBeUndefined();
+    expect(removals).toEqual([]);
+  });
+
+  it("removes an own storage record whose link fields are inherited", async () => {
+    const key = "browser2ide.windowLink.10";
+    const storage = new MemorySessionStorage({
+      [key]: Object.create(link()) as BrowserWindowLink,
+    });
+    const store = new BrowserWindowLinkStore(storage);
+
+    await expect(store.load(10)).resolves.toBeUndefined();
+    expect(storage.removals).toEqual([key]);
+    expect(storage.values[key]).toBeUndefined();
+  });
+
+  it("rejects a saved link whose fields are inherited", async () => {
+    const storage = new MemorySessionStorage();
+    const store = new BrowserWindowLinkStore(storage);
+    const forged = Object.create(link()) as BrowserWindowLink;
+
+    await expect(store.save(10, forged)).rejects.toThrow();
+    expect(storage.values).toEqual({});
+  });
+
   it("never persists the PIN or raw link code", async () => {
     const storage = new MemorySessionStorage();
     const store = new BrowserWindowLinkStore(storage);
@@ -126,7 +165,7 @@ class MemorySessionStorage implements SessionStorage {
   }
 
   public async get(key: string): Promise<Record<string, unknown>> {
-    return { [key]: this.values[key] };
+    return Object.hasOwn(this.values, key) ? { [key]: this.values[key] } : {};
   }
 
   public async set(values: Record<string, unknown>): Promise<void> {

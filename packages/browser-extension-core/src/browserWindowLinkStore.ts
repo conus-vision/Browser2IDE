@@ -15,6 +15,13 @@ export interface SessionStorage {
 }
 
 const browserWindowIdSchema = z.number().int().nonnegative().safe();
+const browserWindowLinkFields = [
+  "url",
+  "port",
+  "sessionId",
+  "bridgeInstanceId",
+  "authToken",
+] as const;
 const browserWindowLinkSchema = z
   .object({
     url: z.string(),
@@ -35,8 +42,13 @@ export class BrowserWindowLinkStore {
   public async load(windowId: number): Promise<BrowserWindowLink | undefined> {
     const key = storageKey(windowId);
     const stored = await this.storage.get(key);
+    if (!Object.hasOwn(stored, key)) {
+      return undefined;
+    }
+
     const value = stored[key];
-    if (value === undefined) {
+    if (!hasOwnLinkFields(value)) {
+      await this.storage.remove(key);
       return undefined;
     }
 
@@ -50,6 +62,9 @@ export class BrowserWindowLinkStore {
 
   public async save(windowId: number, link: BrowserWindowLink): Promise<void> {
     const key = storageKey(windowId);
+    if (!hasOwnLinkFields(link)) {
+      throw new Error("Browser window link fields must be own properties");
+    }
     const parsed = browserWindowLinkSchema.parse(link);
     await this.storage.set({ [key]: parsed });
   }
@@ -61,6 +76,15 @@ export class BrowserWindowLinkStore {
 
 function storageKey(windowId: number): string {
   return `browser2ide.windowLink.${browserWindowIdSchema.parse(windowId)}`;
+}
+
+function hasOwnLinkFields(
+  value: unknown,
+): value is Record<(typeof browserWindowLinkFields)[number], unknown> {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return browserWindowLinkFields.every((field) => Object.hasOwn(value, field));
 }
 
 function loopbackUrl(port: number): string {
