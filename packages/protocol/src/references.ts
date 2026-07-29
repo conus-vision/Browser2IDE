@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { INSPECT_LIMITS } from "./limits.js";
 
 export const metadataSchema = z.record(z.string(), z.unknown());
 
@@ -6,7 +7,7 @@ const oneBasedPositionSchema = z.number().int().min(1);
 
 export const SourceLocationSchema = z
   .object({
-    uri: z.string().min(1),
+    uri: z.string().min(1).max(INSPECT_LIMITS.urlLength),
     line: oneBasedPositionSchema,
     column: oneBasedPositionSchema,
     endLine: oneBasedPositionSchema.optional(),
@@ -49,7 +50,7 @@ export const SourceReferenceSchema = z
   .object({
     kind: z.enum(["style-rule", "component", "template", "script", "unknown"]),
     relation: z.enum(["styles", "renders", "defines", "listens", "templates"]),
-    label: z.string(),
+    label: z.string().max(INSPECT_LIMITS.textLength),
     source: SourceLocationSchema,
     confidence: z.enum([
       "exact",

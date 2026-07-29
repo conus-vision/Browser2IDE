@@ -1,4 +1,5 @@
 export {
+  BRIDGE_MAX_PAYLOAD_BYTES,
   createBridgeServer,
   type BridgeServer,
   type BridgeServerOptions,

@@ -25,6 +25,8 @@ export interface BridgeServerOptions {
   readonly authenticator?: LinkAuthenticator;
   readonly registry?: ClientRegistry;
   readonly handshakeTimeoutMs?: number;
+  readonly heartbeatIntervalMs?: number;
+  readonly maxPayloadBytes?: number;
 }
 
 export interface BridgeServer {
@@ -52,6 +54,7 @@ type ClientCountListener = (counts: ClientCounts) => void;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 48_735;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+export const BRIDGE_MAX_PAYLOAD_BYTES = 1024 * 1024;
 
 export function createBridgeServer(
   options: BridgeServerOptions = {},
@@ -66,6 +69,24 @@ export function createBridgeServer(
     options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
   if (!Number.isFinite(handshakeTimeoutMs) || handshakeTimeoutMs <= 0) {
     throw new Error("Bridge handshake timeout must be a positive number");
+  }
+  const heartbeatIntervalMs = options.heartbeatIntervalMs;
+  if (
+    heartbeatIntervalMs !== undefined &&
+    (!Number.isFinite(heartbeatIntervalMs) || heartbeatIntervalMs <= 0)
+  ) {
+    throw new Error("Bridge heartbeat interval must be a positive number");
+  }
+  const maxPayloadBytes =
+    options.maxPayloadBytes ?? BRIDGE_MAX_PAYLOAD_BYTES;
+  if (
+    !Number.isInteger(maxPayloadBytes) ||
+    maxPayloadBytes <= 0 ||
+    maxPayloadBytes > BRIDGE_MAX_PAYLOAD_BYTES
+  ) {
+    throw new Error(
+      `Bridge max payload must be an integer from 1 to ${BRIDGE_MAX_PAYLOAD_BYTES} bytes`,
+    );
   }
 
   const defaultSessionId = options.sessionId ?? "default";
@@ -137,6 +158,7 @@ export function createBridgeServer(
         const nextServer = new WebSocketServer({
           host,
           port,
+          maxPayload: maxPayloadBytes,
           verifyClient: ({ origin }: { origin: string }) =>
             isAllowedWebSocketOrigin(origin),
         });
@@ -153,7 +175,14 @@ export function createBridgeServer(
             activeSockets.delete(socket);
             clearHandshakeTimer(socket);
           });
-          socket.on("error", () => connection.terminate());
+          socket.on("error", () => {
+            if (
+              socket.readyState !== socket.CLOSING &&
+              socket.readyState !== socket.CLOSED
+            ) {
+              connection.terminate();
+            }
+          });
           handleConnection(
             socket,
             connection,
@@ -176,7 +205,11 @@ export function createBridgeServer(
         }
 
         server = nextServer;
-        heartbeat = startHeartbeat(registry);
+        heartbeat = startHeartbeat(
+          registry,
+          heartbeatIntervalMs,
+          notifyClientCounts,
+        );
         startedSuccessfully = true;
       })();
 
@@ -404,6 +437,17 @@ function handleConnection(
       return;
     }
 
+    if (!matchesAuthenticatedIdentity(registered, message)) {
+      sendSocketError(
+        connection,
+        "protocol.invalidMessage",
+        "Message does not match protocol",
+        true,
+      );
+      closeConnection();
+      return;
+    }
+
     if (message.type === "unlink") {
       closing = true;
       clearHandshakeTimer();
@@ -433,6 +477,25 @@ function handleConnection(
     clearHandshakeTimer();
     removeRegistration();
   });
+}
+
+function matchesAuthenticatedIdentity(
+  client: RegisteredClient,
+  message: Browser2IdeMessage,
+): boolean {
+  if (message.type === "unlink") {
+    return message.sessionId === client.sessionId;
+  }
+
+  if (message.type === "inspect") {
+    return (
+      message.sessionId === client.sessionId &&
+      message.source.role === client.source.role &&
+      message.source.id === client.source.id
+    );
+  }
+
+  return true;
 }
 
 function handleLinkRequest(

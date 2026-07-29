@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { RuntimeFactSchema } from "@browser2ide/protocol";
+import {
+  INSPECT_LIMITS,
+  RuntimeFactSchema,
+} from "@browser2ide/protocol";
 import { collectCssFacts } from "../src/collectCssFacts.js";
 
 describe("collectCssFacts", () => {
@@ -98,7 +101,175 @@ describe("collectCssFacts", () => {
     ]);
     expect(result.facts[0].metadata.sourceUrl).toBe("inline-style://document/1");
   });
+
+  it("caps declaration traversal without allocating from style.length", () => {
+    let itemCalls = 0;
+    const result = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/large.css",
+            cssRules: [
+              {
+                selectorText: ".card",
+                cssText: ".card { color: red; }",
+                style: {
+                  length: Number.MAX_SAFE_INTEGER,
+                  item(index: number) {
+                    itemCalls += 1;
+                    return `--property-${index}`;
+                  },
+                  getPropertyValue: () => "value",
+                  getPropertyPriority: () => "",
+                },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(result.facts).toHaveLength(INSPECT_LIMITS.declarationsPerRule);
+    expect(itemCalls).toBe(INSPECT_LIMITS.declarationsPerRule);
+  });
+
+  it("stops matching rules as soon as the fact budget is exhausted", () => {
+    let matchCalls = 0;
+    let rulesRead = 0;
+    const rules = {
+      *[Symbol.iterator]() {
+        for (
+          let index = 0;
+          index < INSPECT_LIMITS.factsPerTarget + 1;
+          index += 1
+        ) {
+          rulesRead += 1;
+          yield styleRule(`.rule-${index}`, { color: "red" });
+        }
+      },
+    };
+    const result = collectCssFacts(
+      {
+        matches() {
+          matchCalls += 1;
+          return true;
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [{ href: "/app.css", cssRules: rules }],
+      },
+    );
+
+    expect(result.facts).toHaveLength(INSPECT_LIMITS.factsPerTarget);
+    expect(matchCalls).toBe(INSPECT_LIMITS.factsPerTarget);
+    expect(rulesRead).toBe(INSPECT_LIMITS.factsPerTarget);
+  });
+
+  it("bounds stylesheet and total rule traversal when no rules match", () => {
+    let stylesheetRuleMatches = 0;
+    const stylesheets = Array.from(
+      { length: INSPECT_LIMITS.stylesheets + 1 },
+      (_, index) => ({
+        href: `/sheet-${index}.css`,
+        cssRules: [styleRule(`.sheet-${index}`, { color: "red" })],
+      }),
+    );
+    collectCssFacts(
+      {
+        matches() {
+          stylesheetRuleMatches += 1;
+          return false;
+        },
+      },
+      { pageUrl: "http://localhost:3000/page", styleSheets: stylesheets },
+    );
+    expect(stylesheetRuleMatches).toBe(INSPECT_LIMITS.stylesheets);
+
+    let totalRuleMatches = 0;
+    const rules = Array.from(
+      { length: INSPECT_LIMITS.cssRules + 1 },
+      (_, index) => styleRule(`.rule-${index}`, { color: "red" }),
+    );
+    collectCssFacts(
+      {
+        matches() {
+          totalRuleMatches += 1;
+          return false;
+        },
+      },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [{ href: "/app.css", cssRules: rules }],
+      },
+    );
+    expect(totalRuleMatches).toBe(INSPECT_LIMITS.cssRules);
+  });
+
+  it("bounds nested traversal and page-controlled CSS metadata", () => {
+    const atLimit = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "u".repeat(INSPECT_LIMITS.urlLength + 1),
+            cssRules: [nestedRule(INSPECT_LIMITS.cssRuleDepth, true)],
+          },
+        ],
+      },
+    );
+    const fact = atLimit.facts[0];
+
+    expect(fact).toBeDefined();
+    expect(fact?.metadata.sourceUrl).toHaveLength(INSPECT_LIMITS.urlLength);
+    expect(fact?.metadata.cssText).toHaveLength(INSPECT_LIMITS.valueLength);
+    expect(fact?.metadata.media).toHaveLength(INSPECT_LIMITS.mediaConditions);
+    expect(RuntimeFactSchema.parse(fact)).toEqual(fact);
+
+    const beyondLimit = collectCssFacts(
+      { matches: () => true },
+      {
+        pageUrl: "http://localhost:3000/page",
+        styleSheets: [
+          {
+            href: "/deep.css",
+            cssRules: [nestedRule(INSPECT_LIMITS.cssRuleDepth + 1, false)],
+          },
+        ],
+      },
+    );
+    expect(beyondLimit.facts).toEqual([]);
+  });
 });
+
+function nestedRule(depth: number, oversizedMetadata: boolean): unknown {
+  let nested: unknown = styleRule(".card", {
+    color: "x".repeat(
+      oversizedMetadata ? INSPECT_LIMITS.valueLength + 1 : 1,
+    ),
+  });
+  if (oversizedMetadata) {
+    nested = {
+      ...(nested as object),
+      cssText: "x".repeat(INSPECT_LIMITS.valueLength + 1),
+    };
+  }
+
+  for (let index = 0; index < depth; index += 1) {
+    nested = {
+      media: {
+        conditionText: `screen-${index}${"x".repeat(
+          INSPECT_LIMITS.valueLength,
+        )}`,
+      },
+      cssRules: [nested],
+    };
+  }
+  return nested;
+}
 
 function styleRule(
   selectorText: string,

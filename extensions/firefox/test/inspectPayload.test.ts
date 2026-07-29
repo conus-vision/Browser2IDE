@@ -1,3 +1,8 @@
+import {
+  INSPECT_LIMITS,
+  InspectContextSchema,
+  InspectTargetSchema,
+} from "@browser2ide/protocol";
 import { describe, expect, it } from "vitest";
 import { createInspectPayload } from "../src/inspectPayload.js";
 import type { InspectableElement } from "../src/inspectMode.js";
@@ -65,6 +70,47 @@ describe("createInspectPayload", () => {
         reason: "Permission denied",
       },
     ]);
+  });
+
+  it("bounds inspect context and browser diagnostics while preserving both targets", () => {
+    const parent = element("main", "", ["layout"], null);
+    const selected = element("article", "", ["card"], parent);
+    const inaccessible = Array.from(
+      { length: INSPECT_LIMITS.inaccessibleStylesheets + 1 },
+      (_, index) => ({
+        href: `https://cdn.example/${index}/${"u".repeat(
+          INSPECT_LIMITS.urlLength,
+        )}`,
+        get cssRules(): never {
+          throw new Error("r".repeat(INSPECT_LIMITS.valueLength + 1));
+        },
+      }),
+    );
+    const location = {
+      href: "u".repeat(INSPECT_LIMITS.urlLength + 1),
+      pathname: `/${"p".repeat(INSPECT_LIMITS.routeLength)}`,
+      search: "?overflow=true",
+      hash: "#target",
+    };
+    const payload = createInspectPayload(
+      selected,
+      { pageUrl: location.href, styleSheets: inaccessible },
+      location,
+    );
+
+    expect(payload.targets.map((target) => target.role)).toEqual([
+      "selected",
+      "parent",
+    ]);
+    expect(payload.inaccessibleStylesheets).toHaveLength(
+      INSPECT_LIMITS.inaccessibleStylesheets,
+    );
+    expect(payload.context.url).toHaveLength(INSPECT_LIMITS.urlLength);
+    expect(payload.context.route).toHaveLength(INSPECT_LIMITS.routeLength);
+    for (const target of payload.targets) {
+      expect(InspectTargetSchema.parse(target)).toEqual(target);
+    }
+    expect(InspectContextSchema.parse(payload.context)).toEqual(payload.context);
   });
 });
 

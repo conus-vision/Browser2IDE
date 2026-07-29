@@ -6,7 +6,11 @@ import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import * as bridgeExports from "../src/index.js";
 import { LinkAuthenticator } from "../src/linkAuthenticator.js";
-import { createBridgeServer, type BridgeServer } from "../src/server.js";
+import {
+  BRIDGE_MAX_PAYLOAD_BYTES,
+  createBridgeServer,
+  type BridgeServer,
+} from "../src/server.js";
 
 const SESSION_ID = "session-1";
 const INSTANCE_ID = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
@@ -403,6 +407,35 @@ describe("bridge server link authentication", () => {
 });
 
 describe("bridge server client counts", () => {
+  it("reports browser removal after heartbeat eviction", async () => {
+    const authenticator = createAuthenticator();
+    const authToken = acceptedToken(authenticator);
+    const server = createBridgeServer({
+      port: 0,
+      authenticator,
+      heartbeatIntervalMs: 10,
+    });
+    const counts: Array<{ browser: number; ide: number }> = [];
+    server.onClientCountChanged((next) => counts.push(next));
+    await server.start();
+
+    try {
+      const socket = await connect(server.getUrl());
+      await expect(
+        sendJsonAndReceive(socket, hello(authToken)),
+      ).resolves.toMatchObject({ type: "authenticated" });
+
+      await eventually(() =>
+        expect(counts).toEqual([
+          { browser: 1, ide: 0 },
+          { browser: 0, ide: 0 },
+        ]),
+      );
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("reports browser registration and removal, and listener disposal works", async () => {
     const authenticator = createAuthenticator();
     const authToken = acceptedToken(authenticator);
@@ -493,6 +526,124 @@ describe("bridge server client counts", () => {
   });
 });
 
+describe("bridge server authenticated envelope identity", () => {
+  it.each([
+    [
+      "session",
+      (message: ReturnType<typeof inspectMessage>) => ({
+        ...message,
+        sessionId: "other-session",
+      }),
+    ],
+    [
+      "role",
+      (message: ReturnType<typeof inspectMessage>) => ({
+        ...message,
+        source: source("simulator"),
+      }),
+    ],
+    [
+      "source id",
+      (message: ReturnType<typeof inspectMessage>) => ({
+        ...message,
+        source: { ...message.source, id: "spoofed-browser-source" },
+      }),
+    ],
+  ])(
+    "rejects an inspect message with a mismatched authenticated %s",
+    async (_field, spoof) => {
+      const authenticator = createAuthenticator();
+      const browserToken = acceptedToken(authenticator);
+      const ideToken = authenticator.issueTrustedToken("ide");
+      const server = createBridgeServer({ port: 0, authenticator });
+      await server.start();
+
+      try {
+        const ide = await connect(server.getUrl());
+        await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+        const browser = await connect(server.getUrl());
+        await sendJsonAndReceive(browser, hello(browserToken));
+        const routed: unknown[] = [];
+        ide.on("message", (data) => routed.push(JSON.parse(data.toString())));
+
+        const error = await expectSocketErrorAndClose(
+          browser,
+          spoof(inspectMessage()),
+          {
+            code: "protocol.invalidMessage",
+            message: "Message does not match protocol",
+          },
+        );
+        await delay(20);
+
+        expect(routed).toEqual([]);
+        expect(JSON.stringify(error)).not.toContain(browserToken);
+        await closeSocket(ide);
+      } finally {
+        await server.stop();
+      }
+    },
+  );
+
+  it("rejects unlink for a different authenticated session without revoking the token", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+
+    try {
+      const browser = await connect(server.getUrl());
+      await sendJsonAndReceive(browser, hello(browserToken));
+
+      await expectSocketErrorAndClose(
+        browser,
+        { ...unlink(), sessionId: "other-session" },
+        {
+          code: "protocol.invalidMessage",
+          message: "Message does not match protocol",
+        },
+      );
+      expect(
+        authenticator.validateToken(
+          SESSION_ID,
+          "browser",
+          browserToken,
+          INSTANCE_ID,
+        ),
+      ).toBe("accepted");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("continues routing inspect messages with the authenticated identity", async () => {
+    const authenticator = createAuthenticator();
+    const browserToken = acceptedToken(authenticator);
+    const ideToken = authenticator.issueTrustedToken("ide");
+    const server = createBridgeServer({ port: 0, authenticator });
+    await server.start();
+
+    try {
+      const ide = await connect(server.getUrl());
+      await sendJsonAndReceive(ide, hello(ideToken.value, "ide"));
+      const browser = await connect(server.getUrl());
+      await sendJsonAndReceive(browser, hello(browserToken));
+      const routed = nextJsonMessage(ide);
+
+      browser.send(JSON.stringify(inspectMessage()));
+
+      await expect(routed).resolves.toMatchObject({
+        type: "inspect",
+        sessionId: SESSION_ID,
+        source: source("browser"),
+      });
+      await Promise.all([closeSocket(browser), closeSocket(ide)]);
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
 describe("bridge server send safety", () => {
   it("keeps a registry connection safe after its socket closes", async () => {
     const authenticator = createAuthenticator();
@@ -518,6 +669,29 @@ describe("bridge server send safety", () => {
 });
 
 describe("bridge server network policy", () => {
+  it("rejects frames above the configured payload limit before protocol parsing", async () => {
+    const maxPayloadBytes = 256;
+    const server = createBridgeServer({ port: 0, maxPayloadBytes });
+    await server.start();
+
+    try {
+      const socket = await connect(server.getUrl());
+      const received: unknown[] = [];
+      socket.on("message", (data) => received.push(JSON.parse(data.toString())));
+      const closed = once(socket, "close");
+
+      socket.send(Buffer.alloc(maxPayloadBytes + 1, 0x61));
+
+      const [code] = await closed;
+      expect(code).toBe(1009);
+      expect(received).toEqual([]);
+      expect(server.registry.all()).toEqual([]);
+      expect(BRIDGE_MAX_PAYLOAD_BYTES).toBe(1024 * 1024);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("binds and advertises only the exact approved loopback host", async () => {
     for (const host of ["0.0.0.0", "localhost", "::1"]) {
       expect(() => createBridgeServer({ host, port: 0 })).toThrow(

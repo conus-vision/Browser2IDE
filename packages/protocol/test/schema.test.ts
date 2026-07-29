@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { PROTOCOL_VERSION, parseMessage } from "../src/index.js";
+import {
+  INSPECT_LIMITS,
+  PROTOCOL_VERSION,
+  parseMessage,
+} from "../src/index.js";
 
 const bridgeInstanceId = "2d7856f5-8218-4ba6-9f6c-7aa459333ee1";
 
@@ -304,6 +308,169 @@ describe("Browser2IDE protocol schemas", () => {
     ]);
 
     expect(parseMessage(message)).toEqual(message);
+  });
+
+  it("exports practical inspect collection limits", () => {
+    expect(INSPECT_LIMITS).toEqual({
+      targets: 2,
+      factsPerTarget: 256,
+      subjectAttributes: 64,
+      selectorLength: 2048,
+      propertyNameLength: 256,
+      attributeNameLength: 256,
+      valueLength: 16_384,
+      textLength: 16_384,
+      urlLength: 8192,
+      nodeIdLength: 1024,
+      frameIdLength: 256,
+      routeLength: 8192,
+      classNames: 128,
+      stylesheets: 256,
+      cssRules: 4096,
+      cssRuleDepth: 32,
+      declarationsPerRule: 128,
+      mediaConditions: 16,
+      inaccessibleStylesheets: 64,
+    });
+  });
+
+  it.each([
+    [
+      "facts per target",
+      (length: number) =>
+        inspectMessage([
+          target(
+            "selected",
+            0,
+            ".card",
+            Array.from({ length }, () => runtimeFacts[0]),
+          ),
+        ]),
+      () => INSPECT_LIMITS.factsPerTarget,
+    ],
+    [
+      "subject attributes",
+      (length: number) => {
+        const message = inspectMessage([target("selected", 0, ".card", [])]);
+        return {
+          ...message,
+          targets: [
+            {
+              ...message.targets[0],
+              subject: {
+                selector: ".card",
+                attributes: Array.from({ length }, (_, index) => ({
+                  name: `data-${index}`,
+                  value: "value",
+                  metadata: {},
+                })),
+                metadata: {},
+              },
+            },
+          ],
+        };
+      },
+      () => INSPECT_LIMITS.subjectAttributes,
+    ],
+  ])("bounds inspect %s", (_name, createMessage, readLimit) => {
+    const limit = readLimit();
+    expect(() => parseMessage(createMessage(limit))).not.toThrow();
+    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
+  });
+
+  it.each([
+    ["subject selector", "selector", () => INSPECT_LIMITS.selectorLength],
+    ["subject node id", "nodeId", () => INSPECT_LIMITS.nodeIdLength],
+    ["subject text", "text", () => INSPECT_LIMITS.textLength],
+  ])("bounds inspect %s length", (_name, field, readLimit) => {
+    const createMessage = (length: number) => {
+      const message = inspectMessage([target("selected", 0, ".card", [])]);
+      return {
+        ...message,
+        targets: [
+          {
+            ...message.targets[0],
+            subject: {
+              ...message.targets[0]?.subject,
+              [field]: "x".repeat(length),
+            },
+          },
+        ],
+      };
+    };
+    const limit = readLimit();
+
+    expect(() => parseMessage(createMessage(limit))).not.toThrow();
+    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
+  });
+
+  it.each([
+    ["attribute name", "name", () => INSPECT_LIMITS.attributeNameLength],
+    ["attribute value", "value", () => INSPECT_LIMITS.valueLength],
+  ])("bounds inspect subject %s length", (_name, field, readLimit) => {
+    const createMessage = (length: number) => {
+      const message = inspectMessage([target("selected", 0, ".card", [])]);
+      return {
+        ...message,
+        targets: [
+          {
+            ...message.targets[0],
+            subject: {
+              ...message.targets[0]?.subject,
+              attributes: [
+                {
+                  name: "data-state",
+                  value: "ready",
+                  metadata: {},
+                  [field]: "x".repeat(length),
+                },
+              ],
+            },
+          },
+        ],
+      };
+    };
+    const limit = readLimit();
+
+    expect(() => parseMessage(createMessage(limit))).not.toThrow();
+    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
+  });
+
+  it.each([
+    ["CSS selector", "selector", () => INSPECT_LIMITS.selectorLength],
+    ["CSS property", "property", () => INSPECT_LIMITS.propertyNameLength],
+    ["CSS value", "value", () => INSPECT_LIMITS.valueLength],
+  ])("bounds inspect %s length", (_name, field, readLimit) => {
+    const createMessage = (length: number) => {
+      const fact = {
+        ...runtimeFacts[0],
+        [field]: "x".repeat(length),
+      };
+      return inspectMessage([target("selected", 0, ".card", [fact])]);
+    };
+    const limit = readLimit();
+
+    expect(() => parseMessage(createMessage(limit))).not.toThrow();
+    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
+  });
+
+  it.each([
+    ["context URL", "url", () => INSPECT_LIMITS.urlLength],
+    ["context frame id", "frameId", () => INSPECT_LIMITS.frameIdLength],
+    ["context route", "route", () => INSPECT_LIMITS.routeLength],
+  ])("bounds inspect %s length", (_name, field, readLimit) => {
+    const createMessage = (length: number) => ({
+      ...inspectMessage([target("selected", 0, ".card", [])]),
+      context: {
+        url: "http://localhost",
+        metadata: {},
+        [field]: "x".repeat(length),
+      },
+    });
+    const limit = readLimit();
+
+    expect(() => parseMessage(createMessage(limit))).not.toThrow();
+    expect(() => parseMessage(createMessage(limit + 1))).toThrow();
   });
 
   it("accepts a namespaced plugin runtime fact", () => {

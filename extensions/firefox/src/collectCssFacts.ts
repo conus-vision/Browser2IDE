@@ -1,7 +1,13 @@
-import type {
-  CssRuleFact,
-  ProtocolErrorCode,
+import {
+  INSPECT_LIMITS,
+  type CssRuleFact,
+  type ProtocolErrorCode,
 } from "@browser2ide/protocol";
+import {
+  boundedLength,
+  enumerateBounded,
+  truncate,
+} from "./inspectBounds.js";
 
 export interface MatchableElement {
   matches(selector: string): boolean;
@@ -57,32 +63,43 @@ export function collectCssFacts(
 ): CssFactCollection {
   const facts: CssRuleFact[] = [];
   const inaccessibleStylesheets: InaccessibleStylesheet[] = [];
+  const state = { rulesVisited: 0 };
 
-  for (const [stylesheetIndex, stylesheet] of [
-    ...document.styleSheets,
-  ].entries()) {
-    const sourceUrl =
-      stylesheet.href ?? `inline-style://document/${stylesheetIndex}`;
-    let rules: RuleSource[];
-    try {
-      rules = Array.from(stylesheet.cssRules);
-    } catch (error) {
-      inaccessibleStylesheets.push({
-        code: "browser.stylesheetInaccessible",
-        sourceUrl,
-        reason: messageOf(error),
-      });
-      continue;
+  for (const [stylesheetIndex, stylesheet] of enumerateBounded(
+    document.styleSheets,
+    INSPECT_LIMITS.stylesheets,
+  )) {
+    if (facts.length >= INSPECT_LIMITS.factsPerTarget) {
+      break;
     }
 
-    collectRules(
-      element,
-      rules,
-      sourceUrl,
-      `${stylesheetIndex}`,
-      [],
-      facts,
+    const sourceUrl = truncate(
+      stylesheet.href ?? `inline-style://document/${stylesheetIndex}`,
+      INSPECT_LIMITS.urlLength,
     );
+    try {
+      collectRules(
+        element,
+        stylesheet.cssRules,
+        sourceUrl,
+        `${stylesheetIndex}`,
+        [],
+        0,
+        facts,
+        state,
+      );
+    } catch (error) {
+      if (
+        inaccessibleStylesheets.length <
+        INSPECT_LIMITS.inaccessibleStylesheets
+      ) {
+        inaccessibleStylesheets.push({
+          code: "browser.stylesheetInaccessible",
+          sourceUrl,
+          reason: truncate(messageOf(error), INSPECT_LIMITS.valueLength),
+        });
+      }
+    }
   }
 
   return { facts, inaccessibleStylesheets };
@@ -90,37 +107,86 @@ export function collectCssFacts(
 
 function collectRules(
   element: MatchableElement,
-  rules: readonly RuleSource[],
+  rules: ArrayLike<RuleSource> | Iterable<RuleSource>,
   sourceUrl: string,
   parentPath: string,
   media: readonly string[],
+  depth: number,
   facts: CssRuleFact[],
+  state: { rulesVisited: number },
 ): void {
-  for (const [ruleIndex, rule] of rules.entries()) {
+  if (
+    depth > INSPECT_LIMITS.cssRuleDepth ||
+    facts.length >= INSPECT_LIMITS.factsPerTarget ||
+    state.rulesVisited >= INSPECT_LIMITS.cssRules
+  ) {
+    return;
+  }
+
+  const remainingRules = INSPECT_LIMITS.cssRules - state.rulesVisited;
+  for (const [ruleIndex, rule] of enumerateBounded(
+    rules,
+    remainingRules,
+  )) {
+    if (
+      facts.length >= INSPECT_LIMITS.factsPerTarget ||
+      state.rulesVisited >= INSPECT_LIMITS.cssRules
+    ) {
+      return;
+    }
+    state.rulesVisited += 1;
     const rulePath = `${parentPath}.${ruleIndex}`;
-    if (isStyleRule(rule)) {
-      collectStyleRule(element, rule, sourceUrl, rulePath, media, facts);
+    try {
+      if (isStyleRule(rule)) {
+        collectStyleRule(element, rule, sourceUrl, rulePath, media, facts);
+        if (
+          facts.length >= INSPECT_LIMITS.factsPerTarget ||
+          state.rulesVisited >= INSPECT_LIMITS.cssRules
+        ) {
+          return;
+        }
+        continue;
+      }
+    } catch {
       continue;
     }
     if (!isGroupRule(rule)) {
       continue;
     }
 
-    let nestedRules: RuleSource[];
+    let nestedRules: ArrayLike<RuleSource> | Iterable<RuleSource>;
     try {
-      nestedRules = Array.from(rule.cssRules);
+      nestedRules = rule.cssRules;
     } catch {
       continue;
     }
-    const condition = rule.media?.conditionText.trim();
+    if (depth >= INSPECT_LIMITS.cssRuleDepth) {
+      continue;
+    }
+    const condition = truncate(
+      rule.media?.conditionText.trim() ?? "",
+      INSPECT_LIMITS.valueLength,
+    );
+    const nextMedia =
+      condition && media.length < INSPECT_LIMITS.mediaConditions
+        ? [...media, condition]
+        : media;
     collectRules(
       element,
       nestedRules,
       sourceUrl,
       rulePath,
-      condition ? [...media, condition] : media,
+      nextMedia,
+      depth + 1,
       facts,
+      state,
     );
+    if (
+      facts.length >= INSPECT_LIMITS.factsPerTarget ||
+      state.rulesVisited >= INSPECT_LIMITS.cssRules
+    ) {
+      return;
+    }
   }
 }
 
@@ -132,33 +198,72 @@ function collectStyleRule(
   media: readonly string[],
   facts: CssRuleFact[],
 ): void {
+  const selector = rule.selectorText;
+  if (
+    selector.length === 0 ||
+    selector.length > INSPECT_LIMITS.selectorLength
+  ) {
+    return;
+  }
+
   try {
-    if (!element.matches(rule.selectorText)) {
+    if (!element.matches(selector)) {
       return;
     }
   } catch {
     return;
   }
 
-  const declarationNames = Array.from(
-    { length: rule.style.length },
-    (_, index) => rule.style.item(index),
-  ).filter(Boolean);
+  const remainingFacts = INSPECT_LIMITS.factsPerTarget - facts.length;
+  const declarationLimit = Math.min(
+    INSPECT_LIMITS.declarationsPerRule,
+    remainingFacts,
+  );
+  const declarationNames: string[] = [];
+  const declarationCount = boundedLength(rule.style.length, declarationLimit);
+  for (let index = 0; index < declarationCount; index += 1) {
+    try {
+      const property = rule.style.item(index);
+      if (
+        property &&
+        property.length <= INSPECT_LIMITS.propertyNameLength
+      ) {
+        declarationNames.push(property);
+      }
+    } catch {
+      continue;
+    }
+  }
+
   for (const property of declarationNames) {
-    facts.push({
-      type: "css-rule",
-      selector: rule.selectorText,
-      property,
-      value: rule.style.getPropertyValue(property).trim(),
-      metadata: {
-        sourceUrl,
-        cssText: rule.cssText,
-        declarationNames,
-        ...(media.length > 0 ? { media: [...media] } : {}),
-        rulePath,
-        priority: rule.style.getPropertyPriority(property),
-      },
-    });
+    if (facts.length >= INSPECT_LIMITS.factsPerTarget) {
+      return;
+    }
+
+    try {
+      facts.push({
+        type: "css-rule",
+        selector,
+        property,
+        value: truncate(
+          rule.style.getPropertyValue(property).trim(),
+          INSPECT_LIMITS.valueLength,
+        ),
+        metadata: {
+          sourceUrl,
+          cssText: truncate(rule.cssText, INSPECT_LIMITS.valueLength),
+          declarationNames: [...declarationNames],
+          ...(media.length > 0 ? { media: [...media] } : {}),
+          rulePath: truncate(rulePath, INSPECT_LIMITS.selectorLength),
+          priority: truncate(
+            rule.style.getPropertyPriority(property),
+            INSPECT_LIMITS.propertyNameLength,
+          ),
+        },
+      });
+    } catch {
+      continue;
+    }
   }
 }
 

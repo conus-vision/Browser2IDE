@@ -1,4 +1,8 @@
-import type { InspectSubject } from "@browser2ide/protocol";
+import {
+  INSPECT_LIMITS,
+  type InspectSubject,
+} from "@browser2ide/protocol";
+import { takeBounded, truncate } from "./inspectBounds.js";
 
 export interface ElementSnapshotSource {
   readonly tagName: string;
@@ -11,14 +15,27 @@ export function createElementSnapshot(
   element: ElementSnapshotSource,
   pageUrl: string,
 ): InspectSubject {
-  const tag = element.tagName.toLowerCase();
-  const classes = [...element.classList].filter(Boolean);
-  const id = element.id;
-  const attributes = [...element.attributes]
+  const tag = truncate(
+    element.tagName.toLowerCase(),
+    INSPECT_LIMITS.attributeNameLength,
+  );
+  const classes = takeBounded(
+    element.classList,
+    INSPECT_LIMITS.classNames,
+  )
+    .filter(Boolean)
+    .map((className) =>
+      truncate(className, INSPECT_LIMITS.attributeNameLength),
+    );
+  const id = truncate(element.id, INSPECT_LIMITS.nodeIdLength);
+  const attributes = takeBounded(
+    element.attributes,
+    INSPECT_LIMITS.subjectAttributes,
+  )
     .filter(({ name }) => isSafeAttribute(name))
     .map(({ name, value }) => ({
-      name: name.toLowerCase(),
-      value,
+      name: truncate(name.toLowerCase(), INSPECT_LIMITS.attributeNameLength),
+      value: truncate(value, INSPECT_LIMITS.valueLength),
       metadata: {},
     }));
 
@@ -30,17 +47,23 @@ export function createElementSnapshot(
       tag,
       id,
       classes,
-      pageUrl,
+      pageUrl: truncate(pageUrl, INSPECT_LIMITS.urlLength),
     },
   };
 }
 
 function selectorFor(tag: string, id: string, classes: readonly string[]): string {
-  return [
-    tag || "*",
-    id ? `#${escapeCssIdentifier(id)}` : "",
+  let selector = tag || "*";
+  const segments = [
+    ...(id ? [`#${escapeCssIdentifier(id)}`] : []),
     ...classes.map((className) => `.${escapeCssIdentifier(className)}`),
-  ].join("");
+  ];
+  for (const segment of segments) {
+    if (selector.length + segment.length <= INSPECT_LIMITS.selectorLength) {
+      selector += segment;
+    }
+  }
+  return truncate(selector, INSPECT_LIMITS.selectorLength);
 }
 
 function isSafeAttribute(name: string): boolean {

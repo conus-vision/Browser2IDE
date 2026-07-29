@@ -68,6 +68,12 @@ Tokens are also bound to the session and bridge instance. The current token
 issuer uses random 256-bit values with a 24-hour expiry. A token issued for a
 browser cannot authenticate as an IDE or simulator.
 
+After authentication, the bridge checks every message field that repeats this
+identity. Inspect messages must retain the authenticated session, role, and
+source ID; unlink messages must retain the authenticated session. A mismatch
+gets the same sanitized fatal invalid-message response as other malformed
+protocol input, is not routed, and closes the offending connection.
+
 VS Code and the bridge retain tokens only in extension-host memory. They do not
 write tokens to settings, workspace files, global storage, or SecretStorage.
 Stopping the bridge revokes all tokens and discards the instance identity.
@@ -159,6 +165,28 @@ Allowed metadata includes:
 
 Future adapters should preserve this data-minimizing shape unless a user
 explicitly enables richer local instrumentation.
+
+## Resource Bounds
+
+The bridge rejects WebSocket messages larger than 1 MiB before JSON or protocol
+schema processing. The configured ceiling may be lowered but cannot be raised.
+
+Protocol v3 also bounds known inspect data per message:
+
+- at most 2 targets, 256 facts per target, and 64 subject attributes;
+- selectors up to 2,048 characters, names up to 256, IDs up to 1,024, and
+  values or text up to 16,384;
+- URLs and routes up to 8,192 characters and frame IDs up to 256.
+
+Firefox applies the same wire limits while collecting and truncates known
+metadata fields. Per target it examines at most 256 stylesheets and 4,096 CSS
+rules, descends at most 32 group-rule levels, reads at most 128 declarations
+per rule, retains at most 16 media conditions and 64 inaccessible stylesheet
+diagnostics, and records at most 128 class names. Collection stops as soon as
+the 256-fact budget is full. These ceilings accommodate ordinary development
+pages while bounding page-controlled traversal and allocation. The 1 MiB frame
+limit remains the backstop for arbitrary metadata and namespaced plugin
+payloads.
 
 ## Structured Errors
 

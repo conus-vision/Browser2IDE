@@ -6,6 +6,7 @@ import {
 } from "./references.js";
 import { ProtocolCapabilitySchema } from "./capabilities.js";
 import { JsonObjectSchema } from "./json.js";
+import { INSPECT_LIMITS } from "./limits.js";
 
 export const PROTOCOL_VERSION = 3 as const;
 
@@ -24,9 +25,9 @@ export const BridgeInstanceIdSchema = z.string().uuid();
 export const ClientSourceSchema = z
   .object({
     role: ClientRoleSchema,
-    id: z.string().min(1),
-    label: z.string().optional(),
-    url: z.string().optional(),
+    id: z.string().min(1).max(INSPECT_LIMITS.nodeIdLength),
+    label: z.string().max(INSPECT_LIMITS.textLength).optional(),
+    url: z.string().max(INSPECT_LIMITS.urlLength).optional(),
     metadata: metadataSchema,
   })
   .strict();
@@ -34,8 +35,8 @@ export const ClientSourceSchema = z
 export const DomAttributeFactSchema = z
   .object({
     type: z.literal("dom-attribute"),
-    name: z.string().min(1),
-    value: z.string(),
+    name: z.string().min(1).max(INSPECT_LIMITS.attributeNameLength),
+    value: z.string().max(INSPECT_LIMITS.valueLength),
     metadata: metadataSchema,
   })
   .strict();
@@ -43,9 +44,9 @@ export const DomAttributeFactSchema = z
 export const CssRuleFactSchema = z
   .object({
     type: z.literal("css-rule"),
-    selector: z.string().min(1),
-    property: z.string().min(1),
-    value: z.string(),
+    selector: z.string().min(1).max(INSPECT_LIMITS.selectorLength),
+    property: z.string().min(1).max(INSPECT_LIMITS.propertyNameLength),
+    value: z.string().max(INSPECT_LIMITS.valueLength),
     source: SourceLocationSchema.optional(),
     metadata: metadataSchema,
   })
@@ -71,27 +72,30 @@ export const RuntimeFactSchema = z.union([
 
 const DomAttributeSchema = z
   .object({
-    name: z.string().min(1),
-    value: z.string(),
+    name: z.string().min(1).max(INSPECT_LIMITS.attributeNameLength),
+    value: z.string().max(INSPECT_LIMITS.valueLength),
     metadata: metadataSchema,
   })
   .strict();
 
 export const InspectSubjectSchema = z
   .object({
-    selector: z.string().optional(),
-    nodeId: z.string().optional(),
-    text: z.string().optional(),
-    attributes: z.array(DomAttributeSchema).optional(),
+    selector: z.string().max(INSPECT_LIMITS.selectorLength).optional(),
+    nodeId: z.string().max(INSPECT_LIMITS.nodeIdLength).optional(),
+    text: z.string().max(INSPECT_LIMITS.textLength).optional(),
+    attributes: z
+      .array(DomAttributeSchema)
+      .max(INSPECT_LIMITS.subjectAttributes)
+      .optional(),
     metadata: metadataSchema,
   })
   .strict();
 
 export const InspectContextSchema = z
   .object({
-    url: z.string().min(1),
-    frameId: z.string().optional(),
-    route: z.string().optional(),
+    url: z.string().min(1).max(INSPECT_LIMITS.urlLength),
+    frameId: z.string().max(INSPECT_LIMITS.frameIdLength).optional(),
+    route: z.string().max(INSPECT_LIMITS.routeLength).optional(),
     metadata: metadataSchema,
   })
   .strict();
@@ -101,7 +105,7 @@ export const InspectTargetSchema = z
     role: z.enum(["selected", "parent"]),
     depth: z.union([z.literal(0), z.literal(1)]),
     subject: InspectSubjectSchema,
-    facts: z.array(RuntimeFactSchema),
+    facts: z.array(RuntimeFactSchema).max(INSPECT_LIMITS.factsPerTarget),
     metadata: metadataSchema,
   })
   .strict();
@@ -158,7 +162,10 @@ export const InspectMessageSchema = baseMessageSchema
     type: z.literal("inspect"),
     sessionId: z.string().min(1),
     source: ClientSourceSchema,
-    targets: z.array(InspectTargetSchema).min(1).max(2),
+    targets: z
+      .array(InspectTargetSchema)
+      .min(1)
+      .max(INSPECT_LIMITS.targets),
     context: InspectContextSchema,
   })
   .strict()
@@ -200,7 +207,7 @@ const OpenSourceArgumentsSchema = z
 
 const HighlightElementArgumentsSchema = z
   .object({
-    selector: z.string().min(1),
+    selector: z.string().min(1).max(INSPECT_LIMITS.selectorLength),
     metadata: metadataSchema,
   })
   .strict();

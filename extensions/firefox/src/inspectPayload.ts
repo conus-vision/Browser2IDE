@@ -1,4 +1,7 @@
-import type { InspectTarget } from "@browser2ide/protocol";
+import {
+  INSPECT_LIMITS,
+  type InspectTarget,
+} from "@browser2ide/protocol";
 import type { InspectPayload } from "./bridgeClient.js";
 import {
   collectCssFacts,
@@ -7,6 +10,7 @@ import {
 } from "./collectCssFacts.js";
 import { createElementSnapshot } from "./elementSnapshot.js";
 import type { InspectableElement } from "./inspectMode.js";
+import { joinBounded, truncate } from "./inspectBounds.js";
 
 export interface LocationSource {
   readonly href: string;
@@ -28,12 +32,13 @@ export function createInspectPayload(
   document: CssDocumentSource,
   location: LocationSource,
 ): InspectPayloadWithDiagnostics {
+  const pageUrl = truncate(location.href, INSPECT_LIMITS.urlLength);
   const selected = collectTarget(
     "selected",
     0,
     element,
     document,
-    location.href,
+    pageUrl,
   );
   const parent = element.parentElement
     ? collectTarget(
@@ -41,7 +46,7 @@ export function createInspectPayload(
         1,
         element.parentElement,
         document,
-        location.href,
+        pageUrl,
       )
     : undefined;
   const collected = parent ? [selected, parent] : [selected];
@@ -55,8 +60,11 @@ export function createInspectPayload(
   return {
     targets,
     context: {
-      url: location.href,
-      route: `${location.pathname}${location.search}${location.hash}`,
+      url: pageUrl,
+      route: joinBounded(
+        [location.pathname, location.search, location.hash],
+        INSPECT_LIMITS.routeLength,
+      ),
       metadata: {
         inaccessibleStylesheetCount: inaccessibleStylesheets.length,
         browserErrors: inaccessibleStylesheets,
@@ -93,6 +101,9 @@ function deduplicateInaccessible(
 ): InaccessibleStylesheet[] {
   const unique = new Map<string, InaccessibleStylesheet>();
   for (const entry of entries) {
+    if (unique.size >= INSPECT_LIMITS.inaccessibleStylesheets) {
+      break;
+    }
     const key = JSON.stringify([entry.sourceUrl, entry.reason]);
     if (!unique.has(key)) unique.set(key, entry);
   }

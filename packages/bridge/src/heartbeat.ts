@@ -18,12 +18,16 @@ export interface Heartbeat {
 export function startHeartbeat(
   registry: ClientRegistry,
   intervalMs = HEARTBEAT_INTERVAL_MS,
+  onClientEvicted: () => void = () => undefined,
 ): Heartbeat {
   const interval = setInterval(() => {
     for (const client of registry.all()) {
       if (client.missedPongs >= 2) {
+        const removed = registry.remove(client.id);
         terminateConnectionSafely(client.connection);
-        registry.remove(client.id);
+        if (removed) {
+          onClientEvicted();
+        }
         continue;
       }
 
