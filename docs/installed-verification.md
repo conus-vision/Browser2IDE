@@ -21,14 +21,20 @@ must expose an inline or external source map.
 
 ## Install VS Code
 
-1. Open VS Code and open **Extensions**.
-2. Open the Extensions view menu, choose **Install from VSIX...**, and select
+1. Open VS Code and choose **Manage > Profiles > Create Profile**.
+2. Name the profile `Browser2IDE 0.2.0 Candidate`, create it as an empty profile
+   instead of copying an existing profile, and select it. If VS Code does not
+   switch automatically, choose it from **Manage > Profiles**.
+3. In the dedicated candidate profile, open **Extensions** and confirm no other
+   user-installed extensions are enabled.
+4. Open the Extensions view menu, choose **Install from VSIX...**, and select
    `browser2ide-vscode-0.2.0.vsix`.
-3. Accept the installation prompt and restart VS Code.
-4. Open a local project folder. Browser2IDE starts automatically after startup.
-5. Confirm the status bar shows a radio-tower item such as
+5. Accept the installation prompt and restart VS Code with
+   `Browser2IDE 0.2.0 Candidate` still selected.
+6. Open a local project folder. Browser2IDE starts automatically after startup.
+7. Confirm the status bar shows a radio-tower item such as
    `Browser2IDE: 48735 07` and a separate stop icon.
-6. Click the code item. VS Code must report `Browser2IDE link code copied.` The
+8. Click the code item. VS Code must report `Browser2IDE link code copied.` The
    clipboard value is the seven digits without the visual space, for example
    `4873507`.
 

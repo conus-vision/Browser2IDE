@@ -23,6 +23,17 @@ test("installed primary path is terminal-free", () => {
   assert.match(primaryPath, /Install Add-on From File/);
 });
 
+test("VSIX verification starts in a dedicated empty VS Code profile", () => {
+  const createProfile = primaryPath.indexOf("Manage > Profiles > Create Profile");
+  const installVsix = primaryPath.indexOf("Install from VSIX...");
+
+  assert.ok(createProfile >= 0, "VS Code profile creation UI path is required");
+  assert.ok(installVsix >= 0, "VSIX installation UI path is required");
+  assert.ok(createProfile < installVsix, "create the isolated profile before installing");
+  assert.match(primaryPath, /empty profile/);
+  assert.match(primaryPath, /Browser2IDE 0\.2\.0 Candidate/);
+});
+
 test("candidate record distinguishes observed and pending evidence", () => {
   assert.match(verificationRecord, /Observed artifact smoke evidence/);
   assert.match(verificationRecord, /exited with code 0/);
