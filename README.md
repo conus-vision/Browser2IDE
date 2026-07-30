@@ -1,5 +1,7 @@
 # Browser2IDE
 
+[![CI](https://github.com/conus-vision/Browser2IDE/actions/workflows/ci.yml/badge.svg)](https://github.com/conus-vision/Browser2IDE/actions/workflows/ci.yml)
+
 Connect browser DevTools to your IDE and highlight the source code related to a selected DOM element.
 
 > Alpha: the protocol and installation formats may change before 1.0.
