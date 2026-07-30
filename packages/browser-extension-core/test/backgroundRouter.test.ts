@@ -1311,6 +1311,53 @@ describe("BackgroundRouter", () => {
     expect(windowStates(port).slice(-2)).toEqual(["linking", "linked"]);
   });
 
+  it("does not let a pending A state verification block initial B state", async () => {
+    const pendingAState = deferred<{ id: number; windowId: number }>();
+    const events = createRouterSubscriptionHarness();
+    const tabs = new Map([[17, 10]]);
+    let lookup = 0;
+    const harness = createHarness({
+      tabs,
+      subscriptions: events.subscriptions,
+      getTab: async (tabId) => {
+        lookup += 1;
+        if (lookup === 3) {
+          return pendingAState.promise;
+        }
+        const windowId = tabs.get(tabId);
+        return windowId === undefined ? undefined : { id: tabId, windowId };
+      },
+    });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    const oldRegistration = harness.coordinator.registrations[0];
+    const stateBaseline = windowStates(port).length;
+
+    oldRegistration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+    tabs.set(17, 20);
+    events.detach(17, 10);
+    events.attach(17, 20);
+    await flushMicrotasks();
+
+    const lookupsBeforeAResolution = lookup;
+    const statesBeforeAResolution = windowStates(port).slice(stateBaseline);
+    const registrationsBeforeAResolution =
+      harness.coordinator.registrations.map(({ windowId }) => windowId);
+    pendingAState.resolve({ id: 17, windowId: 10 });
+    await flushMicrotasks();
+
+    expect(lookupsBeforeAResolution).toBe(4);
+    expect(statesBeforeAResolution).toEqual(["notLinked"]);
+    expect(registrationsBeforeAResolution).toEqual([10, 20]);
+    expect(windowStates(port).slice(stateBaseline)).toEqual(["notLinked"]);
+    expect(harness.reportedErrors).toEqual([]);
+  });
+
   it("ignores state callbacks after the panel port closes", async () => {
     const harness = createHarness();
     const port = await harness.registerAndConnect(

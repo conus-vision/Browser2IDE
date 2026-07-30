@@ -130,7 +130,11 @@ interface PanelPortRecord {
   registration?: { dispose(): void };
   inspectSession?: BackgroundInspectSession;
   inspectCommandTail: Promise<void>;
-  windowStateTail: Promise<void>;
+  windowStateQueue?: WindowStateQueue;
+}
+
+interface WindowStateQueue {
+  tail: Promise<void>;
 }
 
 interface PanelCommandRecord {
@@ -253,7 +257,6 @@ export class BackgroundRouter {
       onDisconnect: () => this.closePanelPort(record, false),
       onMessage: (message) => this.rejectPendingInspect(record, message),
       inspectCommandTail: Promise.resolve(),
-      windowStateTail: Promise.resolve(),
     };
     this.panelPorts.set(channel, record);
     port.onMessage.addListener(record.onMessage);
@@ -617,6 +620,9 @@ export class BackgroundRouter {
     this.clearPanelActivation(record, true);
     record.port.onMessage.removeListener(record.onMessage);
     const token = {};
+    const windowStateQueue: WindowStateQueue = {
+      tail: Promise.resolve(),
+    };
     const session = new BackgroundInspectSession(
       this.inspectCoordinator,
       binding.tabId,
@@ -629,6 +635,7 @@ export class BackgroundRouter {
     record.activationToken = token;
     record.bindingGeneration = binding.generation;
     record.inspectSession = session;
+    record.windowStateQueue = windowStateQueue;
     record.port.onMessage.addListener(onMessage);
 
     let registration: { dispose(): void };
@@ -638,7 +645,13 @@ export class BackgroundRouter {
         tabId: binding.tabId,
         sourceId: binding.sourceId,
         onStateChanged: (state) =>
-          this.queueWindowState(record, token, binding, state),
+          this.queueWindowState(
+            record,
+            token,
+            binding,
+            windowStateQueue,
+            state,
+          ),
       });
     } catch (error) {
       this.reportError(error);
@@ -668,6 +681,7 @@ export class BackgroundRouter {
     }
     record.activationToken = undefined;
     record.bindingGeneration = undefined;
+    record.windowStateQueue = undefined;
     if (activationToken) {
       this.abortPanelCommand(record, activationToken);
     }
@@ -1052,13 +1066,18 @@ export class BackgroundRouter {
     record: PanelPortRecord,
     token: object,
     binding: ChannelBinding,
+    queue: WindowStateQueue,
     state: BrowserWindowConnectionState,
   ): void {
-    if (!this.isCurrentActivation(record, token, binding)) {
+    if (
+      record.windowStateQueue !== queue ||
+      !this.isCurrentActivation(record, token, binding)
+    ) {
       return;
     }
-    const operation = record.windowStateTail.then(async () => {
+    const operation = queue.tail.then(async () => {
       if (
+        record.windowStateQueue !== queue ||
         !record.registration ||
         !this.isCurrentActivation(record, token, binding)
       ) {
@@ -1071,6 +1090,7 @@ export class BackgroundRouter {
       );
       if (
         refreshed !== binding ||
+        record.windowStateQueue !== queue ||
         !record.registration ||
         !this.isCurrentActivation(record, token, binding)
       ) {
@@ -1081,7 +1101,7 @@ export class BackgroundRouter {
         state,
       });
     });
-    record.windowStateTail = operation.catch((error) =>
+    queue.tail = operation.catch((error) =>
       this.reportError(error),
     );
   }
