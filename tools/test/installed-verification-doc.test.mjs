@@ -24,10 +24,11 @@ test("installed primary path is terminal-free", () => {
 });
 
 test("candidate record distinguishes observed and pending evidence", () => {
-  assert.match(verificationRecord, /Pending parent-run evidence/);
-  assert.doesNotMatch(verificationRecord, /Observed automated evidence/);
+  assert.match(verificationRecord, /Observed artifact smoke evidence/);
+  assert.match(verificationRecord, /exited with code 0/);
   assert.match(verificationRecord, /INSTALLED_VSIX_ACTIVATION_OK/);
   assert.match(verificationRecord, /PACKAGED_CHROME_MV3_OK/);
+  assert.match(verificationRecord, /Chrome Stable 150\.0\.7871\.187/);
   assert.match(verificationRecord, /Pending external release evidence/);
   assert.match(verificationRecord, /No signed `0\.2\.0` XPI exists/);
   assert.match(verificationRecord, /no screenshot or GIF is present/i);

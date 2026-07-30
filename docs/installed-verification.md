@@ -186,24 +186,24 @@ packaged artifacts from the terminal-free manual acceptance matrix above. A
 marker is evidence only after the exact command exits successfully in the
 candidate checkout; expected output is not recorded as an observed result.
 
-Pending parent-run evidence:
+Observed artifact smoke evidence:
 
-- Run `corepack pnpm smoke:vscode-package` after packaging. A successful run must
-  install the actual VSIX into isolated extension and user-data directories,
-  activate it, and emit
+- `corepack pnpm smoke:vscode-package` exited with code 0 on 2026-07-30. It
+  installed the actual VSIX into isolated extension and user-data directories,
+  activated Browser2IDE 0.2.0, and emitted
   `INSTALLED_VSIX_ACTIVATION_OK browser2ide.browser2ide-vscode`.
-- Run `corepack pnpm smoke:chrome-package` after packaging. A successful run must
-  validate and extract only the exact Chrome runtime allowlist, launch Chrome
-  Stable with a disposable user-data directory, load the extension through CDP,
-  observe its MV3 service worker, and emit
-  `PACKAGED_CHROME_MV3_OK <product> Browser2IDE 0.2.0
-  <isolated-id>/dist/background.js`.
+- `corepack pnpm smoke:chrome-package` exited with code 0 on 2026-07-30. It
+  validated and extracted only the exact Chrome runtime allowlist, launched
+  Chrome Stable 150.0.7871.187 with a disposable user-data directory, loaded
+  Browser2IDE 0.2.0 through CDP, observed its MV3 service worker, and emitted
+  `PACKAGED_CHROME_MV3_OK Chrome/150.0.7871.187 Browser2IDE 0.2.0
+  icjilfeicecacnpghfoikecjojdlconl/dist/background.js`.
 
 The VSIX smoke uses a tiny Extension Development Host only as the test harness;
 Browser2IDE itself is installed from the VSIX under test. The Chrome smoke is
 limited to archive validation, isolated-profile loading, manifest identity, and
-worker startup. Neither live result has been observed in this Task 7 handoff, and
-neither command substitutes for the UI installation and persistence matrix.
+worker startup. Neither command substitutes for the UI installation and
+persistence matrix.
 
 Pending external release evidence:
 
