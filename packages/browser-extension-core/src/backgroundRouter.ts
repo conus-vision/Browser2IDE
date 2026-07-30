@@ -108,7 +108,6 @@ interface PendingRegistration extends RegistrationIdentity {
   readonly generation: number;
   readonly disposeGeneration: number;
   readonly bindingGeneration: number | undefined;
-  readonly activationToken: object | undefined;
   promise: Promise<BackgroundRouteResult | undefined>;
 }
 
@@ -251,7 +250,7 @@ export class BackgroundRouter {
     port.onDisconnect.addListener(record.onDisconnect);
 
     const binding = this.bindings.get(channel);
-    if (binding) {
+    if (binding && !this.pendingRegistrations.has(channel)) {
       this.activatePanelPort(record, binding);
     }
   }
@@ -337,7 +336,6 @@ export class BackgroundRouter {
       generation: this.allocateGeneration(),
       disposeGeneration: this.disposeGeneration,
       bindingGeneration: currentBinding?.generation,
-      activationToken: this.panelPorts.get(identity.channel)?.activationToken,
       promise: Promise.resolve(undefined),
     };
     this.pendingRegistrations.set(identity.channel, pending);
@@ -368,16 +366,17 @@ export class BackgroundRouter {
         if (!sameIdentity(currentBinding, pending)) {
           return undefined;
         }
-        const currentActivationToken = this.panelPorts.get(
-          pending.channel,
-        )?.activationToken;
         if (
           pending.bindingGeneration === undefined ||
-          currentBinding.generation !== pending.bindingGeneration ||
-          currentActivationToken !== pending.activationToken
+          currentBinding.generation !== pending.bindingGeneration
         ) {
+          const port = this.panelPorts.get(currentBinding.channel);
+          if (port) {
+            this.activatePanelPort(port, currentBinding);
+          }
           return okResult;
         }
+        let activeBinding = currentBinding;
         if (currentBinding.windowId !== resolved.windowId) {
           const replacement: ChannelBinding = {
             channel: pending.channel,
@@ -387,10 +386,11 @@ export class BackgroundRouter {
             generation: pending.generation,
           };
           this.bindings.set(replacement.channel, replacement);
-          const port = this.panelPorts.get(replacement.channel);
-          if (port) {
-            this.activatePanelPort(port, replacement);
-          }
+          activeBinding = replacement;
+        }
+        const port = this.panelPorts.get(activeBinding.channel);
+        if (port) {
+          this.activatePanelPort(port, activeBinding);
         }
         return okResult;
       }

@@ -317,6 +317,55 @@ describe("BackgroundRouter", () => {
     expect(port.disconnected).toBe(false);
   });
 
+  it("refreshes a recovered panel through its pending registration before activation", async () => {
+    const movedLookup = deferred<{ id: number; windowId: number }>();
+    let lookup = 0;
+    const harness = createHarness({
+      getTab: async (tabId) => {
+        lookup += 1;
+        return lookup === 1
+          ? { id: tabId, windowId: 10 }
+          : movedLookup.promise;
+      },
+    });
+    const oldPort = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    const oldRegistration = harness.coordinator.registrations[0];
+    const registration = harness.router.routeMessage(
+      registerMessage("channel-1", 17, "source-17"),
+      devtoolsSender(),
+    );
+    await flushMicrotasks();
+
+    oldPort.disconnect();
+    const recoveredPort = harness.panelPort("channel-1");
+    harness.router.connectPort(recoveredPort);
+
+    expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+      .toEqual([10]);
+    expect(harness.coordinator.activeSources()).toEqual([]);
+    expect(recoveredPort.sent).toEqual([]);
+
+    movedLookup.resolve({ id: 17, windowId: 20 });
+    await expect(registration).resolves.toEqual({ ok: true });
+
+    expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+      .toEqual([10, 20]);
+    expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
+    expect(recoveredPort.sent).toEqual([
+      {
+        type: "browser2ide.windowState",
+        state: "notLinked",
+      },
+    ]);
+
+    oldRegistration?.onStateChanged?.("linked");
+    expect(recoveredPort.sent).toHaveLength(1);
+  });
+
   it("rejects conflicting channel tuples and cross-tab source hijacks", async () => {
     const harness = createHarness({
       tabs: new Map([
