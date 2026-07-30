@@ -1,8 +1,9 @@
 # Privacy
 
 Browser2IDE has no analytics, telemetry pipeline, account system, or remote
-Browser2IDE service. Product data travels only over a loopback WebSocket to the
-local VS Code window that the user explicitly linked with a seven-digit code.
+Browser2IDE service. Browser-to-IDE product traffic from Browser2IDE-operated
+components travels only over a loopback WebSocket to the local VS Code window
+that the user explicitly linked with a seven-digit code.
 
 ## Data Sent To Linked VS Code
 
@@ -56,13 +57,28 @@ occurs only while the inspected tab's Browser2IDE panel is open, its browser
 window is linked, and the user has explicitly enabled Inspect. Browser-protected
 pages may still deny injection.
 
+## Separately Installed Source Plugins
+
+After Browser2IDE validates a selection, it passes the full selection snapshot
+locally to each compatible registered source plugin, including compatible
+separately installed plugins. The snapshot includes all selected and parent
+targets, subjects, facts, page context, and metadata. Plugins also receive the
+active document and workspace discovery/read services.
+
+Separately installed source plugins are trusted third-party VS Code extension
+code. They may have their own data handling, network behavior, retention, and
+privacy policy. Browser2IDE does not control their behavior or make privacy
+commitments on their behalf. Review a plugin and its policy before installing
+or enabling it for sensitive workspaces or inspected applications.
+
 ## Retention And Sharing
 
 Browser-window mappings use session storage and clear when the window or
 browser session ends. The VS Code presenter retains the latest selection for
-local source resolution during the current extension runtime. Browser2IDE does
-not sell, share, upload, or remotely retain inspection data because it has no
-remote service.
+local source resolution during the current extension runtime. Browser2IDE-operated
+components do not sell, upload, share with a remote service, or remotely retain
+inspection data, and the Browser2IDE project operates no remote service. These
+commitments do not cover separately installed source plugins.
 
 See [SECURITY.md](SECURITY.md) for private vulnerability reporting and
 [docs/security.md](docs/security.md) for the implementation trust model.
