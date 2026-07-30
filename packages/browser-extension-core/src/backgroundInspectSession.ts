@@ -212,6 +212,7 @@ export class BackgroundInspectCoordinator {
 
 export class BackgroundInspectSession {
   private readonly owner = {};
+  private readonly pendingRequestIds = new Set<string>();
   private lastOperation = Promise.resolve();
   private disconnected = false;
 
@@ -236,13 +237,22 @@ export class BackgroundInspectSession {
   }
 
   public disconnect(): void {
+    this.close();
+  }
+
+  public retire(error: string): void {
     if (this.disconnected) {
       return;
     }
-    this.disconnected = true;
-    this.lastOperation = this.coordinator
-      .release(this.owner, this.tabId)
-      .catch(() => undefined);
+    for (const requestId of this.pendingRequestIds) {
+      try {
+        this.sendFailure(requestId, error);
+      } catch {
+        // Retiring ownership must continue even if its panel is disappearing.
+      }
+    }
+    this.pendingRequestIds.clear();
+    this.close();
   }
 
   public whenIdle(): Promise<void> {
@@ -250,6 +260,7 @@ export class BackgroundInspectSession {
   }
 
   private track(request: InspectPortRequest): void {
+    this.pendingRequestIds.add(request.requestId);
     const operation = this.coordinator.setEnabled(
       this.owner,
       this.tabId,
@@ -259,7 +270,7 @@ export class BackgroundInspectSession {
     this.lastOperation = operation.catch(() => undefined);
     void operation.then(
       () => {
-        if (!this.disconnected) {
+        if (this.finishRequest(request.requestId)) {
           this.sendMessage({
             type: "browser2ide.inspect.result",
             requestId: request.requestId,
@@ -268,20 +279,38 @@ export class BackgroundInspectSession {
         }
       },
       () => {
-        if (!this.disconnected) {
+        if (this.finishRequest(request.requestId)) {
           this.sendFailure(request.requestId);
         }
       },
     );
   }
 
-  private sendFailure(requestId: string): void {
+  private finishRequest(requestId: string): boolean {
+    return !this.disconnected && this.pendingRequestIds.delete(requestId);
+  }
+
+  private sendFailure(
+    requestId: string,
+    error = "Inspect mode update failed",
+  ): void {
     this.sendMessage({
       type: "browser2ide.inspect.result",
       requestId,
       ok: false,
-      error: "Inspect mode update failed",
+      error,
     });
+  }
+
+  private close(): void {
+    if (this.disconnected) {
+      return;
+    }
+    this.disconnected = true;
+    this.pendingRequestIds.clear();
+    this.lastOperation = this.coordinator
+      .release(this.owner, this.tabId)
+      .catch(() => undefined);
   }
 
   private handleInvalidation(): void {

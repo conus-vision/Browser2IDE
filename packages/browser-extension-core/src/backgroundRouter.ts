@@ -46,8 +46,9 @@ export interface BackgroundWindowCoordinator {
     windowId: number,
     code: string,
     source: ClientSource,
+    signal?: AbortSignal,
   ): Promise<void>;
-  unlinkWindow(windowId: number): Promise<void>;
+  unlinkWindow(windowId: number, signal?: AbortSignal): Promise<void>;
   registerPanel(registration: PanelRegistration): { dispose(): void };
   publishInspect(
     windowId: number,
@@ -106,6 +107,8 @@ interface ChannelBinding extends RegistrationIdentity {
 interface PendingRegistration extends RegistrationIdentity {
   readonly generation: number;
   readonly disposeGeneration: number;
+  readonly bindingGeneration: number | undefined;
+  readonly activationToken: object | undefined;
   promise: Promise<BackgroundRouteResult | undefined>;
 }
 
@@ -125,6 +128,8 @@ interface PanelPortRecord {
 interface PanelCommandRecord {
   readonly commandToken: object;
   readonly activationToken: object;
+  readonly bindingGeneration?: number;
+  readonly abortController?: AbortController;
 }
 
 type PanelWindowCommand =
@@ -331,6 +336,8 @@ export class BackgroundRouter {
       ...identity,
       generation: this.allocateGeneration(),
       disposeGeneration: this.disposeGeneration,
+      bindingGeneration: currentBinding?.generation,
+      activationToken: this.panelPorts.get(identity.channel)?.activationToken,
       promise: Promise.resolve(undefined),
     };
     this.pendingRegistrations.set(identity.channel, pending);
@@ -361,6 +368,16 @@ export class BackgroundRouter {
         if (!sameIdentity(currentBinding, pending)) {
           return undefined;
         }
+        const currentActivationToken = this.panelPorts.get(
+          pending.channel,
+        )?.activationToken;
+        if (
+          pending.bindingGeneration === undefined ||
+          currentBinding.generation !== pending.bindingGeneration ||
+          currentActivationToken !== pending.activationToken
+        ) {
+          return okResult;
+        }
         if (currentBinding.windowId !== resolved.windowId) {
           const replacement: ChannelBinding = {
             channel: pending.channel,
@@ -376,6 +393,9 @@ export class BackgroundRouter {
           }
         }
         return okResult;
+      }
+      if (pending.bindingGeneration !== undefined) {
+        return undefined;
       }
 
       const tabChannel = this.channelByTab.get(pending.tabId);
@@ -451,7 +471,7 @@ export class BackgroundRouter {
       return;
     }
 
-    this.clearPanelActivation(record);
+    this.clearPanelActivation(record, true);
     record.port.onMessage.removeListener(record.onMessage);
     const token = {};
     const session = new BackgroundInspectSession(
@@ -491,12 +511,23 @@ export class BackgroundRouter {
     record.registration = registration;
   }
 
-  private clearPanelActivation(record: PanelPortRecord): void {
-    record.activationToken = undefined;
-    record.bindingGeneration = undefined;
+  private clearPanelActivation(
+    record: PanelPortRecord,
+    settlePendingInspect = false,
+  ): void {
+    const activationToken = record.activationToken;
     const session = record.inspectSession;
     record.inspectSession = undefined;
-    session?.disconnect();
+    if (settlePendingInspect) {
+      session?.retire("stalePanel");
+    } else {
+      session?.disconnect();
+    }
+    record.activationToken = undefined;
+    record.bindingGeneration = undefined;
+    if (activationToken) {
+      this.abortPanelCommand(record, activationToken);
+    }
     const registration = record.registration;
     record.registration = undefined;
     registration?.dispose();
@@ -563,10 +594,11 @@ export class BackgroundRouter {
     }
 
     const commandToken = {};
-    this.panelCommands.set(command.channel, {
+    const pendingRecord: PanelCommandRecord = {
       commandToken,
       activationToken,
-    });
+    };
+    this.panelCommands.set(command.channel, pendingRecord);
     try {
       const refreshed = await this.refreshPanelBinding(
         binding,
@@ -587,11 +619,6 @@ export class BackgroundRouter {
       ) {
         return { ok: false, error: "stalePanel" };
       }
-      this.panelCommands.set(command.channel, {
-        commandToken,
-        activationToken: currentActivationToken,
-      });
-
       let source: ClientSource;
       try {
         source = ClientSourceSchema.parse({
@@ -603,27 +630,40 @@ export class BackgroundRouter {
         return { ok: false, error: "stalePanel" };
       }
 
+      const abortController = new AbortController();
+      const dispatchedRecord: PanelCommandRecord = {
+        commandToken,
+        activationToken: currentActivationToken,
+        bindingGeneration: refreshed.generation,
+        abortController,
+      };
+      this.panelCommands.set(command.channel, dispatchedRecord);
+
       if (command.type === "browser2ide.linkWindow") {
         await this.coordinator.linkWindow(
           refreshed.windowId,
           command.code,
           source,
+          abortController.signal,
         );
       } else {
-        await this.coordinator.unlinkWindow(refreshed.windowId);
+        await this.coordinator.unlinkWindow(
+          refreshed.windowId,
+          abortController.signal,
+        );
       }
+      if (!this.isCurrentPanelCommand(record, refreshed, dispatchedRecord)) {
+        return { ok: false, error: "stalePanel" };
+      }
+      return okResult;
     } catch (error) {
       const currentBinding = this.bindings.get(command.channel);
-      const currentActivationToken = record.activationToken;
+      const currentCommand = this.panelCommands.get(command.channel);
       if (
         !currentBinding ||
-        !currentActivationToken ||
-        this.panelCommands.get(command.channel)?.commandToken !== commandToken ||
-        !this.isCurrentActivation(
-          record,
-          currentActivationToken,
-          currentBinding,
-        )
+        !currentCommand ||
+        currentCommand.commandToken !== commandToken ||
+        !this.isCurrentPanelCommand(record, currentBinding, currentCommand)
       ) {
         return { ok: false, error: "stalePanel" };
       }
@@ -639,18 +679,6 @@ export class BackgroundRouter {
         this.panelCommands.delete(command.channel);
       }
     }
-
-    const currentBinding = this.bindings.get(command.channel);
-    const currentActivationToken = record.activationToken;
-    return currentBinding &&
-        currentActivationToken &&
-        this.isCurrentActivation(
-          record,
-          currentActivationToken,
-          currentBinding,
-        )
-      ? okResult
-      : { ok: false, error: "stalePanel" };
   }
 
   private queueInspectRequest(
@@ -755,7 +783,7 @@ export class BackgroundRouter {
     }
     this.removeBinding(binding);
     record.port.onMessage.removeListener(record.onMessage);
-    this.clearPanelActivation(record);
+    this.clearPanelActivation(record, true);
     record.onMessage = (message) => this.rejectPendingInspect(record, message);
     record.port.onMessage.addListener(record.onMessage);
   }
@@ -875,6 +903,33 @@ export class BackgroundRouter {
       record.bindingGeneration === binding.generation &&
       this.bindings.get(binding.channel) === binding
     );
+  }
+
+  private isCurrentPanelCommand(
+    record: PanelPortRecord,
+    binding: ChannelBinding,
+    command: PanelCommandRecord,
+  ): boolean {
+    return (
+      this.panelCommands.get(record.channel) === command &&
+      command.bindingGeneration === binding.generation &&
+      command.abortController !== undefined &&
+      !command.abortController.signal.aborted &&
+      this.isCurrentActivation(record, command.activationToken, binding)
+    );
+  }
+
+  private abortPanelCommand(
+    record: PanelPortRecord,
+    activationToken: object,
+  ): void {
+    const command = this.panelCommands.get(record.channel);
+    if (
+      command?.activationToken === activationToken &&
+      command.abortController
+    ) {
+      command.abortController.abort();
+    }
   }
 
   private removeBinding(binding: ChannelBinding): void {

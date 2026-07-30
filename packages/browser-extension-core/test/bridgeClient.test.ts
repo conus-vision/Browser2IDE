@@ -221,25 +221,42 @@ describe("BrowserBridgeClient", () => {
   });
 
   it("uses a per-inspect source without changing the connection source", () => {
-    const harness = createHarness({
-      source: {
-        role: "browser",
-        id: "window-10",
-        label: "Firefox window 10",
-        metadata: { windowId: 10 },
+    const source = {
+      role: "browser" as const,
+      id: "window-10",
+      label: "Firefox window 10",
+      metadata: {
+        trace: "preserved",
+        browserName: "Firefox",
+        windowId: 10,
+        browserWindowId: 10,
+        tabId: 101,
+        browser_tab_id: 101,
+        nested: {
+          inspectedTabId: 101,
+          allowed: "yes",
+        },
       },
+    };
+    const harness = createHarness({
+      source,
     });
 
     harness.client.connect(CREDENTIALS);
     harness.sockets[0].open();
-    expect(JSON.parse(harness.sockets[0].sent[0])).toMatchObject({
+    const hello = JSON.parse(harness.sockets[0].sent[0]);
+    expect(hello).toMatchObject({
       type: "hello",
       source: {
         role: "browser",
         id: "window-10",
         label: "Firefox window 10",
-        metadata: { windowId: 10 },
       },
+    });
+    expect(hello.source.metadata).toEqual({
+      trace: "preserved",
+      browserName: "Firefox",
+      nested: { allowed: "yes" },
     });
     authenticate(harness.sockets[0]);
 
@@ -259,14 +276,30 @@ describe("BrowserBridgeClient", () => {
         role: "browser",
         id: "panel-101",
         label: "Firefox window 10",
-        metadata: { windowId: 10 },
       },
+    });
+    expect(message.source.metadata).toEqual({
+      trace: "preserved",
+      browserName: "Firefox",
+      nested: { allowed: "yes" },
     });
     expect(message.metadata).toEqual({ trace: "preserved" });
     expect(payload.metadata).toEqual({
       trace: "preserved",
       browserWindowId: 10,
       tabId: 101,
+    });
+    expect(source.metadata).toEqual({
+      trace: "preserved",
+      browserName: "Firefox",
+      windowId: 10,
+      browserWindowId: 10,
+      tabId: 101,
+      browser_tab_id: 101,
+      nested: {
+        inspectedTabId: 101,
+        allowed: "yes",
+      },
     });
   });
 

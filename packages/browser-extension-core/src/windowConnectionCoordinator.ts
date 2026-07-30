@@ -123,9 +123,11 @@ export class WindowConnectionCoordinator {
     windowId: number,
     code: string,
     source: ClientSource,
+    signal?: AbortSignal,
   ): Promise<void> {
     this.assertActive();
     assertWindowId(windowId);
+    throwIfAborted(signal);
     const parsedCode = parseLinkCode(code);
     const connectionSource = validatedConnectionSource(source);
     const record = this.recordFor(windowId);
@@ -140,7 +142,14 @@ export class WindowConnectionCoordinator {
     this.setState(record, "linking");
 
     try {
-      await this.enqueueStore(windowId, () => this.store.remove(windowId));
+      await waitForAbort(
+        this.enqueueStore(windowId, () => {
+          throwIfAborted(signal);
+          return this.store.remove(windowId);
+        }),
+        signal,
+        () => this.cancelWindowOperation(record, generation),
+      );
     } catch (error) {
       if (this.isCurrent(record, generation)) {
         this.setState(record, "error");
@@ -170,9 +179,13 @@ export class WindowConnectionCoordinator {
     }
   }
 
-  public async unlinkWindow(windowId: number): Promise<void> {
+  public async unlinkWindow(
+    windowId: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
     this.assertActive();
     assertWindowId(windowId);
+    throwIfAborted(signal);
     const record = this.records.get(windowId);
     let generation: number | undefined;
     if (record) {
@@ -187,7 +200,18 @@ export class WindowConnectionCoordinator {
     }
 
     try {
-      await this.enqueueStore(windowId, () => this.store.remove(windowId));
+      await waitForAbort(
+        this.enqueueStore(windowId, () => {
+          throwIfAborted(signal);
+          return this.store.remove(windowId);
+        }),
+        signal,
+        () => {
+          if (record && generation !== undefined) {
+            this.cancelWindowOperation(record, generation);
+          }
+        },
+      );
     } catch (error) {
       if (
         record &&
@@ -800,6 +824,23 @@ export class WindowConnectionCoordinator {
     return record.link !== undefined;
   }
 
+  private cancelWindowOperation(
+    record: WindowRecord,
+    generation: number,
+  ): void {
+    if (!this.isCurrent(record, generation)) {
+      return;
+    }
+    this.invalidate(record);
+    this.revokeClient(record);
+    record.link = undefined;
+    record.pendingLink = undefined;
+    record.connectionSource = undefined;
+    record.credentialsWritePending = false;
+    record.reconnectAttempts = 0;
+    this.setState(record, "notLinked");
+  }
+
   private stopStoredReconnect(record: WindowRecord): void {
     this.invalidate(record);
     this.disconnectClient(record);
@@ -960,4 +1001,47 @@ function safeDisconnect(client: WindowConnectionClient): void {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error("Window connection operation aborted");
+  }
+}
+
+function waitForAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal | undefined,
+  onAbort: () => void,
+): Promise<T> {
+  if (!signal) {
+    return operation;
+  }
+  if (signal.aborted) {
+    onAbort();
+    return Promise.reject(new Error("Window connection operation aborted"));
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", handleAbort);
+      callback();
+    };
+    const handleAbort = (): void => {
+      finish(() => {
+        onAbort();
+        reject(new Error("Window connection operation aborted"));
+      });
+    };
+    signal.addEventListener("abort", handleAbort, { once: true });
+    void operation.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
 }

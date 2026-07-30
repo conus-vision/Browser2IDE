@@ -69,6 +69,16 @@ type ConnectionIntent =
   | { readonly kind: "credentials"; readonly credentials: BrowserCredentials };
 
 const MAX_RECONNECT_ATTEMPTS = 5;
+const browserRoutingMetadataKeys = new Set([
+  "windowid",
+  "tabid",
+  "browserwindowid",
+  "browsertabid",
+  "inspectedwindowid",
+  "inspectedtabid",
+  "panelwindowid",
+  "paneltabid",
+]);
 
 export class BrowserBridgeClient {
   private readonly socketFactory: (url: string) => BrowserSocket;
@@ -93,13 +103,17 @@ export class BrowserBridgeClient {
       options.socketFactory ?? ((url) => new WebSocket(url) as BrowserSocket);
     this.messageId = options.messageId ?? defaultMessageId;
     this.now = options.now ?? (() => new Date());
-    this.connectionSource = ClientSourceSchema.parse(
+    const connectionSource = ClientSourceSchema.parse(
       options.source ?? {
         role: "browser",
         id: options.sourceId,
         metadata: {},
       },
     );
+    this.connectionSource = {
+      ...connectionSource,
+      metadata: withoutBrowserRoutingMetadata(connectionSource.metadata),
+    };
     this.scheduleTimer = options.setTimeout ?? setTimeout;
     this.cancelTimer = options.clearTimeout ?? clearTimeout;
   }
@@ -469,6 +483,30 @@ export function withoutInternalRoutingMetadata(
     ...payload,
     metadata,
   };
+}
+
+function withoutBrowserRoutingMetadata(
+  metadata: Record<string, unknown>,
+): Record<string, unknown> {
+  return sanitizeBrowserMetadataValue(metadata) as Record<string, unknown>;
+}
+
+function sanitizeBrowserMetadataValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeBrowserMetadataValue);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!browserRoutingMetadataKeys.has(normalizedKey)) {
+      sanitized[key] = sanitizeBrowserMetadataValue(nestedValue);
+    }
+  }
+  return sanitized;
 }
 
 export interface InspectPublisherOptions {

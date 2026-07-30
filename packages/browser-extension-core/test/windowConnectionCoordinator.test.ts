@@ -90,6 +90,43 @@ describe("WindowConnectionCoordinator", () => {
     });
   });
 
+  it("cancels a pending link cleanup when its owning panel operation aborts", async () => {
+    const storage = new DeferredRemoveSessionStorage();
+    const harness = coordinatorHarness(storage);
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const controller = new AbortController();
+    const linking = harness.coordinator.linkWindow(
+      10,
+      "4873507",
+      browserSource("window-10"),
+      controller.signal,
+    );
+    await storage.waitForRemove();
+
+    let outcome: "resolved" | Error | undefined;
+    void linking.then(
+      () => {
+        outcome = "resolved";
+      },
+      (error: unknown) => {
+        outcome = error instanceof Error ? error : new Error(String(error));
+      },
+    );
+    controller.abort();
+    await harness.flush();
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toContain("aborted");
+    storage.resolveRemove();
+    await harness.flush();
+    expect(harness.createdClients).toEqual([]);
+    expect(harness.coordinator.state(10)).toBe("notLinked");
+  });
+
   it("keeps clients and endpoints isolated between browser windows", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.registerPanel({

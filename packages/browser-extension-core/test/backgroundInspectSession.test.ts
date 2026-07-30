@@ -73,6 +73,47 @@ describe("background inspect session", () => {
     expect(port.sent).toEqual([]);
   });
 
+  it("settles a pending request as stale before retiring a live panel session", async () => {
+    const enable = deferred<void>();
+    const calls: unknown[] = [];
+    const port = new FakePort("browser2ide.devtools.channel-1");
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript(details) {
+        calls.push(["inject", details]);
+      },
+      async sendTabMessage(tabId, message) {
+        calls.push(["tab", tabId, message]);
+        if (isRecord(message) && message.type === "enableInspectMode") {
+          await enable.promise;
+        }
+      },
+    });
+    const session = attachBackgroundInspectSession(port, coordinator, 17);
+
+    port.emitMessage(request("pending-enable", true));
+    await flushAsync();
+    session.retire("stalePanel");
+
+    expect(port.sent).toEqual([
+      {
+        type: "browser2ide.inspect.result",
+        requestId: "pending-enable",
+        ok: false,
+        error: "stalePanel",
+      },
+    ]);
+
+    enable.resolve();
+    await session.whenIdle();
+
+    expect(calls.at(-1)).toEqual([
+      "tab",
+      17,
+      { type: "disableInspectMode" },
+    ]);
+    expect(port.sent).toHaveLength(1);
+  });
+
   it("serializes enable and disable requests on the owning port", async () => {
     const enable = deferred<void>();
     const calls: unknown[] = [];
