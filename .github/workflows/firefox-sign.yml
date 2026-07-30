@@ -7,6 +7,11 @@ on:
         description: Existing draft release tag (vX.Y.Z)
         required: true
         type: string
+      resume_run_id:
+        description: Prior failed signing run ID whose AMO upload state should be resumed
+        required: false
+        default: ""
+        type: string
       mode:
         description: Sign and attach XPI, or publish an installed-verified draft
         required: true
@@ -17,6 +22,7 @@ on:
           - publish
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -26,7 +32,7 @@ concurrency:
 jobs:
   sign:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Check out requested tag
@@ -57,7 +63,10 @@ jobs:
       - name: Verify checkout is the requested annotated release tag
         id: release
         env:
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          MODE: ${{ inputs.mode }}
           RELEASE_TAG: ${{ inputs.tag }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
         run: |
           set -euo pipefail
           git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
@@ -65,6 +74,14 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           RELEASE_VERSION="$(node tools/verify-release-version.mjs "$RELEASE_TAG")"
           printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          CURRENT_STATE_ARTIFACT="$(node tools/amo-signing-state.mjs artifact-name "$RELEASE_TAG" "$CURRENT_RUN_ID")"
+          printf 'current_state_artifact=%s\n' "$CURRENT_STATE_ARTIFACT" >> "$GITHUB_OUTPUT"
+          if [[ -n "$RESUME_RUN_ID" ]]; then
+            test "$MODE" = "sign"
+            [[ "$RESUME_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            RESUME_STATE_ARTIFACT="$(node tools/amo-signing-state.mjs artifact-name "$RELEASE_TAG" "$RESUME_RUN_ID")"
+            printf 'resume_state_artifact=%s\n' "$RESUME_STATE_ARTIFACT" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Rebuild and verify unsigned artifacts
         run: corepack pnpm package
@@ -76,6 +93,23 @@ jobs:
         run: |
           set -euo pipefail
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = "true"
+
+      - name: Restore prior AMO upload state
+        if: inputs.mode == 'sign' && inputs.resume_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.release.outputs.resume_state_artifact }}
+          path: extensions/firefox
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.resume_run_id }}
+
+      - name: Validate restored AMO upload state
+        if: inputs.mode == 'sign' && inputs.resume_run_id != ''
+        run: node tools/amo-signing-state.mjs validate extensions/firefox/.amo-upload-uuid
+
+      - name: Verify fresh signing has no prior AMO upload state
+        if: inputs.mode == 'sign' && inputs.resume_run_id == ''
+        run: test ! -e extensions/firefox/.amo-upload-uuid
 
       - name: Check secrets and sign unlisted Firefox XPI
         if: inputs.mode == 'sign'
@@ -101,7 +135,30 @@ jobs:
             --upload-source-code="../../artifacts/browser2ide-firefox-source-${RELEASE_VERSION}.zip" \
             --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**" \
             --no-input \
+            --approval-timeout=900000 \
             --timeout=900000
+
+      - name: Prepare AMO upload state for preservation
+        if: always() && inputs.mode == 'sign' && steps.release.outcome == 'success'
+        id: preserve_state
+        env:
+          STATE_DESTINATION: ${{ runner.temp }}/browser2ide-amo-state/.amo-upload-uuid
+        run: |
+          set -euo pipefail
+          STATE_DIRECTORY="$(dirname "$STATE_DESTINATION")"
+          test ! -e "$STATE_DIRECTORY"
+          node tools/amo-signing-state.mjs preserve extensions/firefox/.amo-upload-uuid "$STATE_DESTINATION"
+
+      - name: Preserve AMO upload state
+        if: always() && inputs.mode == 'sign' && steps.release.outcome == 'success' && steps.preserve_state.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.release.outputs.current_state_artifact }}
+          path: ${{ runner.temp }}/browser2ide-amo-state/.amo-upload-uuid
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
 
       - name: Normalize the single signed artifact
         if: inputs.mode == 'sign'

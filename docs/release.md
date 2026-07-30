@@ -103,22 +103,89 @@ installation. Leave the release in draft.
 ## Sign Firefox
 
 In GitHub Actions, run **Sign Firefox and publish release** with the exact tag
-and mode `sign`. The workflow checks out that tag, rebuilds and verifies the
-complete unsigned artifact set, confirms that the release exists and is still
-a draft, and invokes `web-ext` 10.4.0 from `extensions/firefox` with channel
-`unlisted`. It also submits the verified Firefox source ZIP to AMO alongside
-the bundled extension so Mozilla reviewers can reproduce the build.
+and mode `sign`; leave `resume_run_id` empty for this initial submission. The
+workflow checks out that tag, rebuilds and verifies the complete unsigned
+artifact set, confirms that the release exists and is still a draft, and
+invokes `web-ext` 10.4.0 from `extensions/firefox` with channel `unlisted`. It
+also submits the verified Firefox source ZIP so Mozilla reviewers can
+reproduce the build.
 
-Mozilla may delay automated signing or require review. The request is allowed
-15 minutes; if it times out or AMO rejects it, the workflow fails and the
-release remains a draft. Resolve the AMO status and rerun mode `sign`; do not
-publish an unsigned substitute.
+`web-ext` records the AMO upload UUID, channel, and package CRC in
+`extensions/firefox/.amo-upload-uuid` before waiting for approval. After every
+sign run, including one that exits on its validation or approval timeout, the
+workflow validates those three fields and preserves the hidden file as a
+tag/run-specific GitHub Actions artifact for seven days. The artifact contains
+no AMO issuer, secret, or other API credential.
+
+Mozilla may delay automated signing or require review. Validation and approval
+each have an explicit 15-minute timeout; the GitHub job has additional time to
+preserve state after `web-ext` returns. An approval timeout means the existing
+AMO submission may still be pending. It is not permission to create another
+submission.
+
+If a sign run times out or reports pending review:
+
+1. Do not launch mode `sign` again with an empty `resume_run_id`.
+2. Open the AMO Developer Hub and inspect the existing version's status.
+3. While the state artifact exists, launch mode `sign` with the same tag and
+   set `resume_run_id` to the numeric GitHub run ID that timed out. The workflow
+   reconstructs the expected artifact name, restores `.amo-upload-uuid`, and
+   asks `web-ext` to continue the same upload.
+4. If another resumed run times out, inspect AMO again and use that run's ID for
+   the next resume. Never discard available state merely to start over.
 
 After AMO returns exactly one XPI, the workflow names it
 `browser2ide-firefox-X.Y.Z.xpi`, adds it to `SHA256SUMS`, uploads both with
 `--clobber`, and verifies the exact signed draft asset set. The unsigned ZIP is
 retained as the reproducible build input; the XPI is the Firefox Stable install
 artifact.
+
+### Recovery After State Expiry
+
+An expired state artifact does not justify another AMO submission. Check the
+AMO Developer Hub first. If the version is pending, wait for Mozilla. If it is
+approved, download its signed XPI from the Developer Hub and attach that exact
+file to the draft. A new version is required only when Mozilla rejects the
+submission or code/metadata changes are needed, not merely because review is
+slow or the state artifact expired.
+
+Use an empty recovery directory and verify the current draft before adding the
+AMO file. The following commands run in Linux or Git Bash from the repository
+root; replace `AMO_DOWNLOAD_DIR` with the directory containing only the XPI
+downloaded from the Developer Hub:
+
+```bash
+set -euo pipefail
+TAG="v0.2.0"
+VERSION="$(node tools/verify-release-version.mjs "$TAG")"
+RECOVERY_DIR="artifacts/recovery-${VERSION}"
+AMO_DOWNLOAD_DIR="/absolute/path/to/amo-download"
+
+test ! -e "$RECOVERY_DIR"
+mkdir "$RECOVERY_DIR"
+gh release download "$TAG" --dir "$RECOVERY_DIR"
+(cd "$RECOVERY_DIR" && sha256sum --check --strict SHA256SUMS)
+
+mapfile -d '' -t XPI_FILES < <(find "$AMO_DOWNLOAD_DIR" -maxdepth 1 -type f -name '*.xpi' -print0)
+test "${#XPI_FILES[@]}" -eq 1
+SIGNED_XPI="$RECOVERY_DIR/browser2ide-firefox-${VERSION}.xpi"
+test ! -e "$SIGNED_XPI"
+mv -- "${XPI_FILES[0]}" "$SIGNED_XPI"
+
+node tools/write-checksums.mjs "$RECOVERY_DIR"
+gh release upload "$TAG" "$SIGNED_XPI" "$RECOVERY_DIR/SHA256SUMS" --clobber
+
+VERIFY_DIR="artifacts/recovery-verify-${VERSION}"
+RELEASE_JSON="artifacts/recovery-release-${VERSION}.json"
+test ! -e "$VERIFY_DIR"
+mkdir "$VERIFY_DIR"
+gh release download "$TAG" --dir "$VERIFY_DIR"
+gh release view "$TAG" --json isDraft,assets > "$RELEASE_JSON"
+node tools/verify-release-assets.mjs "$RELEASE_JSON" "$VERSION" "$VERIFY_DIR/SHA256SUMS"
+(cd "$VERIFY_DIR" && sha256sum --check --strict SHA256SUMS)
+```
+
+Complete the installed verification with this XPI, then use mode `publish`.
 
 ## Verify Installed Artifacts
 
@@ -161,9 +228,9 @@ create a listed AMO store page.
 ## Rollback And Recovery
 
 If draft creation, signing, or installed verification fails, leave the release
-in draft and rerun only after the cause is understood. A repeated sign run
-replaces the signed XPI and checksum file while preserving the verified
-unsigned artifacts.
+in draft and identify which stage failed. For an AMO timeout, preserve and
+resume the same upload as described above. Do not create another upload for a
+version that is pending or already approved.
 
 Never delete, move, or rewrite a pushed release tag, and never remove published
 history to hide a defective release. For a code defect, document it and ship a
