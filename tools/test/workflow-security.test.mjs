@@ -188,6 +188,18 @@ test("Firefox publish requires exact sign-run provenance and manually verified X
   );
   assert.match(publishStep.run, /-F draft=false/);
   assert.match(publishStep.run, /env -u GH_TOKEN node .*verify-release-publication\.mjs published/);
+  assert.equal(
+    (publishStep.run.match(/verify-publication-checksums\.mjs/g) ?? []).length,
+    2,
+  );
+  const preChecksum = publishStep.run.indexOf("verify-publication-checksums.mjs");
+  const postChecksum = publishStep.run.lastIndexOf("verify-publication-checksums.mjs");
+  const publicationPatch = publishStep.run.indexOf("--method PATCH");
+  assert.ok(preChecksum < publicationPatch && publicationPatch < postChecksum);
+  assert.match(
+    publishStep.run,
+    /cmp -- .*publication-before\.checksums.*publication-after\.checksums/s,
+  );
   assert.match(publishStep.run, /cmp -- .*publication-before.*publication-after/s);
   assert.doesNotMatch(source, /gh release edit/);
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -24,6 +25,11 @@ const unsignedNames = [
   "SHA256SUMS",
 ];
 const signedNames = [...unsignedNames, signedName];
+const publicationBinaryNames = signedNames.filter((name) => name !== "SHA256SUMS");
+const publicationContents = new Map(
+  publicationBinaryNames.map((name) => [name, Buffer.from(`artifact:${name}\n`)]),
+);
+const completePublicationManifest = checksumManifest(publicationContents);
 const original = [
   `${"1".repeat(64)}  browser2ide-chrome-${version}.zip`,
   `${"2".repeat(64)}  ${unsignedName}`,
@@ -38,6 +44,98 @@ test("checksum manifests reject malformed and duplicate entries", () => {
     () => parseChecksumManifest(`${original}${"9".repeat(64)}  ${unsignedName}\n`),
     /duplicate checksum filename/,
   );
+});
+
+test("publication checksum manifest requires exactly five binary artifacts", () => {
+  assert.equal(typeof releasePublishing.assertPublicationChecksumManifest, "function");
+  const exact = releasePublishing.assertPublicationChecksumManifest(
+    completePublicationManifest,
+    version,
+  );
+  assert.deepEqual([...exact.keys()].sort(), [...publicationBinaryNames].sort());
+
+  const firstName = publicationBinaryNames[0];
+  const partial = checksumManifest(new Map([[firstName, publicationContents.get(firstName)]]));
+  assert.equal(
+    parseChecksumManifest(partial).get(firstName),
+    sha256(publicationContents.get(firstName)),
+    "the partial manifest has a correct listed hash and would satisfy a listed-only check",
+  );
+  assert.throws(
+    () => releasePublishing.assertPublicationChecksumManifest(partial, version),
+    /publication checksum asset set differs/i,
+  );
+
+  const selfEntry = `${completePublicationManifest}${"a".repeat(64)}  SHA256SUMS\n`;
+  assert.throws(
+    () => releasePublishing.assertPublicationChecksumManifest(selfEntry, version),
+    /publication checksum asset set differs/i,
+  );
+  const extraEntry = `${completePublicationManifest}${"b".repeat(64)}  extra.zip\n`;
+  assert.throws(
+    () => releasePublishing.assertPublicationChecksumManifest(extraEntry, version),
+    /publication checksum asset set differs/i,
+  );
+  const firstLine = completePublicationManifest.split("\n")[0];
+  assert.throws(
+    () =>
+      releasePublishing.assertPublicationChecksumManifest(
+        `${completePublicationManifest}${firstLine}\n`,
+        version,
+      ),
+    /duplicate checksum filename/i,
+  );
+  assert.throws(
+    () =>
+      releasePublishing.assertPublicationChecksumManifest(
+        completePublicationManifest.replace(/^[0-9a-f]/, "A"),
+        version,
+      ),
+    /invalid checksum line/i,
+  );
+});
+
+test("publication checksum verifier rejects partial and replaced manifests", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-publication-checksums-"));
+  try {
+    for (const [name, contents] of publicationContents) {
+      await writeFile(resolve(directory, name), contents);
+    }
+    const manifestPath = resolve(directory, "SHA256SUMS");
+    await writeFile(manifestPath, completePublicationManifest);
+
+    const valid = runPublicationChecksumVerifier(directory);
+    assert.equal(valid.status, 0, valid.stderr);
+    const fingerprint = JSON.parse(valid.stdout);
+    assert.equal(
+      fingerprint.checksumManifestSha256,
+      sha256(Buffer.from(completePublicationManifest)),
+    );
+    assert.deepEqual(
+      fingerprint.artifacts.map(({ name }) => name),
+      [...publicationBinaryNames].sort(),
+    );
+
+    const firstName = publicationBinaryNames[0];
+    const partialManifest = checksumManifest(
+      new Map([[firstName, publicationContents.get(firstName)]]),
+    );
+    await writeFile(manifestPath, partialManifest);
+    await assertListedOnlyChecksumsPass(directory, partialManifest);
+    const partial = runPublicationChecksumVerifier(directory);
+    assert.notEqual(partial.status, 0);
+    assert.match(partial.stderr, /publication checksum asset set differs/i);
+
+    await writeFile(
+      manifestPath,
+      completePublicationManifest.replace(/^[0-9a-f]{64}/, "f".repeat(64)),
+    );
+    const replaced = runPublicationChecksumVerifier(directory);
+    assert.notEqual(replaced.status, 0);
+    assert.match(replaced.stderr, /checksum differs/i);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("draft release must contain signed and unsigned Firefox artifacts with checksums", () => {
@@ -341,4 +439,33 @@ function runPublicationVerifier(state, releasePath) {
     ],
     { encoding: "utf8" },
   );
+}
+
+function runPublicationChecksumVerifier(directory) {
+  return spawnSync(
+    process.execPath,
+    [
+      resolve(import.meta.dirname, "../verify-publication-checksums.mjs"),
+      directory,
+      version,
+    ],
+    { encoding: "utf8" },
+  );
+}
+
+function checksumManifest(contentsByName) {
+  return [...contentsByName]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, contents]) => `${sha256(contents)}  ${name}\n`)
+    .join("");
+}
+
+function sha256(contents) {
+  return createHash("sha256").update(contents).digest("hex");
+}
+
+async function assertListedOnlyChecksumsPass(directory, manifestSource) {
+  for (const [name, expectedSha256] of parseChecksumManifest(manifestSource)) {
+    assert.equal(sha256(await readFile(resolve(directory, name))), expectedSha256);
+  }
 }

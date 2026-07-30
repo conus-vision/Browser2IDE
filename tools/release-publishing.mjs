@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -24,6 +25,43 @@ export function parseChecksumManifest(source) {
     entries.set(filename, hash);
   }
   return entries;
+}
+
+export function assertPublicationChecksumManifest(source, version) {
+  const entries = parseChecksumManifest(source);
+  const actualNames = [...entries.keys()].sort(compareAscii);
+  const expectedNames = expectedReleaseAssetNames(version, true).filter(
+    (name) => name !== "SHA256SUMS",
+  );
+  if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+    throw new Error(
+      `Publication checksum asset set differs: ${actualNames.join(", ")}`,
+    );
+  }
+  return entries;
+}
+
+export async function verifyPublicationChecksumDirectory(directory, version) {
+  const manifestPath = resolve(directory, "SHA256SUMS");
+  await assertRegularFile(manifestPath, "publication SHA256SUMS");
+  const manifestBytes = await readFile(manifestPath);
+  const entries = assertPublicationChecksumManifest(manifestBytes.toString("utf8"), version);
+  const artifacts = [];
+
+  for (const name of [...entries.keys()].sort(compareAscii)) {
+    const artifactPath = resolve(directory, name);
+    await assertRegularFile(artifactPath, `publication ${name}`);
+    const actualSha256 = sha256(await readFile(artifactPath));
+    if (actualSha256 !== entries.get(name)) {
+      throw new Error(`${name} checksum differs from SHA256SUMS`);
+    }
+    artifacts.push({ name, sha256: actualSha256 });
+  }
+
+  return {
+    checksumManifestSha256: sha256(manifestBytes),
+    artifacts,
+  };
 }
 
 export function assertReleaseAssets(release, version, checksumSource, expectedDatabaseId) {
@@ -222,6 +260,10 @@ function parseNumericRestId(value, label, kind) {
     throw new Error(`${label} must have a positive numeric ${kind} id`);
   }
   return String(value);
+}
+
+function sha256(contents) {
+  return createHash("sha256").update(contents).digest("hex");
 }
 
 async function assertRegularFile(path, label) {

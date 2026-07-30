@@ -165,12 +165,23 @@ test("write jobs preserve release identity and race checks without AMO secrets",
   assert.match(publishSteps[initialVerify].run, /--expected-database-id/);
   assert.match(publishSteps[initialVerify].run, /cmp --/);
   const publishRun = publishSteps[publish].run;
+  const prepareBundle = workflow.jobs.validate.steps.find(
+    (step) => step.name === "Prepare immutable unsigned release bundle",
+  );
+  assert.match(prepareBundle.run, /tools\/verify-publication-checksums\.mjs/);
   assert.match(publishRun, /releases\/\$\{EXPECTED_RELEASE_DATABASE_ID\}/);
   assert.match(publishRun, /verify-release-publication\.mjs draft/);
   assert.match(publishRun, /--method PATCH/);
   assert.match(publishRun, /-F draft=false/);
   assert.match(publishRun, /verify-release-publication\.mjs published/);
   assert.match(publishRun, /sha256sum --check --strict SHA256SUMS/);
+  const firstChecksumVerification = publishRun.indexOf("verify-publication-checksums.mjs");
+  const patch = publishRun.indexOf("--method PATCH");
+  const lastChecksumVerification = publishRun.lastIndexOf("verify-publication-checksums.mjs");
+  assert.ok(firstChecksumVerification >= 0);
+  assert.ok(firstChecksumVerification < patch);
+  assert.ok(patch < lastChecksumVerification);
+  assert.match(publishRun, /cmp -- .*publication-before\.checksums.*publication-after\.checksums/s);
   assert.match(publishRun, /VERIFIED_XPI_SHA256/);
   assert.doesNotMatch(JSON.stringify(workflow.jobs.publish), /gh release edit/);
 

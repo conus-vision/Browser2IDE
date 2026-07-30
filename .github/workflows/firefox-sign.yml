@@ -217,6 +217,7 @@ jobs:
             tools/release-publishing.mjs \
             tools/release-signing-provenance.mjs \
             tools/verify-release-assets.mjs \
+            tools/verify-publication-checksums.mjs \
             tools/verify-release-publication.mjs \
             tools/verify-release-version.mjs \
             tools/write-checksums.mjs \
@@ -708,6 +709,8 @@ jobs:
           BEFORE_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-before.fingerprint.json"
           PATCH_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-after-patch.fingerprint.json"
           AFTER_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-after.fingerprint.json"
+          BEFORE_CHECKSUM_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-before.checksums.json"
+          AFTER_CHECKSUM_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-after.checksums.json"
           BEFORE_DIR="$RUNNER_TEMP/browser2ide-publication-before-assets"
           AFTER_DIR="$RUNNER_TEMP/browser2ide-publication-after-assets"
           for PATH_TO_CREATE in \
@@ -717,6 +720,8 @@ jobs:
             "$BEFORE_FINGERPRINT" \
             "$PATCH_FINGERPRINT" \
             "$AFTER_FINGERPRINT" \
+            "$BEFORE_CHECKSUM_FINGERPRINT" \
+            "$AFTER_CHECKSUM_FINGERPRINT" \
             "$BEFORE_DIR" \
             "$AFTER_DIR"; do
             test ! -e "$PATH_TO_CREATE"
@@ -757,6 +762,9 @@ jobs:
             "$EXPECTED_RELEASE_TARGET" \
             > "$BEFORE_FINGERPRINT"
           download_release_assets "$BEFORE_JSON" "$BEFORE_DIR"
+          env -u GH_TOKEN node release-bundle/tools/verify-publication-checksums.mjs \
+            "$BEFORE_DIR" "$RELEASE_VERSION" \
+            > "$BEFORE_CHECKSUM_FINGERPRINT"
           (cd "$BEFORE_DIR" && sha256sum --check --strict SHA256SUMS)
           cmp -- "$BEFORE_DIR/browser2ide-chrome-${RELEASE_VERSION}.zip" \
             "release-bundle/artifacts/browser2ide-chrome-${RELEASE_VERSION}.zip"
@@ -797,7 +805,13 @@ jobs:
             "$RUNNER_TEMP/browser2ide-publication-after.fingerprint.json"
 
           download_release_assets "$AFTER_JSON" "$AFTER_DIR"
+          env -u GH_TOKEN node release-bundle/tools/verify-publication-checksums.mjs \
+            "$AFTER_DIR" "$RELEASE_VERSION" \
+            > "$AFTER_CHECKSUM_FINGERPRINT"
           (cd "$AFTER_DIR" && sha256sum --check --strict SHA256SUMS)
           for asset_name in "${ASSET_NAMES[@]}"; do
             cmp -- "$BEFORE_DIR/$asset_name" "$AFTER_DIR/$asset_name"
           done
+          cmp -- \
+            "$RUNNER_TEMP/browser2ide-publication-before.checksums.json" \
+            "$RUNNER_TEMP/browser2ide-publication-after.checksums.json"
