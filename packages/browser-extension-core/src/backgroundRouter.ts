@@ -130,6 +130,7 @@ interface PanelPortRecord {
   registration?: { dispose(): void };
   inspectSession?: BackgroundInspectSession;
   inspectCommandTail: Promise<void>;
+  windowStateTail: Promise<void>;
 }
 
 interface PanelCommandRecord {
@@ -252,6 +253,7 @@ export class BackgroundRouter {
       onDisconnect: () => this.closePanelPort(record, false),
       onMessage: (message) => this.rejectPendingInspect(record, message),
       inspectCommandTail: Promise.resolve(),
+      windowStateTail: Promise.resolve(),
     };
     this.panelPorts.set(channel, record);
     port.onMessage.addListener(record.onMessage);
@@ -636,7 +638,7 @@ export class BackgroundRouter {
         tabId: binding.tabId,
         sourceId: binding.sourceId,
         onStateChanged: (state) =>
-          this.postWindowState(record, token, state),
+          this.queueWindowState(record, token, binding, state),
       });
     } catch (error) {
       this.reportError(error);
@@ -1046,15 +1048,42 @@ export class BackgroundRouter {
     return okResult;
   }
 
-  private postWindowState(
+  private queueWindowState(
     record: PanelPortRecord,
     token: object,
+    binding: ChannelBinding,
     state: BrowserWindowConnectionState,
   ): void {
-    this.postToCurrentPort(record, token, {
-      type: "browser2ide.windowState",
-      state,
+    if (!this.isCurrentActivation(record, token, binding)) {
+      return;
+    }
+    const operation = record.windowStateTail.then(async () => {
+      if (
+        !record.registration ||
+        !this.isCurrentActivation(record, token, binding)
+      ) {
+        return;
+      }
+      const refreshed = await this.refreshPanelBinding(
+        binding,
+        record,
+        token,
+      );
+      if (
+        refreshed !== binding ||
+        !record.registration ||
+        !this.isCurrentActivation(record, token, binding)
+      ) {
+        return;
+      }
+      this.postToCurrentPort(record, token, {
+        type: "browser2ide.windowState",
+        state,
+      });
     });
+    record.windowStateTail = operation.catch((error) =>
+      this.reportError(error),
+    );
   }
 
   private postToCurrentPort(

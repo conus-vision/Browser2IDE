@@ -275,10 +275,10 @@ describe("BackgroundRouter", () => {
     const harness = createHarness({
       getTab: async (tabId) => {
         lookup += 1;
-        if (lookup === 1) {
+        if (lookup <= 2) {
           return { id: tabId, windowId: 10 };
         }
-        if (lookup === 2) {
+        if (lookup === 3) {
           return staleLookup.promise;
         }
         return { id: tabId, windowId: 20 };
@@ -370,9 +370,15 @@ describe("BackgroundRouter", () => {
   it("uses attach as the authority when initial registration lookup returns stale A", async () => {
     const staleLookup = deferred<{ id: number; windowId: number }>();
     const events = createRouterSubscriptionHarness();
+    let lookup = 0;
     const harness = createHarness({
       subscriptions: events.subscriptions,
-      getTab: async () => staleLookup.promise,
+      getTab: async (tabId) => {
+        lookup += 1;
+        return lookup === 1
+          ? staleLookup.promise
+          : { id: tabId, windowId: 20 };
+      },
     });
     const port = harness.panelPort("channel-1");
     harness.router.connectPort(port);
@@ -690,7 +696,18 @@ describe("BackgroundRouter", () => {
       ["inject", { target: { tabId: 17 }, files: ["dist/contentScript.js"] }],
       ["tab", 17, { type: "enableInspectMode" }],
     ]);
-    expect(harness.getTabCalls).toEqual([17, 17, 17, 17, 17, 17, 17]);
+    expect(harness.getTabCalls).toEqual([
+      17,
+      17,
+      17,
+      17,
+      17,
+      17,
+      17,
+      17,
+      17,
+      17,
+    ]);
   });
 
   it("invalidates a closed tab before window commands or Inspect", async () => {
@@ -1226,6 +1243,93 @@ describe("BackgroundRouter", () => {
       expect(harness.reportedErrors).toEqual([]);
     },
   );
+
+  it("drops an old A state callback and migrates before deferred Link settles", async () => {
+    const tabs = new Map([[17, 10]]);
+    const operation = deferred<void>();
+    let signal: AbortSignal | undefined;
+    const harness = createHarness({
+      tabs,
+      linkWindow: async (_windowId, _code, _source, currentSignal) => {
+        signal = currentSignal;
+        await operation.promise;
+      },
+    });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    const oldRegistration = harness.coordinator.registrations[0];
+    const command = harness.router.routeMessage(
+      {
+        type: "browser2ide.linkWindow",
+        channel: "channel-1",
+        code: "4873507",
+      },
+      panelSender("channel-1"),
+    );
+    await flushMicrotasks();
+
+    tabs.set(17, 20);
+    oldRegistration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+
+    const statesBeforeSettle = windowStates(port);
+    const abortedBeforeSettle = signal?.aborted;
+    const windowsBeforeSettle = harness.coordinator.registrations.map(
+      ({ windowId }) => windowId,
+    );
+    operation.resolve();
+
+    await expect(command).resolves.toEqual({
+      ok: false,
+      error: "stalePanel",
+    });
+    expect(statesBeforeSettle).not.toContain("linked");
+    expect(abortedBeforeSettle).toBe(true);
+    expect(windowsBeforeSettle).toEqual([10, 20]);
+  });
+
+  it("validates and preserves linking-to-linked state order", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    const registration = harness.coordinator.registrations[0];
+    const lookupBaseline = harness.getTabCalls.length;
+
+    registration?.onStateChanged?.("linking");
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+
+    expect(harness.getTabCalls.slice(lookupBaseline)).toEqual([17, 17]);
+    expect(windowStates(port).slice(-2)).toEqual(["linking", "linked"]);
+  });
+
+  it("ignores state callbacks after the panel port closes", async () => {
+    const harness = createHarness();
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    await flushMicrotasks();
+    const registration = harness.coordinator.registrations[0];
+    const lookupBaseline = harness.getTabCalls.length;
+    const sentBaseline = [...port.sent];
+
+    port.disconnect();
+    registration?.onStateChanged?.("linked");
+    await flushMicrotasks();
+
+    expect(harness.getTabCalls).toHaveLength(lookupBaseline);
+    expect(port.sent).toEqual(sentBaseline);
+  });
 
   it("invalidates a quietly closed tab after a deferred command", async () => {
     const tabs = new Map([[17, 10]]);
@@ -1981,6 +2085,14 @@ function inspectResults(port: FakePort): unknown[] {
   return port.sent.filter(
     (message) =>
       isRecord(message) && message.type === "browser2ide.inspect.result",
+  );
+}
+
+function windowStates(port: FakePort): unknown[] {
+  return port.sent.flatMap((message) =>
+    isRecord(message) && message.type === "browser2ide.windowState"
+      ? [message.state]
+      : [],
   );
 }
 
