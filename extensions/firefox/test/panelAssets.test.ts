@@ -63,10 +63,21 @@ describe("shared DevTools panel assets", () => {
     expect(runtime).not.toContain("PanelLifecycleCoordinator");
     expect(build).toContain("packages/browser-extension-core/assets");
     expect(build).toContain('format: "iife"');
-    expect(build).toContain("sourcemap: true");
+    expect(build).toContain("minify: true");
+    expect(build).toContain("sourcemap: false");
     for (const entry of ["background", "contentScript", "devtools", "panel"]) {
       expect(build).toContain(`${entry}: "src/${entry}.ts"`);
     }
+  });
+
+  it("excludes source and test directories from the release archive", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { scripts: { package: string } };
+
+    expect(manifest.scripts.package).toContain('--ignore-files');
+    expect(manifest.scripts.package).toMatch(/(?:^|\s)src(?:\s|$)/);
+    expect(manifest.scripts.package).toMatch(/(?:^|\s)test(?:\s|$)/);
   });
 });
 

@@ -2,12 +2,13 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("Chrome build and shared panel assets", () => {
-  it("bundles four IIFE entrypoints for Chrome 116 with source maps", () => {
+  it("bundles four minified IIFE entrypoints for Chrome 116 without source maps", () => {
     const build = readBuildScript();
 
     expect(build).toMatch(/format:\s*["']iife["']/);
     expect(build).toMatch(/target:\s*(?:\[\s*)?["']chrome116["']/);
-    expect(build).toMatch(/sourcemap:\s*true/);
+    expect(build).toMatch(/minify:\s*true/);
+    expect(build).toMatch(/sourcemap:\s*false/);
     for (const entry of ["background", "contentScript", "devtools", "panel"]) {
       expect(build).toMatch(
         new RegExp(`${entry}:\\s*["']src/${entry}\\.ts["']`),
@@ -23,6 +24,16 @@ describe("Chrome build and shared panel assets", () => {
       expect(build).toContain(asset);
       expect(readSharedAsset(asset).length).toBeGreaterThan(0);
     }
+  });
+
+  it("excludes source and test directories from the release archive", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { scripts: { package: string } };
+
+    expect(manifest.scripts.package).toContain('--ignore-files');
+    expect(manifest.scripts.package).toMatch(/(?:^|\s)src(?:\s|$)/);
+    expect(manifest.scripts.package).toMatch(/(?:^|\s)test(?:\s|$)/);
   });
 });
 
