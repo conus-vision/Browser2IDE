@@ -1179,6 +1179,54 @@ describe("BackgroundRouter", () => {
     },
   );
 
+  it.each(["link", "unlink"] as const)(
+    "refreshes a quiet A-to-B move after deferred %s rejects",
+    async (kind) => {
+      const tabs = new Map([[17, 10]]);
+      const operation = deferred<void>();
+      let signal: AbortSignal | undefined;
+      const behavior = async (currentSignal: AbortSignal | undefined) => {
+        signal = currentSignal;
+        await operation.promise;
+      };
+      const harness = createHarness({
+        tabs,
+        linkWindow: async (_windowId, _code, _source, currentSignal) =>
+          behavior(currentSignal),
+        unlinkWindow: async (_windowId, currentSignal) =>
+          behavior(currentSignal),
+      });
+      await harness.registerAndConnect("channel-1", 17, "source-17");
+      const command = harness.router.routeMessage(
+        kind === "link"
+          ? {
+              type: "browser2ide.linkWindow",
+              channel: "channel-1",
+              code: "4873507",
+            }
+          : {
+              type: "browser2ide.unlinkWindow",
+              channel: "channel-1",
+            },
+        panelSender("channel-1"),
+      );
+      await flushMicrotasks();
+
+      tabs.set(17, 20);
+      operation.reject(new Error("secret late coordinator failure"));
+
+      await expect(command).resolves.toEqual({
+        ok: false,
+        error: "stalePanel",
+      });
+      expect(signal?.aborted).toBe(true);
+      expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+        .toEqual([10, 20]);
+      expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
+      expect(harness.reportedErrors).toEqual([]);
+    },
+  );
+
   it("invalidates a quietly closed tab after a deferred command", async () => {
     const tabs = new Map([[17, 10]]);
     const operation = deferred<void>();
@@ -1430,6 +1478,65 @@ describe("BackgroundRouter", () => {
         tabId: 17,
         sourceId: "source-17",
       });
+      expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
+    },
+  );
+
+  it.each(["executeScript", "sendTabMessage"] as const)(
+    "refreshes a quiet A-to-B move after Inspect %s rejects",
+    async (stage) => {
+      const tabs = new Map([[17, 10]]);
+      const failure = deferred<void>();
+      const harness = createHarness({
+        tabs,
+        executeScript: async () => {
+          if (stage === "executeScript") {
+            await failure.promise;
+          }
+        },
+        sendTabMessage: async (_tabId, message) => {
+          if (
+            stage === "sendTabMessage" &&
+            isRecord(message) &&
+            message.type === "enableInspectMode"
+          ) {
+            await failure.promise;
+          }
+        },
+      });
+      const port = await harness.registerAndConnect(
+        "channel-1",
+        17,
+        "source-17",
+      );
+      port.emitMessage({
+        type: "browser2ide.inspect.setEnabled",
+        requestId: `failed-${stage}`,
+        enabled: true,
+      });
+      await flushMicrotasks();
+
+      tabs.set(17, 20);
+      failure.reject(new Error("secret inspect failure"));
+      await harness.inspectCoordinator.whenIdle(17);
+      await flushMicrotasks();
+      await harness.inspectCoordinator.whenIdle(17);
+
+      expect(inspectResults(port)).toEqual([
+        {
+          type: "browser2ide.inspect.result",
+          requestId: `failed-${stage}`,
+          ok: false,
+          error: "stalePanel",
+        },
+      ]);
+      expect(harness.inspectCalls.at(-1)).toEqual([
+        "tab",
+        17,
+        { type: "disableInspectMode" },
+      ]);
+      expect(harness.coordinator.registrations.map(({ windowId }) => windowId))
+        .toEqual([10, 20]);
       expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
     },
   );

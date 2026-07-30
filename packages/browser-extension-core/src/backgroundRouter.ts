@@ -740,6 +740,8 @@ export class BackgroundRouter {
       activationToken,
     };
     this.panelCommands.set(command.channel, pendingRecord);
+    let dispatchedBinding: ChannelBinding | undefined;
+    let dispatchedCommand: PanelCommandRecord | undefined;
     try {
       const refreshed = await this.refreshPanelBinding(
         binding,
@@ -779,6 +781,8 @@ export class BackgroundRouter {
         abortController,
       };
       this.panelCommands.set(command.channel, dispatchedRecord);
+      dispatchedBinding = refreshed;
+      dispatchedCommand = dispatchedRecord;
 
       if (command.type === "browser2ide.linkWindow") {
         await this.coordinator.linkWindow(
@@ -811,13 +815,21 @@ export class BackgroundRouter {
       }
       return okResult;
     } catch (error) {
-      const currentBinding = this.bindings.get(command.channel);
-      const currentCommand = this.panelCommands.get(command.channel);
+      if (!dispatchedBinding || !dispatchedCommand) {
+        return { ok: false, error: "stalePanel" };
+      }
+      const postflight = await this.refreshPanelBinding(
+        dispatchedBinding,
+        record,
+        dispatchedCommand.activationToken,
+      );
       if (
-        !currentBinding ||
-        !currentCommand ||
-        currentCommand.commandToken !== commandToken ||
-        !this.isCurrentPanelCommand(record, currentBinding, currentCommand)
+        postflight !== dispatchedBinding ||
+        !this.isCurrentPanelCommand(
+          record,
+          dispatchedBinding,
+          dispatchedCommand,
+        )
       ) {
         return { ok: false, error: "stalePanel" };
       }
@@ -883,11 +895,6 @@ export class BackgroundRouter {
         this.postInspectFailure(record, request.requestId);
         return;
       }
-      if (!outcome.result.ok) {
-        this.postToCurrentPort(record, currentToken, outcome.result);
-        return;
-      }
-
       const postflight = await this.refreshPanelBinding(
         refreshed,
         record,
