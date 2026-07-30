@@ -29,10 +29,11 @@ browser is already connected.
 
 ## Window Scope
 
-Each linked browser window owns one session-storage record and one WebSocket.
-Every Browser2IDE DevTools panel in that window automatically reuses them, so
-opening DevTools in additional tabs does not require another code or socket.
-Tabs in a different browser window never inherit that link.
+Each linked browser window owns one session-storage record. While one or more
+Browser2IDE DevTools panels are active in that window, they share at most one
+active WebSocket, so opening DevTools in additional tabs does not require
+another code or socket. Tabs in a different browser window never inherit that
+link.
 
 The panel actions are scoped to the current browser window:
 
@@ -43,10 +44,11 @@ The panel actions are scoped to the current browser window:
 - closing a browser window removes its mapping without affecting other windows;
 - restarting the browser clears all session-only browser mappings.
 
-Closing or reloading DevTools releases inspect ownership for that tab but keeps
-the browser-window link available. Reopening the panel reuses the link with
-`Inspect mode` off. Inspection is always an explicit action and never resumes
-automatically.
+Closing or reloading DevTools releases inspect ownership for that tab. When the
+last panel in the browser window closes, Browser2IDE disconnects the WebSocket
+but retains the session mapping. Reopening a panel authenticates a new socket
+from those session credentials without another code. `Inspect mode` stays off;
+inspection is always explicit and never resumes automatically.
 
 Firefox Stable 142+ and Chrome/Chromium 116+ use the same shared runtime and
 window-linking behavior. Chrome uses a Manifest V3 service worker; the bridge's
@@ -98,7 +100,9 @@ window is linked, and the user enables Inspect mode.
 The MVP is read-only. It cannot edit page or workspace source, execute arbitrary
 commands, or send general page content. It exports bounded inspection facts for
 the selected element and its immediate DOM parent. Browser-protected pages can
-still reject extension script injection.
+still reject extension script injection. Full page URLs/routes and permitted
+attribute values are size-bounded but not classified or redacted for sensitive
+content; see `docs/security.md` before inspecting sensitive pages.
 
 ## Document-First Results
 

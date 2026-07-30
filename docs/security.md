@@ -84,10 +84,12 @@ After linking, the browser stores one record per linked browser window in
 - the bridge instance ID;
 - the authenticated browser token.
 
-No browser credential is written to persistent local storage. All panels in the
-same browser window reuse this record and its single socket. Closing the window
-removes the record; restarting the browser clears all session records. Reopening
-DevTools can reconnect the window but never restores Inspect mode.
+No browser credential is written to persistent local storage. While at least
+one panel is active, all panels in the same browser window share at most one
+active socket. Closing the final panel disconnects that socket but retains the
+session record. Reopening a panel authenticates a new socket from the saved
+session credentials and never restores Inspect mode. Closing the browser window
+removes its record; restarting the browser clears all session records.
 
 If saved credentials reach a different bridge instance, expire, or are revoked,
 the browser deletes that window's record, disables inspection, and requires a
@@ -126,8 +128,8 @@ Browser2IDE injects into a tab only when all of these are true:
 
 Turning Inspect off or closing the panel releases the content-script lease.
 Browser-protected pages can still deny injection. The extension has no feature
-that navigates pages, submits forms, edits DOM/source, reads cookies or
-credentials, or executes user-supplied commands.
+that navigates pages, submits forms, edits DOM/source, calls browser cookie
+APIs, or executes user-supplied commands.
 
 ## Browser Data Collection
 
@@ -135,22 +137,29 @@ The MVP inspects only the selected DOM element and its immediate DOM parent. It
 does not collect DOM text content by default. Allowed bounded facts include:
 
 - page URL and origin;
-- tag, ID, classes, selector candidates, and safe `data-*`, `aria-*`, or role
-  attributes;
+- tag, ID, classes, selector candidates, and permitted `data-*`, `aria-*`, or
+  role attributes;
 - stylesheet URLs and accessibility status;
 - matched selectors and CSS declarations needed for source resolution;
 - generated positions and development-only namespaced source metadata.
 
-It does not intentionally send cookies, authorization headers, API keys,
-nonces, form values, framework state, database records, full DOM text, or
-absolute server paths when a relative source identity is sufficient.
+The collector does not deliberately read cookies, request or response headers,
+form-control values, or DOM text. This is not a content-classification or
+redaction guarantee: the complete page URL and route, and permitted `data-*`
+and `aria-*` attribute values, are bounded by size but may themselves contain
+API keys, nonces, framework state, personal data, or other sensitive values.
+CSS and development source metadata can carry application-chosen values too.
+Do not enable Browser2IDE inspection on sensitive pages or elements whose URLs,
+routes, attributes, or development metadata contain information that must not
+leave the browser process.
 
 ## Sensitive Output
 
-Link codes, PINs, and auth tokens must not appear in extension logs, source
-plugin metadata, protocol error details, or inspection facts. User-facing
-errors use a closed, sanitized vocabulary and never include raw exception text
-or inspected page content.
+Browser2IDE components do not deliberately add their own link code, PIN, or
+bridge auth token to extension logs, source-plugin metadata, protocol error
+details, or inspection facts. Page-controlled values forwarded as bounded facts
+are not scanned for lookalike secrets. User-facing errors use a closed,
+sanitized vocabulary and do not include raw exception text.
 
 ## Resource Bounds
 

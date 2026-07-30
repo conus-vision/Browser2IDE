@@ -132,10 +132,32 @@ describe("browser-window workflow", () => {
     expect(instanceA.connectCredentials).toEqual([]);
     await expect(store.load(10)).resolves.toEqual(savedLink(instanceA));
 
+    panel101.dispose();
+    panel102.dispose();
+    expect(instanceA.activeClientCount).toBe(0);
+    expect(instanceA.clients[0]?.disconnectCalls).toBe(1);
+    await expect(store.load(10)).resolves.toEqual(savedLink(instanceA));
+
+    panel102 = coordinator.registerPanel({
+      windowId: 10,
+      tabId: 102,
+      sourceId: "panel-102",
+    });
+    await flushMicrotasks();
+
+    expect(instanceA.clients).toHaveLength(2);
+    expect(instanceA.activeClientCount).toBe(1);
+    expect(instanceA.linkPins).toEqual(["07"]);
+    expect(instanceA.connectCredentials).toEqual([instanceA.credentials]);
+    expect(
+      coordinator.publishInspect(10, "panel-102", selection(102)),
+    ).toBe(true);
+
     await coordinator.removeWindow(10);
 
     expect(instanceA.activeClientCount).toBe(0);
-    expect(instanceA.clients[0]?.unlinkCalls).toBe(1);
+    expect(instanceA.clients[0]?.unlinkCalls).toBe(0);
+    expect(instanceA.clients[1]?.unlinkCalls).toBe(1);
     expect(coordinator.state(10)).toBe("notLinked");
     expect(
       coordinator.publishInspect(10, "panel-101", selection(101)),
@@ -154,7 +176,7 @@ describe("browser-window workflow", () => {
     });
     await flushMicrotasks();
     expect(reusedRegistrationStates).toEqual(["notLinked"]);
-    expect(instanceA.clients).toHaveLength(1);
+    expect(instanceA.clients).toHaveLength(2);
     reusedRegistration.dispose();
 
     expect(coordinator.state(20)).toBe("linked");
@@ -167,7 +189,6 @@ describe("browser-window workflow", () => {
       "browser2ide.windowLink.20": savedLink(instanceB),
     });
 
-    panel101.dispose();
     panel102.dispose();
     panel201.dispose();
     panel202.dispose();

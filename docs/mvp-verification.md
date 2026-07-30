@@ -95,14 +95,20 @@ Sources` visible. Do not start Browser2IDE from a terminal.
 
 ## Load Firefox For Development
 
-Run Firefox Stable from terminal 4:
+In terminal 4, choose one new disposable profile path for this verification
+run, then start Firefox Stable. Keep the same `$firefoxProfile` value for every
+Firefox restart in this run:
 
 ```powershell
-corepack pnpm dlx web-ext@10.4.0 run --source-dir extensions/firefox --firefox "C:\Program Files\Mozilla Firefox\firefox.exe" --start-url http://127.0.0.1:4173/
+$firefoxProfile = Join-Path $env:TEMP ("browser2ide-plan2-" + [guid]::NewGuid().ToString("N"))
+corepack pnpm dlx web-ext@10.4.0 run --source-dir extensions/firefox --firefox "C:\Program Files\Mozilla Firefox\firefox.exe" --firefox-profile "$firefoxProfile" --profile-create-if-missing --keep-profile-changes --start-url http://127.0.0.1:4173/
 ```
 
-When `firefox` is on `PATH`, omit `--firefox`. Use two normal Firefox windows,
-not private windows, for the matrix below.
+When `firefox` is on `PATH`, omit only the `--firefox` option and its path. The
+explicit profile flags are required: a default temporary profile would make a
+restart unable to distinguish session-only cleanup from replacement of the
+whole profile. Use two normal Firefox windows, not private windows, for the
+matrix below.
 
 ## Load Chrome For Development
 
@@ -133,9 +139,14 @@ each window.
 4. Confirm a new third browser window starts `Not linked` and close it.
 5. Confirm no code or PIN remains in either linked panel's input.
 
-Clipboard access must occur only after the Paste action. Deny clipboard access
-once and confirm the panel asks for manual entry without linking or enabling
-inspection.
+For the manual check, confirm a Paste click reads the current code and links the
+window. Clipboard rejection cannot be induced consistently across supported
+browsers; the injected-error test verifies that it leaves manual entry enabled
+without linking or enabling inspection:
+
+```powershell
+corepack pnpm --filter @browser2ide/browser-extension-core exec vitest run test/panelController.test.ts
+```
 
 ### Reuse Tabs In The Same Window
 
@@ -147,6 +158,11 @@ inspection.
    linked browser window.
 4. Close and reopen DevTools in one second tab. It must reuse the same window
    link, while Inspect mode returns off.
+5. Close every Browser2IDE panel in Browser A. IDE A's connected-browser count
+   must become zero while Browser A's `storage.session` mapping remains.
+6. Reopen one Browser A panel. It must authenticate a new socket from the saved
+   window credentials without another code; the count returns to one and
+   Inspect mode remains off.
 
 ### Prove Cross-Window Isolation
 
@@ -171,14 +187,52 @@ inspection.
 
 ### Verify Window And Browser Cleanup
 
-1. Close Browser A's entire browser window. Its session mapping and WebSocket
-   must disappear; Browser B remains linked and continues routing.
-2. Open a replacement browser window. Its Browser2IDE panel must start
-   `Not linked`.
-3. Close and restart the browser process. Every window must start unlinked,
-   proving browser credentials were session-only.
-4. Reopen a panel without linking. Inspect mode must remain off and no source
-   update may be sent.
+Open the extension background tools before closing a window:
+
+- Firefox: open `about:debugging#/runtime/this-firefox`, find Browser2IDE, and
+  select Inspect;
+- Chrome: open `chrome://extensions`, find Browser2IDE, and inspect its service
+  worker.
+
+In Firefox's background console, list the fixture tabs and session records:
+
+```js
+await browser.tabs.query({}).then((tabs) => tabs.map(({ id, windowId, url }) => ({ id, windowId, url })))
+await browser.storage.session.get(null)
+```
+
+In Chrome's service-worker console, use the corresponding APIs:
+
+```js
+await chrome.tabs.query({}).then((tabs) => tabs.map(({ id, windowId, url }) => ({ id, windowId, url })))
+await chrome.storage.session.get(null)
+```
+
+Use the tab list to record Browser A's and Browser B's numeric window IDs.
+Before cleanup, confirm both exact keys exist:
+`browser2ide.windowLink.<BrowserAWindowId>` and
+`browser2ide.windowLink.<BrowserBWindowId>`.
+
+1. Run `Browser2IDE: Open Diagnostics` in both IDE windows and confirm each has
+   one connected browser client.
+2. Close Browser A's entire browser window, then query
+   `browser.storage.session` or `chrome.storage.session` again. Confirm the
+   exact old Browser A key is absent and Browser B's key remains.
+3. Confirm IDE A now has zero connected browser clients while IDE B still has
+   one, and verify Browser B continues routing selections to IDE B.
+4. Open a replacement browser window. Its Browser2IDE panel must start
+   `Not linked`, and its new window ID must have no link key.
+5. Before restarting the browser, query session storage once more and record
+   every remaining `browser2ide.windowLink.*` key.
+6. For Firefox, close all Firefox windows, stop `web-ext`, and rerun the exact
+   launch command with the unchanged `$firefoxProfile` and all three profile
+   flags. For Chrome, close the complete browser process and reopen the same
+   browser profile.
+7. Reopen the extension background tools and query session storage. None of
+   the previously recorded window-link keys may remain, proving credentials
+   were session-only rather than removed by replacing the profile.
+8. Reopen a Browser2IDE panel without linking. It must show `Not linked`,
+   Inspect mode must remain off, and no source update may be sent.
 
 ## Verify Document-First Highlighting
 
