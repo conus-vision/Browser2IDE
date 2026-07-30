@@ -6,9 +6,13 @@ test/**
 node_modules/**
 dist/**
 !dist/extension.cjs
+!dist/mappings.wasm
 **/*.map
 tsconfig.json
 esbuild.mjs
+package-vsix.mjs
+verify-vsix.mjs
+smoke-installed-vsix.mjs
 pnpm-lock.yaml
 pnpm-workspace.yaml
 package-lock.json

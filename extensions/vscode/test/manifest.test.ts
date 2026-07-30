@@ -41,6 +41,7 @@ describe("VS Code extension manifest", () => {
     });
     expect(manifest.private).not.toBe(true);
     expect(manifest.scripts["vscode:prepublish"]).toBe("pnpm run build");
+    expect(manifest.scripts.package).toBe("node ./package-vsix.mjs");
     expect(manifest.extensionKind).toEqual(["ui"]);
 
     expect(manifest.contributes.commands.map(({ command }) => command)).toEqual([

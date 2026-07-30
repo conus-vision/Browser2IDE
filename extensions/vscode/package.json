@@ -120,8 +120,8 @@
   },
   "scripts": {
     "vscode:prepublish": "pnpm run build",
-    "prepackage": "node -e \"require('node:fs').mkdirSync('../../artifacts', { recursive: true })\"",
-    "package": "vsce package --no-dependencies --out ../../artifacts/browser2ide-vscode-0.2.0.vsix",
+    "package": "node ./package-vsix.mjs",
+    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/browser2ide-vscode-0.2.0.vsix",
     "build": "pnpm run typecheck && node ./esbuild.mjs",
     "test": "pnpm --filter @browser2ide/protocol build && pnpm --filter @browser2ide/bridge build && vitest run --exclude \"test/integration/**\"",
     "test:integration": "pnpm run build && pnpm --filter source-plugin-fixture build && vscode-test --label sourcePluginApi",

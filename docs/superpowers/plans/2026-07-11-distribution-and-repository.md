@@ -332,8 +332,9 @@ const requiredBrowserFiles = [
 ```
 
 For VSIX require `extension/package.json`, `extension/dist/extension.cjs`,
-`extension/README.md`, and `extension/LICENSE`. Reject `.env`, `node_modules/`,
-and any path containing `.vscode-test`.
+`extension/dist/mappings.wasm`, `extension/readme.md`,
+`extension/LICENSE.txt`, and `extension/THIRD_PARTY_NOTICES`. Reject `.env`,
+`node_modules/`, source maps, and any path containing `.vscode-test`.
 
 - [ ] **Step 2: Add packaging dependencies and scripts**
 
