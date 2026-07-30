@@ -9,9 +9,12 @@ carry edit or reverse-sync commands.
 ### Browser DevTools Adapters
 
 Firefox and Chrome/Chromium expose a Browser2IDE DevTools panel. A panel owns
-the explicit Inspect toggle for its tab and collects bounded page, DOM, CSS,
-and source-map facts only while inspection is active. Browser adapters collect
-facts but do not resolve workspace files.
+the explicit Inspect toggle for its tab and collects bounded page, DOM, and CSS
+facts only while inspection is active. Built-in CSS facts carry a stylesheet
+`sourceUrl`, selector, property/value declaration, optional media conditions,
+and CSSOM `rulePath`. The browser does not read or send `sourceMappingURL`
+directives, source-map references, source maps, or generated CSS positions.
+Browser adapters collect facts but do not resolve workspace files.
 
 ### Browser-Window Coordinator
 
@@ -49,10 +52,13 @@ or reverse-sync operation.
 
 The versioned source-plugin API lets built-in and separately installed VS Code
 extensions register resolvers by active document language and URI. The built-in
-CSS plugin resolves generated CSS facts directly; the SCSS plugin uses
-available source maps. Plugins return semantic source ranges while the core
-presenter owns UI and decoration behavior. API details and examples are in the
-[source plugin authoring guide](source-plugin-authoring.md).
+CSS plugin resolves CSS facts directly. The SCSS plugin uses the stylesheet
+`sourceUrl` to discover and read generated CSS in the workspace, matches a
+generated rule to obtain its local CSS position, discovers `sourceMappingURL`
+from that local file, and then reads and applies the inline or external source
+map locally. Plugins return semantic source ranges while the core presenter owns
+UI and decoration behavior. API details and examples are in the [source plugin
+authoring guide](source-plugin-authoring.md).
 
 ## Data Flow
 
@@ -84,9 +90,13 @@ bridge stops or the user unlinks. Loopback binding prevents network peers from
 connecting directly, but it does not make every local process trusted.
 
 The VS Code extension and installed source plugins can read local workspace
-documents. Source plugins are separately installed trusted code and receive
-only the active document and validated inspection facts needed by their public
-contract. Browser2IDE has no analytics or remote service.
+documents. Source plugins are separately installed trusted code. The plugin API
+gives each dispatched plugin the full validated selection snapshot, including
+all selected/parent targets, subjects, facts, page context, and metadata; the
+active document and its full text; and workspace discovery/read services. Those
+services allow a plugin to find files, read text from workspace URIs, resolve
+source and relative URIs, and check workspace membership. Plugins also receive
+a cancellation signal. Browser2IDE has no analytics or remote service.
 
 URLs and permitted DOM attribute values are bounded but not content-redacted
 and may contain sensitive application data. The detailed permission, origin,

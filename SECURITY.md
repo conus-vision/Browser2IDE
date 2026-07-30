@@ -2,13 +2,14 @@
 
 ## Supported Versions
 
-| Version | Supported |
+| Version | Status |
 | --- | --- |
-| 0.2.x | Yes |
-| Earlier versions | No |
+| 0.2.x | Support begins when 0.2.0 is published. |
+| Earlier versions | Unsupported. |
 
-Because Browser2IDE is an alpha, upgrade to the latest `0.2.x` release before
-reporting or reproducing a security issue.
+No `0.2.x` release is available yet. Until 0.2.0 is published, use the current
+reviewed repository source at a known commit when reporting or reproducing a
+security issue.
 
 ## Report A Vulnerability
 
