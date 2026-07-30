@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeBrowserArchive } from "../../tools/normalize-browser-archive.mjs";
 
 const DEFAULT_SOURCE_DATE_EPOCH = "1704067200";
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,7 @@ run(process.execPath, [
   ...process.env,
   SOURCE_DATE_EPOCH: sourceDateEpoch,
 });
+await normalizeBrowserArchive(artifactPath);
 run(process.execPath, [
   resolve(extensionRoot, "verify-vsix.mjs"),
   artifactPath,

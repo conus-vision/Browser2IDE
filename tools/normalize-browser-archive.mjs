@@ -5,6 +5,8 @@ import AdmZip from "adm-zip";
 import { compareAscii, normalizeArchivePath } from "./release-policy.mjs";
 
 const DEFAULT_SOURCE_DATE_EPOCH = "1704067200";
+const TEXT_ARCHIVE_ENTRY =
+  /(?:^|\/)(?:copying|license(?:\.txt)?|notice|third_party_notices|[^/]+\.(?:cjs|css|html?|js|json|map|md|mjs|scss|svg|text|ts|tsx|txt|vsixmanifest|webmanifest|xml|ya?ml))$/i;
 
 export async function normalizeBrowserArchive(path) {
   const absolutePath = resolve(path);
@@ -14,7 +16,7 @@ export async function normalizeBrowserArchive(path) {
     const name = normalizeArchivePath(entry.entryName, absolutePath, entry.isDirectory);
     if (entry.isDirectory) continue;
     if (files.has(name)) throw new Error(`${absolutePath} contains duplicate path ${name}`);
-    files.set(name, entry.getData());
+    files.set(name, normalizeEntryData(name, entry.getData(), absolutePath));
   }
 
   const output = new AdmZip();
@@ -24,6 +26,16 @@ export async function normalizeBrowserArchive(path) {
     output.getEntry(name).header.time = timestamp;
   }
   await writeFile(absolutePath, output.toBuffer());
+}
+
+function normalizeEntryData(name, data, archivePath) {
+  if (!TEXT_ARCHIVE_ENTRY.test(name)) return data;
+
+  const text = data.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(data)) {
+    throw new Error(`${archivePath} contains invalid UTF-8 text entry ${name}`);
+  }
+  return Buffer.from(text.replace(/\r\n?/g, "\n"), "utf8");
 }
 
 if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {

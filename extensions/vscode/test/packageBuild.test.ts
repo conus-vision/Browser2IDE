@@ -15,6 +15,7 @@ const sourceWasmUrl = new URL(
 );
 const noticesUrl = new URL("../THIRD_PARTY_NOTICES", import.meta.url);
 const vscodeIgnoreUrl = new URL("../.vscodeignore", import.meta.url);
+const packageScriptUrl = new URL("../package-vsix.mjs", import.meta.url);
 const builtins = new Set([
   ...builtinModules,
   ...builtinModules.map((name) => `node:${name}`),
@@ -110,6 +111,19 @@ describe("VS Code package build", () => {
     expect(patterns).toContain("!dist/mappings.wasm");
     expect(patterns).toContain("package-vsix.mjs");
     expect(patterns).toContain("verify-vsix.mjs");
+  });
+
+  it("normalizes the packaged VSIX before verification", () => {
+    const source = readFileSync(packageScriptUrl, "utf8");
+    const packageCall = source.indexOf('"package",');
+    const normalizeCall = source.indexOf(
+      "await normalizeBrowserArchive(artifactPath)",
+    );
+    const verifyCall = source.indexOf('resolve(extensionRoot, "verify-vsix.mjs")');
+
+    expect(packageCall).toBeGreaterThanOrEqual(0);
+    expect(normalizeCall).toBeGreaterThan(packageCall);
+    expect(verifyCall).toBeGreaterThan(normalizeCall);
   });
 });
 
