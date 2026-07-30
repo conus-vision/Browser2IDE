@@ -134,6 +134,42 @@ export function chromeExecutableCandidates(platform, environment) {
   ];
 }
 
+export async function runSmokeOperationWithCleanup(operation, cleanup) {
+  let result;
+  let primaryError;
+  let operationFailed = false;
+  try {
+    result = await operation();
+  } catch (error) {
+    operationFailed = true;
+    primaryError = error;
+  }
+
+  let cleanupError;
+  let cleanupFailed = false;
+  try {
+    await cleanup();
+  } catch (error) {
+    cleanupFailed = true;
+    cleanupError = error;
+  }
+
+  if (operationFailed && cleanupFailed) {
+    throw new AggregateError(
+      [primaryError, cleanupError],
+      `Packaged Chrome smoke failed: ${describeError(primaryError)}; ` +
+        `cleanup also failed: ${describeError(cleanupError)}`,
+    );
+  }
+  if (operationFailed) throw primaryError;
+  if (cleanupFailed) throw cleanupError;
+  return result;
+}
+
+function describeError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function smokePackagedChrome(artifactArgument) {
   if (!artifactArgument) {
     throw new Error(
@@ -152,93 +188,110 @@ export async function smokePackagedChrome(artifactArgument) {
   let cdp;
   let spawnError;
   let stderr = "";
-  try {
-    smokeRoot = await mkdtemp(join(tmpdir(), "browser2ide-chrome-smoke-"));
-    const extensionDirectory = join(smokeRoot, "extension");
-    const profileDirectory = join(smokeRoot, "profile");
-    await Promise.all([
-      mkdir(extensionDirectory, { recursive: true }),
-      mkdir(profileDirectory, { recursive: true }),
-    ]);
-    await extractValidatedArchive(archive, extensionDirectory);
+  return runSmokeOperationWithCleanup(
+    async () => {
+      try {
+        smokeRoot = await mkdtemp(join(tmpdir(), "browser2ide-chrome-smoke-"));
+        const extensionDirectory = join(smokeRoot, "extension");
+        const profileDirectory = join(smokeRoot, "profile");
+        await Promise.all([
+          mkdir(extensionDirectory, { recursive: true }),
+          mkdir(profileDirectory, { recursive: true }),
+        ]);
+        await extractValidatedArchive(archive, extensionDirectory);
 
-    const executable = await findChromeExecutable();
-    chrome = spawn(
-      executable,
-      buildChromeArguments(profileDirectory),
-      buildChromeSpawnOptions(),
-    );
-    chrome.once("error", (error) => {
-      spawnError = error;
-    });
-    chrome.stderr.setEncoding("utf8");
-    chrome.stderr.on("data", (chunk) => {
-      if (stderr.length < 16_384) stderr += chunk;
-    });
-
-    const portFile = join(profileDirectory, "DevToolsActivePort");
-    const [portText, browserPath] = (
-      await waitForTextFile(portFile, chrome, () => spawnError)
-    ).split(/\r?\n/);
-    const port = Number(portText);
-    if (
-      !Number.isInteger(port) ||
-      port < 1 ||
-      port > 65_535 ||
-      !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(browserPath ?? "")
-    ) {
-      throw new Error("Chrome wrote an invalid DevToolsActivePort file");
-    }
-
-    cdp = await openCdp(`ws://127.0.0.1:${port}${browserPath}`);
-    const { product } = await cdp.send("Browser.getVersion");
-    if (!/^Chrome\/\d+(?:\.\d+){3}$/.test(product)) {
-      throw new Error(`Expected Google Chrome Stable, received ${product}`);
-    }
-    const { id: extensionId } = await cdp.send("Extensions.loadUnpacked", {
-      path: extensionDirectory,
-    });
-    const { extensions } = await cdp.send("Extensions.getExtensions");
-    const installed = extensions.find((extension) => extension.id === extensionId);
-    if (
-      !installed?.enabled ||
-      installed.name !== manifest.name ||
-      installed.version !== manifest.version ||
-      resolve(installed.path) !== resolve(extensionDirectory)
-    ) {
-      throw new Error("Chrome did not report the expected unpacked Browser2IDE extension");
-    }
-    await waitForServiceWorker(cdp, chrome, extensionId);
-    console.log(
-      `PACKAGED_CHROME_MV3_OK ${product} ${manifest.name} ${manifest.version} ${extensionId}${SERVICE_WORKER_PATH}`,
-    );
-  } catch (error) {
-    const details = stderr.trim();
-    if (details) {
-      throw new Error(`${error.message}\nChrome stderr:\n${details}`);
-    }
-    throw error;
-  } finally {
-    let cleanupError;
-    try {
-      await shutdownOwnedChildTree({ child: chrome, cdp });
-    } catch (error) {
-      cleanupError = error;
-    }
-    try {
-      if (smokeRoot) {
-        await rm(smokeRoot, {
-          recursive: true,
-          force: true,
-          maxRetries: 8,
-          retryDelay: 100,
+        const executable = await findChromeExecutable();
+        chrome = spawn(
+          executable,
+          buildChromeArguments(profileDirectory),
+          buildChromeSpawnOptions(),
+        );
+        chrome.once("error", (error) => {
+          spawnError = error;
         });
+        chrome.stderr.setEncoding("utf8");
+        chrome.stderr.on("data", (chunk) => {
+          if (stderr.length < 16_384) stderr += chunk;
+        });
+
+        const portFile = join(profileDirectory, "DevToolsActivePort");
+        const [portText, browserPath] = (
+          await waitForTextFile(portFile, chrome, () => spawnError)
+        ).split(/\r?\n/);
+        const port = Number(portText);
+        if (
+          !Number.isInteger(port) ||
+          port < 1 ||
+          port > 65_535 ||
+          !/^\/devtools\/browser\/[A-Za-z0-9-]+$/.test(browserPath ?? "")
+        ) {
+          throw new Error("Chrome wrote an invalid DevToolsActivePort file");
+        }
+
+        cdp = await openCdp(`ws://127.0.0.1:${port}${browserPath}`);
+        const { product } = await cdp.send("Browser.getVersion");
+        if (!/^Chrome\/\d+(?:\.\d+){3}$/.test(product)) {
+          throw new Error(`Expected Google Chrome Stable, received ${product}`);
+        }
+        const { id: extensionId } = await cdp.send("Extensions.loadUnpacked", {
+          path: extensionDirectory,
+        });
+        const { extensions } = await cdp.send("Extensions.getExtensions");
+        const installed = extensions.find((extension) => extension.id === extensionId);
+        if (
+          !installed?.enabled ||
+          installed.name !== manifest.name ||
+          installed.version !== manifest.version ||
+          resolve(installed.path) !== resolve(extensionDirectory)
+        ) {
+          throw new Error(
+            "Chrome did not report the expected unpacked Browser2IDE extension",
+          );
+        }
+        await waitForServiceWorker(cdp, chrome, extensionId);
+        console.log(
+          `PACKAGED_CHROME_MV3_OK ${product} ${manifest.name} ${manifest.version} ${extensionId}${SERVICE_WORKER_PATH}`,
+        );
+      } catch (error) {
+        const primaryError = error instanceof Error ? error : new Error(String(error));
+        const details = stderr.trim();
+        if (details) {
+          throw new Error(
+            `${primaryError.message}\nChrome stderr:\n${details}`,
+            { cause: primaryError },
+          );
+        }
+        throw primaryError;
       }
-    } catch (error) {
-      if (!cleanupError) cleanupError = error;
-    }
-    if (cleanupError) throw cleanupError;
-  }
+    },
+    async () => {
+      const errors = [];
+      try {
+        await shutdownOwnedChildTree({ child: chrome, cdp });
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        if (smokeRoot) {
+          await rm(smokeRoot, {
+            recursive: true,
+            force: true,
+            maxRetries: 8,
+            retryDelay: 100,
+          });
+        }
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(
+          errors,
+          "Chrome process and temporary data cleanup both failed",
+        );
+      }
+    },
+  );
 }
 
 export async function shutdownOwnedChildTree({
@@ -274,6 +327,7 @@ export async function shutdownOwnedChildTree({
 
   const pid = child.pid;
   if (!Number.isSafeInteger(pid) || pid <= 0) {
+    detachSurvivingOwnedChild(child);
     throw new Error("Chrome cleanup failed: owned child has an invalid PID");
   }
 
@@ -307,9 +361,25 @@ export async function shutdownOwnedChildTree({
     const forceDetails = forceError instanceof Error
       ? `; force-stop error: ${forceError.message}`
       : "";
+    detachSurvivingOwnedChild(child);
     throw new Error(
       `Chrome cleanup failed: owned child tree PID ${pid} is still running${forceDetails}`,
     );
+  }
+}
+
+function detachSurvivingOwnedChild(child) {
+  for (const stream of [child.stdin, child.stdout, child.stderr]) {
+    try {
+      stream?.destroy?.();
+    } catch {
+      // Preserve the owned-child cleanup failure reported by the caller.
+    }
+  }
+  try {
+    child.unref?.();
+  } catch {
+    // Preserve the owned-child cleanup failure reported by the caller.
   }
 }
 

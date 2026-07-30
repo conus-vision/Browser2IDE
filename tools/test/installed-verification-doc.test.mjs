@@ -51,10 +51,18 @@ test("installed verification presents privacy and security before installation",
     "headers",
     "form values",
     "DOM text",
-    "workspace source text",
   ]) {
     assert.match(primaryPath, new RegExp(excluded));
   }
+  assert.match(
+    primaryPath,
+    /browser side does not collect or\s+send workspace source text/i,
+  );
+  assert.match(
+    primaryPath,
+    /local VS Code source plugins read\s+relevant workspace source files and source maps/i,
+  );
+  assert.match(primaryPath, /not\s+uploaded to a remote Browser2IDE service/i);
   assert.match(primaryPath, /Avoid sensitive or private pages/);
   assert.match(primaryPath, /third-party source plugins separately/);
   assert.match(primaryPath, /\.\.\/PRIVACY\.md/);

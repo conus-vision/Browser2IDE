@@ -30,7 +30,13 @@ The full page URL, including its route, permitted DOM IDs and classes, permitted
 metadata may be sent to the linked VS Code window. These
 values are bounded but not content-redacted and may contain sensitive
 application data. Browser2IDE does not deliberately read cookies, request or
-response headers, form values, DOM text, or workspace source text.
+response headers, form values, or DOM text. The browser side does not collect or
+send workspace source text. After the inspection metadata reaches local VS Code,
+the built-in and any separately installed local VS Code source plugins read
+relevant workspace source files and source maps to resolve and highlight source
+ranges. Browser2IDE-operated components process those files locally; they are not
+uploaded to a remote Browser2IDE service. Separately installed source plugins may
+have their own network and data-handling behavior.
 
 Avoid sensitive or private pages unless sending those inspection values to the
 linked local VS Code window is acceptable. Trust separately installed

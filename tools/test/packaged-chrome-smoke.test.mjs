@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
+import * as chromeSmokeModule from "../smoke-packaged-chrome.mjs";
 import {
   CHROME_ARCHIVE_FILES,
   assertLinuxGraphicalSession,
@@ -82,6 +88,39 @@ test("Chrome spawn owns a POSIX process group without detaching on Windows", () 
   assert.equal(buildChromeSpawnOptions("win32").detached, false);
 });
 
+test("smoke operation preserves primary and cleanup failures in that order", async () => {
+  assert.equal(
+    typeof chromeSmokeModule.runSmokeOperationWithCleanup,
+    "function",
+    "smoke cleanup orchestration must be independently testable",
+  );
+  const primaryError = new Error("primary smoke failure");
+  const cleanupError = new Error("cleanup failure");
+
+  await assert.rejects(
+    chromeSmokeModule.runSmokeOperationWithCleanup(
+      async () => {
+        throw primaryError;
+      },
+      async () => {
+        throw cleanupError;
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /smoke failed.*cleanup also failed/i);
+      assert.ok(error.message.includes(primaryError.message));
+      assert.ok(error.message.includes(cleanupError.message));
+      assert.ok(
+        error.message.indexOf(primaryError.message) <
+          error.message.indexOf(cleanupError.message),
+      );
+      assert.deepEqual(error.errors, [primaryError, cleanupError]);
+      return true;
+    },
+  );
+});
+
 test("owned Windows child shutdown escalates to its exact PID tree", async () => {
   const child = mockRunningChild(4321);
   const calls = [];
@@ -161,6 +200,123 @@ test("owned child shutdown reports a final cleanup failure", async () => {
     }),
     /Chrome cleanup failed: owned child tree PID 2468 is still running/,
   );
+});
+
+test("owned child shutdown detaches surviving child handles before failing", async () => {
+  const child = mockRunningChild(9753);
+  const calls = [];
+  for (const name of ["stdin", "stdout", "stderr"]) {
+    child[name] = {
+      destroy() {
+        calls.push(["destroy", name]);
+      },
+    };
+  }
+  child.unref = () => calls.push(["unref"]);
+
+  await assert.rejects(
+    shutdownOwnedChildTree({
+      child,
+      platform: "win32",
+      timeoutMs: 10,
+      waitForExitFn: async () => {
+        throw new Error("still running");
+      },
+      spawnSyncFn: () => ({ status: 0, signal: null, stderr: Buffer.alloc(0) }),
+    }),
+    /Chrome cleanup failed: owned child tree PID 9753 is still running/,
+  );
+  assert.deepEqual(calls, [
+    ["destroy", "stdin"],
+    ["destroy", "stdout"],
+    ["destroy", "stderr"],
+    ["unref"],
+  ]);
+});
+
+test("surviving owned child cannot keep the smoke parent command alive", {
+  timeout: 10_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "browser2ide-survivor-test-"));
+  const pidFile = join(root, "owned-child.pid");
+  const releaseFile = join(root, "release-owned-child");
+  const moduleUrl = pathToFileURL(
+    resolve("tools/smoke-packaged-chrome.mjs"),
+  ).href;
+  const script = `
+    import { spawn } from "node:child_process";
+    import { writeFileSync } from "node:fs";
+    import { shutdownOwnedChildTree } from ${JSON.stringify(moduleUrl)};
+
+    const fixtureScript = ${JSON.stringify(`
+      const { existsSync } = require("node:fs");
+      const releaseFile = process.argv[1];
+      const poll = setInterval(() => {
+        if (existsSync(releaseFile)) {
+          clearInterval(poll);
+          process.exit(0);
+        }
+      }, 20);
+      setTimeout(() => process.exit(0), 2000);
+    `)};
+    const ownedChild = spawn(
+      process.execPath,
+      ["--eval", fixtureScript, ${JSON.stringify(releaseFile)}],
+      {
+        detached: process.platform !== "win32",
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
+    writeFileSync(${JSON.stringify(pidFile)}, String(ownedChild.pid));
+    try {
+      await shutdownOwnedChildTree({
+        child: ownedChild,
+        platform: process.platform,
+        timeoutMs: 10,
+        waitForExitFn: async () => {
+          throw new Error("fixture deliberately survives");
+        },
+        spawnSyncFn: () => ({
+          status: 0,
+          signal: null,
+          stderr: Buffer.alloc(0),
+        }),
+        killFn: () => {},
+      });
+    } catch (error) {
+      console.error("EXPECTED_OWNED_CHILD_FAILURE " + error.message);
+      process.exitCode = 23;
+    }
+  `;
+  const parent = spawn(
+    process.execPath,
+    ["--input-type=module", "--eval", script],
+    { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+  );
+  let ownedPid;
+
+  try {
+    const result = await waitForSubprocess(parent, 750);
+    ownedPid = await readOwnedPid(pidFile);
+    assert.equal(result.code, 23, result.stderr);
+    assert.match(result.stderr, /EXPECTED_OWNED_CHILD_FAILURE/);
+  } finally {
+    ownedPid ??= await readOwnedPid(pidFile, 500).catch(() => undefined);
+    await writeFile(releaseFile, "release");
+    if (ownedPid) {
+      const fixtureExited = await waitForPidExit(ownedPid, 3_000);
+      if (!fixtureExited) {
+        forceKillExactPid(ownedPid, process.platform !== "win32");
+      }
+      assert.equal(fixtureExited, true, `owned fixture PID ${ownedPid} leaked`);
+    }
+    if (isPidAlive(parent.pid)) {
+      const parentExited = await waitForPidExit(parent.pid, 1_000);
+      if (!parentExited) forceKillExactPid(parent.pid, false);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("CDP connection and commands have bounded timeouts", async () => {
@@ -353,4 +509,91 @@ function mockRunningChild(pid) {
     exitCode: null,
     signalCode: null,
   });
+}
+
+function waitForSubprocess(child, timeoutMs) {
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  return new Promise((resolve_, reject) => {
+    const finish = (callback) => {
+      clearTimeout(timer);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+      callback();
+    };
+    const onError = (error) => finish(() => reject(error));
+    const onExit = (code, signal) =>
+      finish(() => resolve_({ code, signal, stdout, stderr }));
+    const timer = setTimeout(() => {
+      finish(() =>
+        reject(
+          new Error(
+            `subprocess did not exit within ${timeoutMs}ms\nstdout: ${stdout}\nstderr: ${stderr}`,
+          ),
+        ),
+      );
+    }, timeoutMs);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
+async function readOwnedPid(path, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number(await readFile(path, "utf8"));
+      if (Number.isSafeInteger(pid) && pid > 0) return pid;
+      throw new Error(`fixture wrote invalid PID ${String(pid)}`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve_) => setTimeout(resolve_, 20));
+  }
+  throw new Error("fixture PID was not written in time");
+}
+
+function forceKillExactPid(pid, processGroup) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      encoding: "utf8",
+      timeout: 2_000,
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    process.kill(processGroup ? -pid : pid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
+
+function isPidAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForPidExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) return true;
+    await new Promise((resolve_) => setTimeout(resolve_, 20));
+  }
+  return !isPidAlive(pid);
 }
