@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       resume_run_id:
-        description: Prior failed signing run ID whose AMO upload state should be resumed
+        description: Prior approval-timeout or later run ID whose validated AMO upload should be resumed
         required: false
         default: ""
         type: string
@@ -107,7 +107,7 @@ jobs:
         if: inputs.mode == 'sign' && inputs.resume_run_id != ''
         run: node tools/amo-signing-state.mjs validate extensions/firefox/.amo-upload-uuid
 
-      - name: Verify fresh signing has no prior AMO upload state
+      - name: Verify initial signing has no prior AMO upload state
         if: inputs.mode == 'sign' && inputs.resume_run_id == ''
         run: test ! -e extensions/firefox/.amo-upload-uuid
 
@@ -138,7 +138,7 @@ jobs:
             --approval-timeout=900000 \
             --timeout=900000
 
-      - name: Prepare AMO upload state for preservation
+      - name: Prepare available AMO upload state for preservation
         if: always() && inputs.mode == 'sign' && steps.release.outcome == 'success'
         id: preserve_state
         env:
@@ -149,7 +149,7 @@ jobs:
           test ! -e "$STATE_DIRECTORY"
           node tools/amo-signing-state.mjs preserve extensions/firefox/.amo-upload-uuid "$STATE_DESTINATION"
 
-      - name: Preserve AMO upload state
+      - name: Preserve available AMO upload state
         if: always() && inputs.mode == 'sign' && steps.release.outcome == 'success' && steps.preserve_state.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
@@ -197,7 +197,7 @@ jobs:
           mkdir "$VERIFY_DIR"
           gh release download "$RELEASE_TAG" --dir "$VERIFY_DIR"
           gh release view "$RELEASE_TAG" --json isDraft,assets > "$RELEASE_JSON"
-          node tools/verify-release-assets.mjs "$RELEASE_JSON" "$RELEASE_VERSION" "$VERIFY_DIR/SHA256SUMS"
+          node tools/verify-release-assets.mjs signed "$RELEASE_JSON" "$RELEASE_VERSION" "$VERIFY_DIR/SHA256SUMS"
           (cd "$VERIFY_DIR" && sha256sum --check --strict SHA256SUMS)
 
       - name: Publish installed-verified release

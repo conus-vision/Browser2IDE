@@ -110,20 +110,26 @@ invokes `web-ext` 10.4.0 from `extensions/firefox` with channel `unlisted`. It
 also submits the verified Firefox source ZIP so Mozilla reviewers can
 reproduce the build.
 
-`web-ext` records the AMO upload UUID, channel, and package CRC in
-`extensions/firefox/.amo-upload-uuid` before waiting for approval. After every
-sign run, including one that exits on its validation or approval timeout, the
-workflow validates those three fields and preserves the hidden file as a
-tag/run-specific GitHub Actions artifact for seven days. The artifact contains
-no AMO issuer, secret, or other API credential.
+`web-ext` writes the AMO upload UUID, channel, and package CRC to
+`extensions/firefox/.amo-upload-uuid` only after AMO validation succeeds. It
+writes this state before creating the version and waiting for approval. Thus
+the workflow can guarantee stateful resume for an approval timeout or a later
+AMO failure, but not for a validation timeout.
+
+After every sign attempt, the workflow's `always()` steps preserve the state
+file when it exists as a tag/run-specific GitHub Actions artifact for seven
+days. The artifact contains no AMO issuer, secret, or other API credential. A
+validation timeout can produce no state artifact because the file has not yet
+been written. In that case, `actions/upload-artifact` reports the configured
+`if-no-files-found: warn`; the warning is truthful and does not authorize a new
+submission.
 
 Mozilla may delay automated signing or require review. Validation and approval
 each have an explicit 15-minute timeout; the GitHub job has additional time to
-preserve state after `web-ext` returns. An approval timeout means the existing
-AMO submission may still be pending. It is not permission to create another
-submission.
+preserve available state after `web-ext` returns. Either timeout can leave work
+pending at AMO and is not permission to create another submission.
 
-If a sign run times out or reports pending review:
+If a sign run reaches approval timeout or fails later:
 
 1. Do not launch mode `sign` again with an empty `resume_run_id`.
 2. Open the AMO Developer Hub and inspect the existing version's status.
@@ -134,36 +140,49 @@ If a sign run times out or reports pending review:
 4. If another resumed run times out, inspect AMO again and use that run's ID for
    the next resume. Never discard available state merely to start over.
 
+If validation timeout occurs or the run has no state artifact, do not use an
+empty `resume_run_id` and do not submit again. Follow the Developer Hub recovery
+below.
+
 After AMO returns exactly one XPI, the workflow names it
 `browser2ide-firefox-X.Y.Z.xpi`, adds it to `SHA256SUMS`, uploads both with
 `--clobber`, and verifies the exact signed draft asset set. The unsigned ZIP is
 retained as the reproducible build input; the XPI is the Firefox Stable install
 artifact.
 
-### Recovery After State Expiry
+### Recovery After Missing Or Expired State
 
-An expired state artifact does not justify another AMO submission. Check the
-AMO Developer Hub first. If the version is pending, wait for Mozilla. If it is
-approved, download its signed XPI from the Developer Hub and attach that exact
-file to the draft. A new version is required only when Mozilla rejects the
-submission or code/metadata changes are needed, not merely because review is
-slow or the state artifact expired.
+A missing or expired state artifact does not justify another AMO submission.
+This includes validation timeout, where `web-ext` may have uploaded the package
+but could not write resumable state. Check the AMO Developer Hub first. If the
+version is pending, wait for Mozilla. If it is approved, download its signed XPI
+from the Developer Hub and attach that exact file to the draft. If the Developer
+Hub has neither a signed artifact nor a clear status, stop and resolve the
+submission with Mozilla before continuing. A new version is required only when
+Mozilla rejects the submission or code/metadata changes are needed, not merely
+because review is slow or the state artifact is unavailable.
 
-Use an empty recovery directory and verify the current draft before adding the
-AMO file. The following commands run in Linux or Git Bash from the repository
-root; replace `AMO_DOWNLOAD_DIR` with the directory containing only the XPI
-downloaded from the Developer Hub:
+Before changing any release asset, prove the release is still a draft, download
+the exact original five-asset unsigned set, and validate every checksum. Only
+then add the AMO file. The following commands run in Linux or Git Bash from the
+repository root; replace `AMO_DOWNLOAD_DIR` with the directory containing only
+the XPI downloaded from the Developer Hub:
 
 ```bash
 set -euo pipefail
 TAG="v0.2.0"
 VERSION="$(node tools/verify-release-version.mjs "$TAG")"
 RECOVERY_DIR="artifacts/recovery-${VERSION}"
+UNSIGNED_RELEASE_JSON="artifacts/recovery-unsigned-${VERSION}.json"
 AMO_DOWNLOAD_DIR="/absolute/path/to/amo-download"
 
+test "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" = "true"
 test ! -e "$RECOVERY_DIR"
+test ! -e "$UNSIGNED_RELEASE_JSON"
 mkdir "$RECOVERY_DIR"
 gh release download "$TAG" --dir "$RECOVERY_DIR"
+gh release view "$TAG" --json isDraft,assets > "$UNSIGNED_RELEASE_JSON"
+node tools/verify-release-assets.mjs unsigned "$UNSIGNED_RELEASE_JSON" "$VERSION" "$RECOVERY_DIR/SHA256SUMS"
 (cd "$RECOVERY_DIR" && sha256sum --check --strict SHA256SUMS)
 
 mapfile -d '' -t XPI_FILES < <(find "$AMO_DOWNLOAD_DIR" -maxdepth 1 -type f -name '*.xpi' -print0)
@@ -181,7 +200,7 @@ test ! -e "$VERIFY_DIR"
 mkdir "$VERIFY_DIR"
 gh release download "$TAG" --dir "$VERIFY_DIR"
 gh release view "$TAG" --json isDraft,assets > "$RELEASE_JSON"
-node tools/verify-release-assets.mjs "$RELEASE_JSON" "$VERSION" "$VERIFY_DIR/SHA256SUMS"
+node tools/verify-release-assets.mjs signed "$RELEASE_JSON" "$VERSION" "$VERIFY_DIR/SHA256SUMS"
 (cd "$VERIFY_DIR" && sha256sum --check --strict SHA256SUMS)
 ```
 
@@ -228,9 +247,10 @@ create a listed AMO store page.
 ## Rollback And Recovery
 
 If draft creation, signing, or installed verification fails, leave the release
-in draft and identify which stage failed. For an AMO timeout, preserve and
-resume the same upload as described above. Do not create another upload for a
-version that is pending or already approved.
+in draft and identify which stage failed. Resume an approval-timeout or later
+failure only while its validated state artifact exists. For validation timeout
+or missing state, use the Developer Hub recovery above. Do not create another
+upload for a version that is pending or already approved.
 
 Never delete, move, or rewrite a pushed release tag, and never remove published
 history to hide a defective release. For a code defect, document it and ship a
