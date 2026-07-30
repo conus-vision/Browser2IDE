@@ -12,26 +12,64 @@ AMO credentials until this setup exists.
 1. Protect `master` with a branch ruleset (or branch protection) that requires CI,
    blocks force-pushes and deletion, and limits bypasses. Protect `v*` tags from
    update or deletion and limit who can create them.
-2. Register the Firefox extension for unlisted distribution in Mozilla Add-ons.
+2. Enable GitHub release immutability before creating any Browser2IDE release. On
+   the repository page, open **Settings**, scroll to **Releases**, and select
+   **Enable release immutability**. An owner can perform the same mandatory setup
+   and verify it with GitHub CLI:
+
+   ```bash
+   gh api --method PUT repos/conus-vision/Browser2IDE/immutable-releases
+   gh api --method GET repos/conus-vision/Browser2IDE/immutable-releases --jq '.enabled'
+   ```
+
+   The GET command must print `true`; both release workflows fail closed otherwise.
+   This setting protects only future releases created after it is enabled. It does
+   not retroactively protect an existing draft or published release, so enable it
+   before the first release draft is created.
+3. Create the GitHub Environment named `release-settings` under **Settings >
+   Environments**. Restrict deployments to the protected `master` branch and
+   protected `v*` tags. Add at least one required reviewer who is not the person
+   dispatching the workflow or creating the tag, and enable **Prevent self-review**.
+4. Create a fine-grained personal access token scoped only to
+   `conus-vision/Browser2IDE`, with **Administration: Read-only** and no additional
+   repository permission beyond GitHub's required metadata access. Add it as the
+   `RELEASE_SETTINGS_TOKEN` environment secret inside `release-settings` only after
+   its deployment restrictions, required reviewer, and disabled self-review are
+   active. Rotate it before its expiration.
+5. Register the Firefox extension for unlisted distribution in Mozilla Add-ons.
    Its add-on ID must exactly match `browser_specific_settings.gecko.id` in
    `extensions/firefox/manifest.json`; the current ID is `browser2ide@local`.
-3. Create the GitHub Environment named `amo-signing` under **Settings >
+6. Create the GitHub Environment named `amo-signing` under **Settings >
    Environments**.
-4. Restrict `amo-signing` deployments to the protected `master` branch. Add at
+7. Restrict `amo-signing` deployments to the protected `master` branch. Add at
    least one required reviewer who is not the person dispatching the workflow,
    and enable **Prevent self-review** so self-review is disabled. Do not allow
    unprotected branches or tags to deploy to this environment.
-5. Only after those protections are active, create Mozilla JWT credentials and
+8. Only after those protections are active, create Mozilla JWT credentials and
    add `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` as environment secrets inside
    `amo-signing`. Do not create repository-level copies.
 
-Complete the protected-branch restriction, required reviewer, and disabled
-self-review controls before adding `AMO_JWT_ISSUER` or `AMO_JWT_SECRET`.
+The standard workflow `GITHUB_TOKEN` does not expose the repository Administration
+permission required by the immutable-release settings endpoint. Both workflows use
+`RELEASE_SETTINGS_TOKEN` only in the protected preflight step that performs the GET;
+no repository code or release mutation runs with that credential. The later
+`contents: write` jobs cannot access it.
+
+Complete each Environment's protected branch or tag restriction, required reviewer,
+and disabled self-review controls before adding `RELEASE_SETTINGS_TOKEN`,
+`AMO_JWT_ISSUER`, or `AMO_JWT_SECRET` to that Environment.
 
 Every manual signing or publication run must be dispatched from `master`. The
 workflow checks `refs/heads/master`, and every job with AMO secrets or
 `contents: write` also requires the protected `amo-signing` environment. A branch
 copy of the workflow therefore cannot reach credentials or mutate a release.
+
+Release immutability locks a release only when that release is published. Its draft
+remains mutable beforehand, so a trusted writer with `contents: write` is a residual
+pre-publish trust boundary. Required environment review and the final same-step
+numeric-ID validation narrow that boundary; they cannot make a malicious trusted
+writer's concurrent draft mutation transactionally impossible. Limit trusted
+writers and environment reviewers accordingly.
 
 Never commit, print, paste into an issue, or store either credential as a workflow
 variable. The signing job has `contents: read`; only its `web-ext sign` step receives
@@ -239,8 +277,18 @@ both provenance and `verified_xpi_sha256`. Before any release mutation, it also
 requires the same release database ID, exact six-file draft, valid checksums, rebuilt
 unsigned bytes, and byte equality between the draft XPI and provenance artifact.
 
-Immediately before `gh release edit <tag> --draft=false`, the protected publish job
-redownloads and repeats those checks. It receives no AMO secret and does not sign
+The final workflow step carries the exact numeric release database ID from signing
+provenance. In that one step it fetches the draft by ID, verifies the tag, `master`
+target, draft state, asset IDs and metadata, downloads every asset by numeric asset
+ID, and repeats the checksum, unsigned-byte, XPI-byte, and manually verified digest
+checks. It then publishes only by calling
+`PATCH repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID` with `draft=false`; publication
+by tag is prohibited. If the verified release was deleted and recreated under the
+same tag, the old numeric ID is missing and publication fails.
+
+The same step validates the PATCH response, refetches that numeric ID, requires the
+same ID, tag, target, published state, and asset fingerprint, then redownloads and
+compares the immutable public assets. It receives no AMO secret and does not sign
 again. Confirm the public release contains only:
 
 ```text

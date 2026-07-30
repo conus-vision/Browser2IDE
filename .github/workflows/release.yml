@@ -16,6 +16,7 @@ jobs:
   package:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment: release-settings
     permissions:
       contents: read
     outputs:
@@ -23,6 +24,17 @@ jobs:
       version: ${{ steps.release.outputs.version }}
 
     steps:
+      - name: Require immutable repository releases
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_SETTINGS_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          SETTINGS_JSON="$RUNNER_TEMP/browser2ide-immutable-releases.json"
+          test ! -e "$SETTINGS_JSON"
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/immutable-releases" > "$SETTINGS_JSON"
+          jq -e '.enabled == true' "$SETTINGS_JSON" > /dev/null
+
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -151,5 +163,6 @@ jobs:
             "release-assets/SHA256SUMS" \
             --draft \
             --verify-tag \
+            --target master \
             --title "Browser2IDE $RELEASE_TAG" \
             --generate-notes

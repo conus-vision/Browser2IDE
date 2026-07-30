@@ -85,6 +85,72 @@ export async function compareReleaseArtifactDirectories(
   }
 }
 
+export function assertPublicationRelease(release, version, expected) {
+  const releaseDatabaseId = parseNumericRestId(release?.id, "Release", "release");
+  const expectedDatabaseId = parseReleaseDatabaseId(expected?.expectedDatabaseId);
+  if (releaseDatabaseId !== expectedDatabaseId) {
+    throw new Error(
+      `Release database id differs: expected ${expectedDatabaseId}, received ${releaseDatabaseId}`,
+    );
+  }
+  if (release?.tag_name !== expected?.expectedTag) {
+    throw new Error("Release tag differs from the verified publication tag");
+  }
+  if (release?.target_commitish !== expected?.expectedTarget) {
+    throw new Error("Release target differs from the verified publication target");
+  }
+  if (
+    typeof expected?.expectedDraft !== "boolean" ||
+    release?.draft !== expected.expectedDraft
+  ) {
+    throw new Error("Release draft state differs from the required publication state");
+  }
+  if (expected.expectedDraft === false && release?.immutable !== true) {
+    throw new Error("Published release must be immutable");
+  }
+  if (!Array.isArray(release?.assets)) {
+    throw new Error("Publication release assets must be an array");
+  }
+
+  const assets = release.assets.map((asset) => {
+    if (!asset || typeof asset !== "object" || Array.isArray(asset)) {
+      throw new Error("Publication release contains invalid asset metadata");
+    }
+    const id = parseNumericRestId(asset.id, "Release asset", "asset");
+    if (
+      typeof asset.size !== "number" ||
+      !Number.isSafeInteger(asset.size) ||
+      asset.size <= 0
+    ) {
+      throw new Error("Release asset size must be a positive safe integer");
+    }
+    if (asset.state !== "uploaded") {
+      throw new Error("Release asset must be fully uploaded");
+    }
+    return { id, name: asset.name, size: asset.size };
+  });
+  assets.sort((left, right) => compareAscii(left.name, right.name));
+  const actualNames = assets.map(({ name }) => name);
+  const expectedNames = expectedReleaseAssetNames(version, true);
+  if (
+    actualNames.some((name) => typeof name !== "string") ||
+    new Set(actualNames).size !== actualNames.length ||
+    JSON.stringify(actualNames) !== JSON.stringify(expectedNames)
+  ) {
+    throw new Error(`Publication release asset set differs: ${actualNames.join(", ")}`);
+  }
+  if (new Set(assets.map(({ id }) => id)).size !== assets.length) {
+    throw new Error("Publication release contains duplicate numeric asset ids");
+  }
+
+  return {
+    releaseDatabaseId,
+    tagName: release.tag_name,
+    targetCommitish: release.target_commitish,
+    assets,
+  };
+}
+
 function assertDraftReleaseAssets(
   release,
   version,
@@ -149,6 +215,13 @@ function parseReleaseDatabaseId(value) {
     return value;
   }
   throw new Error("Release database id must be a positive integer");
+}
+
+function parseNumericRestId(value, label, kind) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must have a positive numeric ${kind} id`);
+  }
+  return String(value);
 }
 
 async function assertRegularFile(path, label) {

@@ -61,6 +61,33 @@ test("draft release separates read-only packaging from minimal release mutation"
   assertNoRepositoryCodeWithGhToken(workflow.jobs.create_draft.steps);
 });
 
+test("release workflows require repository release immutability", async () => {
+  for (const [filename, jobName] of [
+    ["release.yml", "package"],
+    ["firefox-sign.yml", "validate"],
+  ]) {
+    const workflow = await readWorkflow(filename);
+    const step = workflow.jobs[jobName].steps.find(
+      (candidate) => candidate.name === "Require immutable repository releases",
+    );
+    assert.ok(step, `${filename} must preflight immutable releases`);
+    assert.equal(workflow.jobs[jobName].environment, "release-settings");
+    assert.equal(step.env.GH_TOKEN, "${{ secrets.RELEASE_SETTINGS_TOKEN }}");
+    assert.equal(step.env.GITHUB_REPOSITORY, "${{ github.repository }}");
+    assert.match(
+      step.run,
+      /gh api --method GET "repos\/\$\{GITHUB_REPOSITORY\}\/immutable-releases"/,
+    );
+    assert.match(step.run, /\.enabled == true/);
+    const source = await readFile(resolve(root, ".github/workflows", filename), "utf8");
+    assert.equal(
+      (source.match(/repos\/\$\{GITHUB_REPOSITORY\}\/immutable-releases/g) ?? []).length,
+      1,
+      `${filename} must query release settings only in its protected preflight`,
+    );
+  }
+});
+
 test("Firefox signing isolates AMO secrets and protects every privileged job", async () => {
   const workflow = await readWorkflow("firefox-sign.yml");
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
@@ -81,6 +108,7 @@ test("Firefox signing isolates AMO secrets and protects every privileged job", a
     actions: "read",
     contents: "write",
   });
+  assert.equal(workflow.jobs.validate.environment, "release-settings");
 
   for (const name of ["sign", "attach", "publish"]) {
     assert.equal(workflow.jobs[name].environment, "amo-signing");
@@ -93,6 +121,8 @@ test("Firefox signing isolates AMO secrets and protects every privileged job", a
   assert.match(trustedContextGate.run, /GITHUB_REF.*refs\/heads\/master/s);
   assert.doesNotMatch(JSON.stringify(workflow.jobs.attach), /AMO_JWT_/);
   assert.doesNotMatch(JSON.stringify(workflow.jobs.publish), /AMO_JWT_/);
+  assert.doesNotMatch(JSON.stringify(workflow.jobs.attach), /RELEASE_SETTINGS_TOKEN/);
+  assert.doesNotMatch(JSON.stringify(workflow.jobs.publish), /RELEASE_SETTINGS_TOKEN/);
   assert.equal(workflow.jobs.sign.permissions.contents, "read");
 
   for (const name of ["attach", "publish"]) {
@@ -135,22 +165,42 @@ test("Firefox publish requires exact sign-run provenance and manually verified X
   const restore = stepIndex(publishSteps, "Restore immutable signed XPI provenance");
   const validate = stepIndex(publishSteps, "Validate exact manually verified signed XPI");
   const firstRelease = stepIndex(publishSteps, "Download signed draft for publication");
-  const finalRelease = stepIndex(
-    publishSteps,
-    "Redownload signed draft immediately before publication",
-  );
-  const publish = stepIndex(publishSteps, "Publish installed-verified release");
+  const publish = stepIndex(publishSteps, "Verify and publish immutable release by ID");
   assert.ok(fetchRun < restore && restore < validate && validate < firstRelease);
-  assert.ok(firstRelease < finalRelease && finalRelease < publish);
+  assert.ok(firstRelease < publish);
+  assert.equal(publish, publishSteps.length - 1);
   assert.equal(publishSteps[restore].with["run-id"], "${{ inputs.sign_run_id }}");
   assert.match(publishSteps[restore].with.name, /inputs\.tag/);
   assert.match(publishSteps[restore].with.name, /inputs\.sign_run_id/);
   assert.match(publishSteps[validate].run, /release-signing-provenance\.mjs validate-publish/);
   assert.match(publishSteps[validate].run, /VERIFIED_XPI_SHA256/);
   assert.match(publishSteps[validate].run, /SIGN_RUN_ID/);
-  assert.match(publishSteps[finalRelease + 1].run, /verify-release-assets\.mjs signed/);
-  assert.match(publishSteps[finalRelease + 1].run, /cmp --/);
-  assert.match(publishSteps[publish].run, /--draft=false/);
+  const publishStep = publishSteps[publish];
+  assert.equal(
+    publishStep.env.EXPECTED_RELEASE_DATABASE_ID,
+    "${{ steps.provenance.outputs.release_database_id }}",
+  );
+  assert.match(publishStep.run, /EXPECTED_RELEASE_DATABASE_ID.*\^\[1-9\]\[0-9\]\*\$/s);
+  assert.match(publishStep.run, /env -u GH_TOKEN node .*verify-release-publication\.mjs draft/);
+  assert.match(
+    publishStep.run,
+    /gh api --method PATCH "repos\/\$\{GITHUB_REPOSITORY\}\/releases\/\$\{EXPECTED_RELEASE_DATABASE_ID\}"/,
+  );
+  assert.match(publishStep.run, /-F draft=false/);
+  assert.match(publishStep.run, /env -u GH_TOKEN node .*verify-release-publication\.mjs published/);
+  assert.match(publishStep.run, /cmp -- .*publication-before.*publication-after/s);
+  assert.doesNotMatch(source, /gh release edit/);
+
+  const getById =
+    'gh api --method GET "repos/${GITHUB_REPOSITORY}/releases/${EXPECTED_RELEASE_DATABASE_ID}"';
+  const preVerify = "verify-release-publication.mjs draft";
+  const patchById =
+    'gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${EXPECTED_RELEASE_DATABASE_ID}"';
+  const postVerify = "verify-release-publication.mjs published";
+  assert.ok(publishStep.run.indexOf(getById) < publishStep.run.indexOf(preVerify));
+  assert.ok(publishStep.run.indexOf(preVerify) < publishStep.run.indexOf(patchById));
+  assert.ok(publishStep.run.indexOf(patchById) < publishStep.run.indexOf(postVerify));
+  assert.ok(publishStep.run.lastIndexOf(getById) > publishStep.run.indexOf(patchById));
 
   const provenanceUpload = workflow.jobs.sign.steps.find(
     (step) => step.name === "Preserve immutable signed XPI provenance",
@@ -174,6 +224,18 @@ test("release guide makes the protected AMO environment and digest handoff manda
   assert.match(environment, /required reviewer/i);
   assert.match(environment, /disabled self-review|prevent self-review/i);
   assert.match(environment, /before[^.]+AMO_JWT_ISSUER/i);
+  assert.match(environment, /Settings[\s\S]+Releases[\s\S]+Enable release immutability/i);
+  assert.match(
+    environment,
+    /gh api --method PUT repos\/conus-vision\/Browser2IDE\/immutable-releases/,
+  );
+  assert.match(environment, /future releases/i);
+  assert.match(environment, /`release-settings`/);
+  assert.match(environment, /RELEASE_SETTINGS_TOKEN/);
+  assert.match(environment, /Administration[^.]+read-only/i);
+  assert.match(environment, /GITHUB_TOKEN[^.]+Administration/i);
+  assert.match(source, /trusted writer/i);
+  assert.match(source, /pre-publish|before publication/i);
   assert.doesNotMatch(environment, /optional|not required/i);
   assert.match(source, /sign_run_id/);
   assert.match(source, /verified_xpi_sha256/);
@@ -201,7 +263,11 @@ function assertNoRepositoryCodeWithGhToken(steps) {
   for (const step of steps) {
     if (!Object.hasOwn(step.env ?? {}, "GH_TOKEN")) continue;
     assert.match(step.run ?? "", /(?:^|\n)\s*gh\s/m);
-    assert.doesNotMatch(step.run ?? "", /node\s+|corepack\s+pnpm|\bgit\s/);
+    assert.doesNotMatch(step.run ?? "", /corepack\s+pnpm|\bgit\s/);
+    for (const line of (step.run ?? "").split("\n")) {
+      if (!/node\s+(?:tools\/|release-bundle\/)/.test(line)) continue;
+      assert.match(line, /^\s*env -u GH_TOKEN node\s+/);
+    }
   }
 }
 

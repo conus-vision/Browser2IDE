@@ -17,9 +17,18 @@ test("tag workflow verifies artifacts before a minimal job creates the draft", a
   assert.match(source, /refs\/remotes\/origin\/master/);
   assert.match(source, /corepack pnpm package/);
   assert.doesNotMatch(source, /AMO_JWT_(?:ISSUER|SECRET)/);
+  assert.equal(workflow.jobs.package.environment, "release-settings");
 
   const packageSteps = workflow.jobs.package.steps;
+  const immutable = stepIndex(packageSteps, "Require immutable repository releases");
   const preserve = stepIndex(packageSteps, "Preserve immutable draft assets");
+  assert.ok(immutable < preserve);
+  assert.match(packageSteps[immutable].run, /immutable-releases/);
+  assert.match(packageSteps[immutable].run, /\.enabled == true/);
+  assert.equal(
+    packageSteps[immutable].env.GH_TOKEN,
+    "${{ secrets.RELEASE_SETTINGS_TOKEN }}",
+  );
   assert.ok(stepIndex(packageSteps, "Package unsigned artifacts") < preserve);
   assert.ok(stepIndex(packageSteps, "Check generated drift") < preserve);
 
@@ -31,6 +40,8 @@ test("tag workflow verifies artifacts before a minimal job creates the draft", a
   assert.match(draftSteps[exact].run, /sha256sum --check --strict SHA256SUMS/);
   assert.match(draftSteps[create].run, /gh release create/);
   assert.match(draftSteps[create].run, /--draft/);
+  assert.match(draftSteps[create].run, /--target master/);
+  assert.doesNotMatch(JSON.stringify(workflow.jobs.create_draft), /RELEASE_SETTINGS_TOKEN/);
   assertNoRepositoryCodeWithGhToken(draftSteps);
 });
 
@@ -147,23 +158,21 @@ test("write jobs preserve release identity and race checks without AMO secrets",
     publishSteps,
     "Verify signed draft identity for publication",
   );
-  const finalDownload = stepIndex(
-    publishSteps,
-    "Redownload signed draft immediately before publication",
-  );
-  const finalVerify = stepIndex(
-    publishSteps,
-    "Revalidate exact signed draft immediately before publication",
-  );
-  const publish = stepIndex(publishSteps, "Publish installed-verified release");
+  const publish = stepIndex(publishSteps, "Verify and publish immutable release by ID");
   assert.ok(validateXpi < initialDownload && initialDownload < initialVerify);
-  assert.ok(initialVerify < finalDownload && finalDownload < finalVerify);
-  assert.ok(finalVerify < publish);
+  assert.ok(initialVerify < publish);
+  assert.equal(publish, publishSteps.length - 1);
   assert.match(publishSteps[initialVerify].run, /--expected-database-id/);
   assert.match(publishSteps[initialVerify].run, /cmp --/);
-  assert.match(publishSteps[finalVerify].run, /--expected-database-id/);
-  assert.match(publishSteps[finalVerify].run, /cmp --/);
-  assert.match(publishSteps[publish].run, /--draft=false/);
+  const publishRun = publishSteps[publish].run;
+  assert.match(publishRun, /releases\/\$\{EXPECTED_RELEASE_DATABASE_ID\}/);
+  assert.match(publishRun, /verify-release-publication\.mjs draft/);
+  assert.match(publishRun, /--method PATCH/);
+  assert.match(publishRun, /-F draft=false/);
+  assert.match(publishRun, /verify-release-publication\.mjs published/);
+  assert.match(publishRun, /sha256sum --check --strict SHA256SUMS/);
+  assert.match(publishRun, /VERIFIED_XPI_SHA256/);
+  assert.doesNotMatch(JSON.stringify(workflow.jobs.publish), /gh release edit/);
 
   assert.doesNotMatch(JSON.stringify(workflow.jobs.attach), /AMO_JWT_/);
   assert.doesNotMatch(JSON.stringify(workflow.jobs.publish), /AMO_JWT_/);
@@ -182,6 +191,10 @@ test("release guide documents protected tags, stateful resume, and fail-closed r
   assert.match(source, /`amo-signing`/);
   assert.match(source, /required reviewer/i);
   assert.match(source, /Prevent self-review/i);
+  assert.match(source, /Enable release immutability/i);
+  assert.match(source, /immutable-releases/);
+  assert.match(source, /future releases/i);
+  assert.match(source, /trusted writer/i);
 
   assert.match(source, /resume_run_id/);
   assert.match(source, /AMO Developer Hub/);
@@ -207,10 +220,14 @@ function assertNoRepositoryCodeWithGhToken(steps) {
   for (const step of steps) {
     if (!Object.hasOwn(step.env ?? {}, "GH_TOKEN")) continue;
     assert.match(step.run ?? "", /(?:^|\n)\s*gh\s/m, `${step.name} must invoke gh`);
-    assert.doesNotMatch(
-      step.run ?? "",
-      /node\s+tools\/|node\s+release-bundle\/|corepack\s+pnpm|\bgit\s/,
-      `${step.name} must not run repository code with GH_TOKEN`,
-    );
+    assert.doesNotMatch(step.run ?? "", /corepack\s+pnpm|\bgit\s/);
+    for (const line of (step.run ?? "").split("\n")) {
+      if (!/node\s+(?:tools\/|release-bundle\/)/.test(line)) continue;
+      assert.match(
+        line,
+        /^\s*env -u GH_TOKEN node\s+/,
+        `${step.name} must remove GH_TOKEN before running repository code`,
+      );
+    }
   }
 }

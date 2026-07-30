@@ -41,6 +41,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    environment: release-settings
     permissions:
       actions: read
       contents: read
@@ -75,6 +76,17 @@ jobs:
             [[ "$SIGN_RUN_ID" =~ ^[1-9][0-9]*$ ]]
             [[ "$VERIFIED_XPI_SHA256" =~ ^[0-9a-f]{64}$ ]]
           fi
+
+      - name: Require immutable repository releases
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_SETTINGS_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          SETTINGS_JSON="$RUNNER_TEMP/browser2ide-immutable-releases.json"
+          test ! -e "$SETTINGS_JSON"
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/immutable-releases" > "$SETTINGS_JSON"
+          jq -e '.enabled == true' "$SETTINGS_JSON" > /dev/null
 
       - name: Check out requested tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -205,6 +217,7 @@ jobs:
             tools/release-publishing.mjs \
             tools/release-signing-provenance.mjs \
             tools/verify-release-assets.mjs \
+            tools/verify-release-publication.mjs \
             tools/verify-release-version.mjs \
             tools/write-checksums.mjs \
             release-bundle/tools/
@@ -676,41 +689,115 @@ jobs:
             "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
             "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
 
-      - name: Redownload signed draft immediately before publication
+      - name: Verify and publish immutable release by ID
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-final"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-final.json"
-          test ! -e "$RELEASE_DIR"
-          test ! -e "$RELEASE_JSON"
-          mkdir "$RELEASE_DIR"
-          gh release download "$RELEASE_TAG" --dir "$RELEASE_DIR"
-          gh release view "$RELEASE_TAG" --json databaseId,isDraft,assets > "$RELEASE_JSON"
-
-      - name: Revalidate exact signed draft immediately before publication
-        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
           EXPECTED_RELEASE_DATABASE_ID: ${{ steps.provenance.outputs.release_database_id }}
+          EXPECTED_RELEASE_TARGET: master
+          RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          VERIFIED_XPI_SHA256: ${{ inputs.verified_xpi_sha256 }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-final"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-final.json"
-          node release-bundle/tools/verify-release-assets.mjs signed \
-            "$RELEASE_JSON" \
-            "$RELEASE_VERSION" \
-            "$RELEASE_DIR/SHA256SUMS" \
-            --expected-database-id "$EXPECTED_RELEASE_DATABASE_ID" \
-            --compare-unsigned-artifacts release-bundle/artifacts
-          (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
-          cmp -- \
-            "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
-            "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
+          [[ "$EXPECTED_RELEASE_DATABASE_ID" =~ ^[1-9][0-9]*$ ]]
 
-      - name: Publish installed-verified release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false
+          BEFORE_JSON="$RUNNER_TEMP/browser2ide-publication-before.json"
+          PATCH_JSON="$RUNNER_TEMP/browser2ide-publication-after-patch.json"
+          AFTER_JSON="$RUNNER_TEMP/browser2ide-publication-after.json"
+          BEFORE_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-before.fingerprint.json"
+          PATCH_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-after-patch.fingerprint.json"
+          AFTER_FINGERPRINT="$RUNNER_TEMP/browser2ide-publication-after.fingerprint.json"
+          BEFORE_DIR="$RUNNER_TEMP/browser2ide-publication-before-assets"
+          AFTER_DIR="$RUNNER_TEMP/browser2ide-publication-after-assets"
+          for PATH_TO_CREATE in \
+            "$BEFORE_JSON" \
+            "$PATCH_JSON" \
+            "$AFTER_JSON" \
+            "$BEFORE_FINGERPRINT" \
+            "$PATCH_FINGERPRINT" \
+            "$AFTER_FINGERPRINT" \
+            "$BEFORE_DIR" \
+            "$AFTER_DIR"; do
+            test ! -e "$PATH_TO_CREATE"
+          done
+          mkdir "$BEFORE_DIR" "$AFTER_DIR"
+
+          ASSET_NAMES=(
+            "browser2ide-chrome-${RELEASE_VERSION}.zip"
+            "browser2ide-firefox-${RELEASE_VERSION}.zip"
+            "browser2ide-firefox-${RELEASE_VERSION}.xpi"
+            "browser2ide-firefox-source-${RELEASE_VERSION}.zip"
+            "browser2ide-vscode-${RELEASE_VERSION}.vsix"
+            "SHA256SUMS"
+          )
+
+          download_release_assets() {
+            local release_json="$1"
+            local destination="$2"
+            local asset_name
+            local asset_id
+            for asset_name in "${ASSET_NAMES[@]}"; do
+              asset_id="$(jq -er --arg name "$asset_name" \
+                '.assets[] | select(.name == $name) | .id' "$release_json")"
+              [[ "$asset_id" =~ ^[1-9][0-9]*$ ]]
+              gh api --method GET \
+                -H "Accept: application/octet-stream" \
+                "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+                > "$destination/$asset_name"
+            done
+          }
+
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/releases/${EXPECTED_RELEASE_DATABASE_ID}" > "$BEFORE_JSON"
+          env -u GH_TOKEN node release-bundle/tools/verify-release-publication.mjs draft \
+            "$BEFORE_JSON" \
+            "$RELEASE_VERSION" \
+            "$EXPECTED_RELEASE_DATABASE_ID" \
+            "$RELEASE_TAG" \
+            "$EXPECTED_RELEASE_TARGET" \
+            > "$BEFORE_FINGERPRINT"
+          download_release_assets "$BEFORE_JSON" "$BEFORE_DIR"
+          (cd "$BEFORE_DIR" && sha256sum --check --strict SHA256SUMS)
+          cmp -- "$BEFORE_DIR/browser2ide-chrome-${RELEASE_VERSION}.zip" \
+            "release-bundle/artifacts/browser2ide-chrome-${RELEASE_VERSION}.zip"
+          cmp -- "$BEFORE_DIR/browser2ide-firefox-${RELEASE_VERSION}.zip" \
+            "release-bundle/artifacts/browser2ide-firefox-${RELEASE_VERSION}.zip"
+          cmp -- "$BEFORE_DIR/browser2ide-firefox-source-${RELEASE_VERSION}.zip" \
+            "release-bundle/artifacts/browser2ide-firefox-source-${RELEASE_VERSION}.zip"
+          cmp -- "$BEFORE_DIR/browser2ide-vscode-${RELEASE_VERSION}.vsix" \
+            "release-bundle/artifacts/browser2ide-vscode-${RELEASE_VERSION}.vsix"
+          cmp -- "$BEFORE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+            "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
+          test "$(sha256sum "$BEFORE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" | cut -d ' ' -f 1)" = \
+            "$VERIFIED_XPI_SHA256"
+
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${EXPECTED_RELEASE_DATABASE_ID}" \
+            -F draft=false > "$PATCH_JSON"
+          env -u GH_TOKEN node release-bundle/tools/verify-release-publication.mjs published \
+            "$PATCH_JSON" \
+            "$RELEASE_VERSION" \
+            "$EXPECTED_RELEASE_DATABASE_ID" \
+            "$RELEASE_TAG" \
+            "$EXPECTED_RELEASE_TARGET" \
+            > "$PATCH_FINGERPRINT"
+
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/releases/${EXPECTED_RELEASE_DATABASE_ID}" > "$AFTER_JSON"
+          env -u GH_TOKEN node release-bundle/tools/verify-release-publication.mjs published \
+            "$AFTER_JSON" \
+            "$RELEASE_VERSION" \
+            "$EXPECTED_RELEASE_DATABASE_ID" \
+            "$RELEASE_TAG" \
+            "$EXPECTED_RELEASE_TARGET" \
+            > "$AFTER_FINGERPRINT"
+          cmp -- \
+            "$RUNNER_TEMP/browser2ide-publication-before.fingerprint.json" \
+            "$RUNNER_TEMP/browser2ide-publication-after-patch.fingerprint.json"
+          cmp -- \
+            "$RUNNER_TEMP/browser2ide-publication-before.fingerprint.json" \
+            "$RUNNER_TEMP/browser2ide-publication-after.fingerprint.json"
+
+          download_release_assets "$AFTER_JSON" "$AFTER_DIR"
+          (cd "$AFTER_DIR" && sha256sum --check --strict SHA256SUMS)
+          for asset_name in "${ASSET_NAMES[@]}"; do
+            cmp -- "$BEFORE_DIR/$asset_name" "$AFTER_DIR/$asset_name"
+          done

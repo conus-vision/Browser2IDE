@@ -4,11 +4,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
-import {
+import * as releasePublishing from "../release-publishing.mjs";
+
+const {
   assertReleaseAssets,
   assertUnsignedReleaseAssets,
   parseChecksumManifest,
-} from "../release-publishing.mjs";
+} = releasePublishing;
 
 const version = "0.2.0";
 const databaseId = "987654321";
@@ -21,6 +23,7 @@ const unsignedNames = [
   `browser2ide-vscode-${version}.vsix`,
   "SHA256SUMS",
 ];
+const signedNames = [...unsignedNames, signedName];
 const original = [
   `${"1".repeat(64)}  browser2ide-chrome-${version}.zip`,
   `${"2".repeat(64)}  ${unsignedName}`,
@@ -139,6 +142,96 @@ test("release identity is mandatory and immutable across verification phases", (
   );
 });
 
+test("REST publication identity has a stable fingerprint across draft publication", () => {
+  assert.equal(typeof releasePublishing.assertPublicationRelease, "function");
+  const expected = {
+    expectedDatabaseId: databaseId,
+    expectedTag: `v${version}`,
+    expectedTarget: "master",
+  };
+  const before = releasePublishing.assertPublicationRelease(
+    publicationRelease(),
+    version,
+    { ...expected, expectedDraft: true },
+  );
+  const after = releasePublishing.assertPublicationRelease(
+    publicationRelease({ draft: false, immutable: true }),
+    version,
+    { ...expected, expectedDraft: false },
+  );
+
+  assert.deepEqual(after, before);
+  assert.equal(before.releaseDatabaseId, databaseId);
+  assert.equal(before.tagName, `v${version}`);
+  assert.equal(before.targetCommitish, "master");
+  assert.deepEqual(
+    before.assets.map(({ name }) => name),
+    [...signedNames].sort(),
+  );
+});
+
+test("REST publication identity rejects recreation and metadata drift", () => {
+  assert.equal(typeof releasePublishing.assertPublicationRelease, "function");
+  const expected = {
+    expectedDatabaseId: databaseId,
+    expectedTag: `v${version}`,
+    expectedTarget: "master",
+    expectedDraft: true,
+  };
+  for (const [release, pattern] of [
+    [publicationRelease({ id: Number(databaseId) + 1 }), /database id differs/i],
+    [publicationRelease({ id: databaseId }), /numeric release id/i],
+    [publicationRelease({ tag_name: "v9.9.9" }), /tag differs/i],
+    [publicationRelease({ target_commitish: "other" }), /target differs/i],
+    [publicationRelease({ draft: false }), /draft state differs/i],
+    [publicationRelease({ assets: publicationRelease().assets.slice(1) }), /asset set differs/i],
+    [
+      publicationRelease({
+        assets: publicationRelease().assets.map((asset, index) =>
+          index === 0 ? { ...asset, id: "101" } : asset,
+        ),
+      }),
+      /numeric asset id/i,
+    ],
+  ]) {
+    assert.throws(
+      () => releasePublishing.assertPublicationRelease(release, version, expected),
+      pattern,
+    );
+  }
+
+  assert.throws(
+    () =>
+      releasePublishing.assertPublicationRelease(
+        publicationRelease({ draft: false, immutable: false }),
+        version,
+        { ...expected, expectedDraft: false },
+      ),
+    /immutable/i,
+  );
+});
+
+test("publication verifier CLI emits the same identity before and after PATCH", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-publication-release-"));
+  try {
+    const beforePath = resolve(directory, "before.json");
+    const afterPath = resolve(directory, "after.json");
+    await writeFile(beforePath, JSON.stringify(publicationRelease()));
+    await writeFile(
+      afterPath,
+      JSON.stringify(publicationRelease({ draft: false, immutable: true })),
+    );
+
+    const before = runPublicationVerifier("draft", beforePath);
+    const after = runPublicationVerifier("published", afterPath);
+    assert.equal(before.status, 0, before.stderr);
+    assert.equal(after.status, 0, after.stderr);
+    assert.equal(after.stdout, before.stdout);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("release asset verifier CLI requires an explicit unsigned phase", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-unsigned-release-"));
   try {
@@ -213,6 +306,39 @@ function runVerifier(...arguments_) {
   return spawnSync(
     process.execPath,
     [resolve(import.meta.dirname, "../verify-release-assets.mjs"), ...arguments_],
+    { encoding: "utf8" },
+  );
+}
+
+function publicationRelease(overrides = {}) {
+  return {
+    id: Number(databaseId),
+    tag_name: `v${version}`,
+    target_commitish: "master",
+    draft: true,
+    immutable: false,
+    assets: signedNames.map((name, index) => ({
+      id: 1000 + index,
+      name,
+      size: 100 + index,
+      state: "uploaded",
+    })),
+    ...overrides,
+  };
+}
+
+function runPublicationVerifier(state, releasePath) {
+  return spawnSync(
+    process.execPath,
+    [
+      resolve(import.meta.dirname, "../verify-release-publication.mjs"),
+      state,
+      releasePath,
+      version,
+      databaseId,
+      `v${version}`,
+      "master",
+    ],
     { encoding: "utf8" },
   );
 }
