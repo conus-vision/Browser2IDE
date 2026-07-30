@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertAsciiFilename,
+  assertTextEqual,
   assertVersion,
   normalizeArchivePath,
   rejectSensitivePath,
@@ -55,4 +56,9 @@ test("checksum artifact names must be printable ASCII", () => {
   assert.doesNotThrow(() => assertAsciiFilename("browser2ide-firefox-0.2.0.zip"));
   assert.throws(() => assertAsciiFilename("bröwser.zip"), /printable ASCII/);
   assert.throws(() => assertAsciiFilename("line\nbreak.zip"), /printable ASCII/);
+});
+
+test("tracked text comparison ignores checkout line endings", () => {
+  assert.doesNotThrow(() => assertTextEqual("MIT\r\nlicense\r\n", "MIT\nlicense\n"));
+  assert.throws(() => assertTextEqual("MIT\nlicense\n", "different\n"), /differs/);
 });

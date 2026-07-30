@@ -9,6 +9,7 @@ describe("Chrome build and shared panel assets", () => {
     expect(build).toMatch(/target:\s*(?:\[\s*)?["']chrome116["']/);
     expect(build).toMatch(/minify:\s*true/);
     expect(build).toMatch(/sourcemap:\s*false/);
+    expect(build).toContain("writeBrowserProjectLicense");
     for (const entry of ["background", "contentScript", "devtools", "panel"]) {
       expect(build).toMatch(
         new RegExp(`${entry}:\\s*["']src/${entry}\\.ts["']`),

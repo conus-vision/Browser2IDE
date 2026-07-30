@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
 import {
   assertVersion,
+  assertTextEqual,
   compareAscii,
   normalizeArchivePath,
   rejectSensitivePath,
@@ -379,7 +380,14 @@ function parseJsonFile(archive, filename, path) {
 }
 
 function assertProjectLicense(archive, filename, path) {
-  assertEqualFile(archive, filename, path, projectLicense);
+  try {
+    assertTextEqual(
+      archive.files.get(path).toString("utf8"),
+      projectLicense.toString("utf8"),
+    );
+  } catch {
+    throw new Error(`${filename} contains unexpected content in ${path}`);
+  }
 }
 
 function assertEqualFile(archive, filename, path, expected) {

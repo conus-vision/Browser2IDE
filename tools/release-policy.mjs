@@ -39,6 +39,16 @@ export function assertAsciiFilename(filename) {
   }
 }
 
+export function assertTextEqual(actual, expected) {
+  if (normalizeLineEndings(actual) !== normalizeLineEndings(expected)) {
+    throw new Error("Tracked text content differs");
+  }
+}
+
 export function compareAscii(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function normalizeLineEndings(value) {
+  return value.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
 }

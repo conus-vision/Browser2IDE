@@ -5,6 +5,7 @@ import { build } from "esbuild";
 import {
   normalizeBrowserPackageTimestamps,
   writeBrowserBundleNotices,
+  writeBrowserProjectLicense,
 } from "../../tools/browser-bundle-notices.mjs";
 
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
@@ -39,5 +40,6 @@ for (const asset of ["panel.html", "panel.css", "browser2ide.svg"]) {
   );
 }
 
+await writeBrowserProjectLicense(extensionRoot);
 await writeBrowserBundleNotices(result.metafile, extensionRoot);
 await normalizeBrowserPackageTimestamps(extensionRoot);

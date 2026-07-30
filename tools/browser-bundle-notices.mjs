@@ -3,6 +3,13 @@ import { resolve } from "node:path";
 
 const DEFAULT_SOURCE_DATE_EPOCH = "1704067200";
 
+export async function writeBrowserProjectLicense(extensionRoot) {
+  const license = normalizeText(
+    await readFile(resolve(extensionRoot, "../../LICENSE"), "utf8"),
+  );
+  await writeFile(resolve(extensionRoot, "LICENSE"), `${license}\n`, "utf8");
+}
+
 export async function writeBrowserBundleNotices(metafile, extensionRoot) {
   const packages = await bundledPackages(metafile, extensionRoot);
   if (packages.length === 0) {

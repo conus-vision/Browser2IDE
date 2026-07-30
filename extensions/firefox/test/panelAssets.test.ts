@@ -65,6 +65,7 @@ describe("shared DevTools panel assets", () => {
     expect(build).toContain('format: "iife"');
     expect(build).toContain("minify: true");
     expect(build).toContain("sourcemap: false");
+    expect(build).toContain("writeBrowserProjectLicense");
     for (const entry of ["background", "contentScript", "devtools", "panel"]) {
       expect(build).toContain(`${entry}: "src/${entry}.ts"`);
     }
