@@ -1,0 +1,104 @@
+name: Bug report
+description: Report a reproducible problem with Browser2IDE.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Thank you for helping us improve Browser2IDE. Remove credentials and sensitive data before submitting.
+  - type: input
+    id: browser2ide_version
+    attributes:
+      label: Browser2IDE version
+      description: Enter the installed Browser2IDE extension version.
+      placeholder: 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: vscode_version
+    attributes:
+      label: VS Code version
+      description: Copy the version from Help > About.
+      placeholder: 1.95.0
+    validations:
+      required: true
+  - type: input
+    id: browser_version
+    attributes:
+      label: Browser and version
+      description: Include the browser name and complete version.
+      placeholder: Firefox 128.0 or Chrome 127.0.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: source_type
+    attributes:
+      label: Source type
+      description: Select the source type active when the problem occurred.
+      options:
+        - CSS
+        - SCSS
+        - External source plugin
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: operating_system
+    attributes:
+      label: Operating system
+      description: Include the operating system name and version.
+      placeholder: Windows 11, macOS 15, or Ubuntu 24.04
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction_steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reliable sequence that demonstrates the problem.
+      placeholder: |
+        1. Start Browser2IDE in VS Code.
+        2. Link the browser extension.
+        3. Inspect an element.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behavior
+      description: Describe what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: Actual behavior
+      description: Describe what happened instead, including visible errors.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste relevant Browser2IDE diagnostics after removing credentials and sensitive data. Never include a link code, PIN, or token.
+      render: shell
+    validations:
+      required: true
+  - type: checkboxes
+    id: credential_safety
+    attributes:
+      label: Credential safety
+      options:
+        - label: I removed all Browser2IDE link codes, PINs, and tokens from this report and its attachments.
+          required: true
+    validations:
+      required: true
+  - type: checkboxes
+    id: existing_issues
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched the existing issues and did not find a duplicate.
+          required: true
+    validations:
+      required: true
