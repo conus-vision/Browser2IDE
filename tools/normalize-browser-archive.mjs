@@ -22,7 +22,7 @@ export async function normalizeBrowserArchive(path) {
   const output = new AdmZip();
   const timestamp = sourceDate();
   for (const name of [...files.keys()].sort(compareAscii)) {
-    output.addFile(name, files.get(name), "", 0);
+    output.addFile(name, files.get(name), "");
     output.getEntry(name).header.time = timestamp;
   }
   await writeFile(absolutePath, output.toBuffer());

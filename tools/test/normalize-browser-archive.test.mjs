@@ -23,6 +23,10 @@ test("browser archive normalization sorts files and fixes timestamps", async () 
       entries.map((entry) => entry.header.time.toISOString()),
       ["2024-01-01T00:00:00.000Z", "2024-01-01T00:00:00.000Z"],
     );
+    assert.deepEqual(
+      entries.map((entry) => entry.attr),
+      [0x81a40000, 0x81a40000],
+    );
 
     await normalizeBrowserArchive(path);
     assert.deepEqual(await readFile(path), first);
