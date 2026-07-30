@@ -7,10 +7,14 @@ import AdmZip from "adm-zip";
 import { withTemporaryDirectory } from "./test-helpers.mjs";
 import { createHeadArchiveBuffer } from "../archive-firefox-source.mjs";
 import {
+  MAX_ARCHIVE_CENTRAL_DIRECTORY_BYTES,
+  MAX_ARCHIVE_ENTRIES,
+  MAX_ARCHIVE_FILENAME_BYTES,
   MAX_ARCHIVE_ENTRY_UNCOMPRESSED_BYTES,
   MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES,
   assertArchiveDeclaredSizes,
   assertExactArchivePaths,
+  preflightZipMetadata,
   readArchive,
   readHeadTree,
   verifySourceArchiveIdentity,
@@ -60,6 +64,50 @@ test("declared ZIP sizes must be safe and stay within the total budget", () => {
     }),
     /total declared uncompressed size exceeds/,
   );
+});
+
+test("ZIP metadata preflight rejects excessive entry count before extraction", () => {
+  const zip = new AdmZip();
+  for (let index = 0; index <= MAX_ARCHIVE_ENTRIES; index += 1) {
+    zip.addFile(`empty-${index}.txt`, Buffer.alloc(0));
+  }
+  const raw = zip.toBuffer();
+
+  assert.throws(
+    () => preflightZipMetadata(raw, "many-entries.zip"),
+    /entry count .* exceeds/i,
+  );
+});
+
+test("ZIP metadata preflight enforces filename and central-directory budgets", () => {
+  const zip = new AdmZip();
+  zip.addFile(`${"a".repeat(200)}.txt`, Buffer.alloc(0));
+  const raw = zip.toBuffer();
+
+  assert.throws(
+    () => preflightZipMetadata(raw, "long-name.zip", { filenameBudget: 32 }),
+    /filename metadata exceeds/i,
+  );
+  assert.throws(
+    () => preflightZipMetadata(raw, "large-directory.zip", { centralDirectoryBudget: 64 }),
+    /central directory .*exceeds/i,
+  );
+  assert.ok(MAX_ARCHIVE_FILENAME_BYTES < MAX_ARCHIVE_CENTRAL_DIRECTORY_BYTES);
+});
+
+test("ZIP metadata preflight rejects ZIP64 sentinels and invalid EOCD records", () => {
+  const zip = new AdmZip();
+  zip.addFile("file.txt", Buffer.from("contents"));
+  const raw = zip.toBuffer();
+  const eocdOffset = raw.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  assert.ok(eocdOffset >= 0);
+
+  const zip64 = Buffer.from(raw);
+  zip64.writeUInt16LE(0xffff, eocdOffset + 10);
+  assert.throws(() => preflightZipMetadata(zip64, "zip64.zip"), /ZIP64/i);
+
+  const trailing = Buffer.concat([raw, Buffer.from("trailing")]);
+  assert.throws(() => preflightZipMetadata(trailing, "trailing.zip"), /EOCD/i);
 });
 
 test("runtime allowlists reject every additional entry", async () => {

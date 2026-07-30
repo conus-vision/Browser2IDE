@@ -32,6 +32,7 @@ const validProvenanceInput = {
 const validRun = {
   id: 123456789,
   event: "workflow_dispatch",
+  head_branch: "master",
   head_sha: workflowCommit,
   path: ".github/workflows/firefox-sign.yml@master",
   status: "completed",
@@ -126,6 +127,7 @@ test("resume provenance is bound to repository, workflow, event, tag, commits, a
     { path: ".github/workflows/firefox-sign.yml@../../unsafe" },
     { path: ".github/workflows/firefox-sign.yml@@master" },
     { event: "push" },
+    { head_branch: "feature/untrusted" },
     { head_sha: "4".repeat(40) },
     { id: 123456788 },
     { status: "in_progress" },

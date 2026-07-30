@@ -47,8 +47,15 @@ const VSIX_ARCHIVE_FILES = [
 ];
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+export const MAX_ARCHIVE_ENTRIES = 4096;
+export const MAX_ARCHIVE_FILENAME_BYTES = 512 * 1024;
+export const MAX_ARCHIVE_CENTRAL_DIRECTORY_BYTES = 4 * 1024 * 1024;
 export const MAX_ARCHIVE_ENTRY_UNCOMPRESSED_BYTES = 8 * 1024 * 1024;
 export const MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES = 32 * 1024 * 1024;
+const EOCD_SIGNATURE = 0x06054b50;
+const CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
+const EOCD_MIN_BYTES = 22;
+const MAX_ZIP_COMMENT_BYTES = 0xffff;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
 
@@ -81,6 +88,7 @@ export function readArchive(path, filename) {
       );
     }
     raw = readFileSync(path);
+    preflightZipMetadata(raw, filename);
     zip = new AdmZip(raw);
   } catch (error) {
     throw new Error(`${filename} is not a readable ZIP archive: ${error.message}`);
@@ -111,6 +119,117 @@ export function readArchive(path, filename) {
     if (!entry.isDirectory) files.set(name, entry.getData());
   }
   return { files, paths: [...seen].sort(compareAscii), raw };
+}
+
+export function preflightZipMetadata(
+  raw,
+  filename,
+  {
+    entryBudget = MAX_ARCHIVE_ENTRIES,
+    filenameBudget = MAX_ARCHIVE_FILENAME_BYTES,
+    centralDirectoryBudget = MAX_ARCHIVE_CENTRAL_DIRECTORY_BYTES,
+  } = {},
+) {
+  if (!Buffer.isBuffer(raw) || raw.length < EOCD_MIN_BYTES) {
+    throw new Error(`${filename} has no valid ZIP EOCD record`);
+  }
+  for (const [label, value] of [
+    ["entry", entryBudget],
+    ["filename", filenameBudget],
+    ["central directory", centralDirectoryBudget],
+  ]) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`${filename} has an invalid ${label} metadata budget`);
+    }
+  }
+
+  const eocdOffset = findEocdOffset(raw);
+  if (eocdOffset < 0) {
+    throw new Error(`${filename} has no valid ZIP EOCD record`);
+  }
+
+  const diskNumber = raw.readUInt16LE(eocdOffset + 4);
+  const centralDirectoryDisk = raw.readUInt16LE(eocdOffset + 6);
+  const diskEntries = raw.readUInt16LE(eocdOffset + 8);
+  const totalEntries = raw.readUInt16LE(eocdOffset + 10);
+  const centralDirectorySize = raw.readUInt32LE(eocdOffset + 12);
+  const centralDirectoryOffset = raw.readUInt32LE(eocdOffset + 16);
+  if (
+    diskEntries === 0xffff ||
+    totalEntries === 0xffff ||
+    centralDirectorySize === 0xffffffff ||
+    centralDirectoryOffset === 0xffffffff
+  ) {
+    throw new Error(`${filename} uses unsupported ZIP64 metadata`);
+  }
+  if (diskNumber !== 0 || centralDirectoryDisk !== 0 || diskEntries !== totalEntries) {
+    throw new Error(`${filename} uses an unsupported multi-disk ZIP layout`);
+  }
+  if (totalEntries > entryBudget) {
+    throw new Error(
+      `${filename} entry count ${totalEntries} exceeds ${entryBudget}-entry limit`,
+    );
+  }
+  if (centralDirectorySize > centralDirectoryBudget) {
+    throw new Error(
+      `${filename} central directory ${centralDirectorySize} bytes exceeds ` +
+        `${centralDirectoryBudget}-byte limit`,
+    );
+  }
+  if (
+    centralDirectoryOffset > eocdOffset ||
+    centralDirectorySize !== eocdOffset - centralDirectoryOffset
+  ) {
+    throw new Error(`${filename} has invalid ZIP central directory bounds`);
+  }
+
+  const centralDirectoryEnd = centralDirectoryOffset + centralDirectorySize;
+  let cursor = centralDirectoryOffset;
+  let filenameBytes = 0;
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (
+      cursor > centralDirectoryEnd - 46 ||
+      raw.readUInt32LE(cursor) !== CENTRAL_DIRECTORY_SIGNATURE
+    ) {
+      throw new Error(`${filename} has invalid ZIP central directory metadata`);
+    }
+    const filenameLength = raw.readUInt16LE(cursor + 28);
+    const extraLength = raw.readUInt16LE(cursor + 30);
+    const commentLength = raw.readUInt16LE(cursor + 32);
+    const diskStart = raw.readUInt16LE(cursor + 34);
+    if (diskStart !== 0) {
+      throw new Error(`${filename} uses an unsupported multi-disk ZIP entry`);
+    }
+    if (filenameBytes > filenameBudget - filenameLength) {
+      throw new Error(
+        `${filename} filename metadata exceeds ${filenameBudget}-byte limit`,
+      );
+    }
+    filenameBytes += filenameLength;
+    const recordBytes = 46 + filenameLength + extraLength + commentLength;
+    if (recordBytes > centralDirectoryEnd - cursor) {
+      throw new Error(`${filename} has truncated ZIP central directory metadata`);
+    }
+    cursor += recordBytes;
+  }
+  if (cursor !== centralDirectoryEnd) {
+    throw new Error(`${filename} has inconsistent ZIP central directory metadata`);
+  }
+  return {
+    centralDirectoryBytes: centralDirectorySize,
+    entries: totalEntries,
+    filenameBytes,
+  };
+}
+
+function findEocdOffset(raw) {
+  const minimumOffset = Math.max(0, raw.length - EOCD_MIN_BYTES - MAX_ZIP_COMMENT_BYTES);
+  for (let offset = raw.length - EOCD_MIN_BYTES; offset >= minimumOffset; offset -= 1) {
+    if (raw.readUInt32LE(offset) !== EOCD_SIGNATURE) continue;
+    const commentLength = raw.readUInt16LE(offset + 20);
+    if (offset + EOCD_MIN_BYTES + commentLength === raw.length) return offset;
+  }
+  return -1;
 }
 
 export function assertArchiveDeclaredSizes(

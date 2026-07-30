@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       resume_run_id:
-        description: Prior approval-timeout or later run ID whose validated AMO upload should be resumed
+        description: Prior approval-timeout or later sign run ID whose validated AMO upload should be resumed
         required: false
         default: ""
         type: string
@@ -20,36 +20,77 @@ on:
         options:
           - sign
           - publish
+      sign_run_id:
+        description: Completed trusted sign run ID required only for publish mode
+        required: false
+        default: ""
+        type: string
+      verified_xpi_sha256:
+        description: Exact lowercase SHA-256 copied after testing that sign run XPI in Firefox Stable; required only for publish mode
+        required: false
+        default: ""
+        type: string
 
-permissions:
-  actions: read
-  contents: write
+permissions: {}
 
 concurrency:
   group: firefox-sign-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  sign:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 35
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      release_commit: ${{ steps.release.outputs.release_commit }}
+      release_database_id: ${{ steps.remote_release.outputs.release_database_id }}
+      unsigned_artifact_name: ${{ steps.release.outputs.unsigned_artifact_name }}
+      version: ${{ steps.release.outputs.version }}
 
     steps:
+      - name: Require mode-specific trusted inputs
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          MODE: ${{ inputs.mode }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+          SIGN_RUN_ID: ${{ inputs.sign_run_id }}
+          VERIFIED_XPI_SHA256: ${{ inputs.verified_xpi_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_REF" = "refs/heads/master"
+          if [[ "$MODE" = "sign" ]]; then
+            test -z "$SIGN_RUN_ID"
+            test -z "$VERIFIED_XPI_SHA256"
+            if [[ -n "$RESUME_RUN_ID" ]]; then
+              [[ "$RESUME_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            fi
+          else
+            test "$MODE" = "publish"
+            test -z "$RESUME_RUN_ID"
+            [[ "$SIGN_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            [[ "$VERIFIED_XPI_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          fi
+
       - name: Check out requested tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 9.15.0
           run_install: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
@@ -65,9 +106,7 @@ jobs:
         id: release
         env:
           CURRENT_RUN_ID: ${{ github.run_id }}
-          MODE: ${{ inputs.mode }}
           RELEASE_TAG: ${{ inputs.tag }}
-          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
         run: |
           set -euo pipefail
           git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
@@ -79,84 +118,183 @@ jobs:
           RELEASE_VERSION="$(node tools/verify-release-version.mjs "$RELEASE_TAG")"
           printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           printf 'release_commit=%s\n' "$TAG_COMMIT" >> "$GITHUB_OUTPUT"
-          CURRENT_STATE_ARTIFACT="$(node tools/amo-signing-state.mjs artifact-name "$RELEASE_TAG" "$CURRENT_RUN_ID")"
-          printf 'current_state_artifact=%s\n' "$CURRENT_STATE_ARTIFACT" >> "$GITHUB_OUTPUT"
-          if [[ -n "$RESUME_RUN_ID" ]]; then
-            test "$MODE" = "sign"
-            [[ "$RESUME_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-            RESUME_STATE_ARTIFACT="$(node tools/amo-signing-state.mjs artifact-name "$RELEASE_TAG" "$RESUME_RUN_ID")"
-            printf 'resume_state_artifact=%s\n' "$RESUME_STATE_ARTIFACT" >> "$GITHUB_OUTPUT"
-          fi
+          printf 'unsigned_artifact_name=browser2ide-unsigned-release-%s-run-%s\n' \
+            "$RELEASE_TAG" "$CURRENT_RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: corepack pnpm build
+
+      - name: Run unit and release tests
+        run: corepack pnpm test
+
+      - name: Run VS Code Extension Host integration tests
+        run: xvfb-run -a corepack pnpm test:integration
+
+      - name: Typecheck
+        run: corepack pnpm typecheck
+
+      - name: Lint
+        run: corepack pnpm lint
+
+      - name: Lint Firefox extension
+        run: corepack pnpm exec web-ext lint --source-dir extensions/firefox --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
+
+      - name: Test Chrome manifest and adapter
+        run: corepack pnpm --filter browser2ide-chrome test -- manifest.test.ts adapter.test.ts
 
       - name: Rebuild and verify unsigned artifacts
         run: corepack pnpm package
 
-      - name: Download unsigned draft for signing
-        if: inputs.mode == 'sign'
+      - name: Check generated drift
+        run: |
+          git diff --check
+          git diff --exit-code
+
+      - name: Download current draft for validation
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-unsigned-initial"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-unsigned-initial.json"
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-validation-release"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-validation-release.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
           gh release download "$RELEASE_TAG" --dir "$RELEASE_DIR"
           gh release view "$RELEASE_TAG" --json databaseId,isDraft,assets > "$RELEASE_JSON"
 
-      - name: Verify unsigned draft identity before AMO
-        if: inputs.mode == 'sign'
-        id: unsigned_release
+      - name: Verify current draft identity and rebuilt bytes
+        id: remote_release
         env:
+          MODE: ${{ inputs.mode }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-unsigned-initial"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-unsigned-initial.json"
-          RELEASE_DATABASE_ID="$(node tools/verify-release-assets.mjs unsigned "$RELEASE_JSON" "$RELEASE_VERSION" "$RELEASE_DIR/SHA256SUMS" --compare-all artifacts)"
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-validation-release"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-validation-release.json"
+          if [[ "$MODE" = "sign" ]]; then
+            RELEASE_DATABASE_ID="$(node tools/verify-release-assets.mjs unsigned \
+              "$RELEASE_JSON" "$RELEASE_VERSION" "$RELEASE_DIR/SHA256SUMS" \
+              --compare-all artifacts)"
+          else
+            RELEASE_DATABASE_ID="$(node tools/verify-release-assets.mjs signed \
+              "$RELEASE_JSON" "$RELEASE_VERSION" "$RELEASE_DIR/SHA256SUMS" \
+              --compare-unsigned-artifacts artifacts)"
+            node tools/verify-signed-firefox.mjs \
+              "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.zip" \
+              "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+              "$RELEASE_VERSION" \
+              "browser2ide@local"
+          fi
           (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
-          UNSIGNED_CHECKSUM="$RUNNER_TEMP/browser2ide-rebuilt-unsigned-SHA256SUMS"
-          test ! -e "$UNSIGNED_CHECKSUM"
-          cp -- artifacts/SHA256SUMS "$UNSIGNED_CHECKSUM"
           printf 'release_database_id=%s\n' "$RELEASE_DATABASE_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Download signed draft for publication
-        if: inputs.mode == 'publish'
+      - name: Prepare immutable unsigned release bundle
+        run: |
+          set -euo pipefail
+          test ! -e release-bundle
+          mkdir -p release-bundle/artifacts release-bundle/tools
+          cp -- artifacts/browser2ide-vscode-${{ steps.release.outputs.version }}.vsix release-bundle/artifacts/
+          cp -- artifacts/browser2ide-chrome-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
+          cp -- artifacts/browser2ide-firefox-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
+          cp -- artifacts/browser2ide-firefox-source-${{ steps.release.outputs.version }}.zip release-bundle/artifacts/
+          cp -- artifacts/SHA256SUMS release-bundle/artifacts/
+          cp -- \
+            tools/release-policy.mjs \
+            tools/release-publishing.mjs \
+            tools/release-signing-provenance.mjs \
+            tools/verify-release-assets.mjs \
+            tools/verify-release-version.mjs \
+            tools/write-checksums.mjs \
+            release-bundle/tools/
+
+      - name: Preserve immutable unsigned release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.release.outputs.unsigned_artifact_name }}
+          path: release-bundle/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: validate
+    if: ${{ needs.validate.result == 'success' && inputs.mode == 'sign' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: amo-signing
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      signed_artifact_name: ${{ steps.provenance.outputs.artifact_name }}
+      xpi_sha256: ${{ steps.provenance.outputs.xpi_sha256 }}
+
+    steps:
+      - name: Check out requested tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Restore verified unsigned release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.validate.outputs.unsigned_artifact_name }}
+          path: release-bundle
+
+      - name: Redownload unsigned draft immediately before AMO
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-initial"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-initial.json"
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-unsigned"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-unsigned.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
           gh release download "$RELEASE_TAG" --dir "$RELEASE_DIR"
           gh release view "$RELEASE_TAG" --json databaseId,isDraft,assets > "$RELEASE_JSON"
 
-      - name: Verify signed draft identity for publication
-        if: inputs.mode == 'publish'
-        id: publish_release
+      - name: Revalidate unsigned draft immediately before AMO
         env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_RELEASE_DATABASE_ID: ${{ needs.validate.outputs.release_database_id }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-initial"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-initial.json"
-          RELEASE_DATABASE_ID="$(node tools/verify-release-assets.mjs signed "$RELEASE_JSON" "$RELEASE_VERSION" "$RELEASE_DIR/SHA256SUMS" --compare-unsigned-artifacts artifacts)"
-          (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
-          node tools/verify-signed-firefox.mjs \
-            "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.zip" \
-            "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-unsigned"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-unsigned.json"
+          node release-bundle/tools/verify-release-assets.mjs unsigned \
+            "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
-            "browser2ide@local"
-          printf 'release_database_id=%s\n' "$RELEASE_DATABASE_ID" >> "$GITHUB_OUTPUT"
+            "$RELEASE_DIR/SHA256SUMS" \
+            --expected-database-id "$EXPECTED_RELEASE_DATABASE_ID" \
+            --compare-all release-bundle/artifacts
+          (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
 
       - name: Fetch prior signing run metadata
-        if: inputs.mode == 'sign' && inputs.resume_run_id != ''
+        if: inputs.resume_run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -168,20 +306,19 @@ jobs:
           gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${RESUME_RUN_ID}" > "$RUN_JSON"
 
       - name: Restore prior AMO upload state
-        if: inputs.mode == 'sign' && inputs.resume_run_id != ''
-        uses: actions/download-artifact@v4
+        if: inputs.resume_run_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ steps.release.outputs.resume_state_artifact }}
+          name: browser2ide-amo-state-${{ inputs.tag }}-run-${{ inputs.resume_run_id }}
           path: extensions/firefox
           github-token: ${{ github.token }}
           run-id: ${{ inputs.resume_run_id }}
 
       - name: Validate restored AMO upload state and provenance
-        if: inputs.mode == 'sign' && inputs.resume_run_id != ''
-        id: resume_validation
+        if: inputs.resume_run_id != ''
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
-          RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
           RELEASE_TAG: ${{ inputs.tag }}
           RESUME_RUN_ID: ${{ inputs.resume_run_id }}
         run: |
@@ -199,19 +336,18 @@ jobs:
           rm -- extensions/firefox/.amo-upload-provenance.json
 
       - name: Verify initial signing has no prior AMO upload state
-        if: inputs.mode == 'sign' && inputs.resume_run_id == ''
+        if: inputs.resume_run_id == ''
         run: |
           test ! -e extensions/firefox/.amo-upload-uuid
           test ! -e extensions/firefox/.amo-upload-provenance.json
 
-      - name: Check secrets and sign unlisted Firefox XPI
-        if: inputs.mode == 'sign'
+      - name: Check environment secrets and sign unlisted Firefox XPI
         id: amo_sign
         working-directory: extensions/firefox
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           if [[ -z "${WEB_EXT_API_KEY:-}" || -z "${WEB_EXT_API_SECRET:-}" ]]; then
@@ -224,7 +360,7 @@ jobs:
             --channel=unlisted \
             --source-dir=. \
             --artifacts-dir=../../artifacts/firefox-signed \
-            --upload-source-code="../../artifacts/browser2ide-firefox-source-${RELEASE_VERSION}.zip" \
+            --upload-source-code="../../release-bundle/artifacts/browser2ide-firefox-source-${RELEASE_VERSION}.zip" \
             --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**" \
             --no-config-discovery \
             --no-input \
@@ -232,12 +368,12 @@ jobs:
             --timeout=900000
 
       - name: Prepare available AMO upload state for preservation
-        if: always() && inputs.mode == 'sign' && steps.release.outcome == 'success' && (steps.amo_sign.outcome == 'success' || steps.amo_sign.outcome == 'failure' || steps.amo_sign.outcome == 'cancelled')
+        if: always() && steps.amo_sign.outcome != 'skipped'
         id: preserve_state
         env:
           CURRENT_RUN_ID: ${{ github.run_id }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
           RELEASE_TAG: ${{ inputs.tag }}
           WORKFLOW_COMMIT: ${{ github.sha }}
         run: |
@@ -254,27 +390,20 @@ jobs:
             "$RELEASE_COMMIT" \
             "$WORKFLOW_COMMIT" \
             "$CURRENT_RUN_ID"
-          if [[ -e "$STATE_DIRECTORY" ]]; then
-            test -f "$STATE_DIRECTORY/.amo-upload-uuid"
-            test -f "$STATE_DIRECTORY/.amo-upload-provenance.json"
-          fi
 
       - name: Preserve available AMO upload state
-        if: always() && inputs.mode == 'sign' && steps.release.outcome == 'success' && steps.preserve_state.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        if: always() && steps.preserve_state.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.release.outputs.current_state_artifact }}
+          name: browser2ide-amo-state-${{ inputs.tag }}-run-${{ github.run_id }}
           path: ${{ runner.temp }}/browser2ide-amo-state/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
-          overwrite: true
 
       - name: Normalize and verify the single signed artifact
-        if: inputs.mode == 'sign'
-        id: signed
         env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           mapfile -d '' -t XPI_FILES < <(find artifacts/firefox-signed -maxdepth 1 -type f -name '*.xpi' -print0)
@@ -283,25 +412,104 @@ jobs:
           test ! -e "$SIGNED_XPI"
           mv -- "${XPI_FILES[0]}" "$SIGNED_XPI"
           node tools/verify-signed-firefox.mjs \
-            "artifacts/browser2ide-firefox-${RELEASE_VERSION}.zip" \
+            "release-bundle/artifacts/browser2ide-firefox-${RELEASE_VERSION}.zip" \
             "$SIGNED_XPI" \
             "$RELEASE_VERSION" \
             "browser2ide@local"
-          printf 'path=%s\n' "$SIGNED_XPI" >> "$GITHUB_OUTPUT"
 
-      - name: Regenerate signed checksums
-        if: inputs.mode == 'sign'
-        run: node tools/write-checksums.mjs artifacts
+      - name: Create immutable signed XPI provenance
+        id: provenance
+        env:
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+          RELEASE_DATABASE_ID: ${{ needs.validate.outputs.release_database_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          PROVENANCE_DIR="$RUNNER_TEMP/browser2ide-signed-xpi-provenance"
+          ARTIFACT_NAME="$(node tools/release-signing-provenance.mjs artifact-name "$RELEASE_TAG" "$CURRENT_RUN_ID")"
+          XPI_SHA256="$(node tools/release-signing-provenance.mjs create-bundle \
+            "artifacts/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+            "$PROVENANCE_DIR" \
+            "$GITHUB_REPOSITORY" \
+            ".github/workflows/firefox-sign.yml" \
+            "workflow_dispatch" \
+            "$RELEASE_TAG" \
+            "$RELEASE_COMMIT" \
+            "$WORKFLOW_COMMIT" \
+            "$CURRENT_RUN_ID" \
+            "$RELEASE_DATABASE_ID")"
+          printf 'artifact_name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          printf 'xpi_sha256=%s\n' "$XPI_SHA256" >> "$GITHUB_OUTPUT"
+          printf 'Signed XPI run ID: `%s`\n\nXPI SHA-256: `%s`\n' \
+            "$CURRENT_RUN_ID" "$XPI_SHA256" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve immutable signed XPI provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.provenance.outputs.artifact_name }}
+          path: ${{ runner.temp }}/browser2ide-signed-xpi-provenance/
+          if-no-files-found: error
+          retention-days: 90
+
+  attach:
+    needs:
+      - validate
+      - sign
+    if: ${{ always() && needs.validate.result == 'success' && needs.sign.result == 'success' && inputs.mode == 'sign' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: amo-signing
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Restore verified unsigned release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.validate.outputs.unsigned_artifact_name }}
+          path: release-bundle
+
+      - name: Restore immutable signed XPI provenance
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sign.outputs.signed_artifact_name }}
+          path: signed-xpi-provenance
+
+      - name: Validate current signed XPI provenance
+        id: provenance
+        env:
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          RELEASE_DATABASE_ID="$(node release-bundle/tools/release-signing-provenance.mjs validate-current \
+            signed-xpi-provenance \
+            "$GITHUB_REPOSITORY" \
+            ".github/workflows/firefox-sign.yml" \
+            "workflow_dispatch" \
+            "$RELEASE_TAG" \
+            "$RELEASE_COMMIT" \
+            "$WORKFLOW_COMMIT" \
+            "$CURRENT_RUN_ID")"
+          test "$RELEASE_DATABASE_ID" = "${{ needs.validate.outputs.release_database_id }}"
+          printf 'release_database_id=%s\n' "$RELEASE_DATABASE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Redownload unsigned draft immediately before upload
-        if: inputs.mode == 'sign'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-unsigned-preupload"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-unsigned-preupload.json"
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-attach-unsigned"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-attach-unsigned.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
@@ -309,70 +517,166 @@ jobs:
           gh release view "$RELEASE_TAG" --json databaseId,isDraft,assets > "$RELEASE_JSON"
 
       - name: Revalidate unsigned draft immediately before upload
-        if: inputs.mode == 'sign'
         env:
-          EXPECTED_RELEASE_DATABASE_ID: ${{ steps.unsigned_release.outputs.release_database_id }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_RELEASE_DATABASE_ID: ${{ steps.provenance.outputs.release_database_id }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-unsigned-preupload"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-unsigned-preupload.json"
-          node tools/verify-release-assets.mjs unsigned \
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-attach-unsigned"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-attach-unsigned.json"
+          node release-bundle/tools/verify-release-assets.mjs unsigned \
             "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
             "$RELEASE_DIR/SHA256SUMS" \
             --expected-database-id "$EXPECTED_RELEASE_DATABASE_ID" \
-            --compare-unsigned-artifacts artifacts
-          cmp -- "$RELEASE_DIR/SHA256SUMS" "$RUNNER_TEMP/browser2ide-rebuilt-unsigned-SHA256SUMS"
+            --compare-all release-bundle/artifacts
           (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
+
+      - name: Prepare exact signed release assets
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          cp -- "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi" release-bundle/artifacts/
+          node release-bundle/tools/write-checksums.mjs release-bundle/artifacts
 
       - name: Upload signed XPI to draft
-        if: inputs.mode == 'sign'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
-          SIGNED_XPI: ${{ steps.signed.outputs.path }}
-        run: gh release upload "$RELEASE_TAG" "$SIGNED_XPI" artifacts/SHA256SUMS --clobber
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "release-bundle/artifacts/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+            release-bundle/artifacts/SHA256SUMS \
+            --clobber
 
       - name: Download signed draft after upload
-        if: inputs.mode == 'sign'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-signed-final"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-signed-final.json"
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-attach-signed"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-attach-signed.json"
           test ! -e "$RELEASE_DIR"
           test ! -e "$RELEASE_JSON"
           mkdir "$RELEASE_DIR"
           gh release download "$RELEASE_TAG" --dir "$RELEASE_DIR"
           gh release view "$RELEASE_TAG" --json databaseId,isDraft,assets > "$RELEASE_JSON"
 
-      - name: Verify signed draft after upload
-        if: inputs.mode == 'sign'
+      - name: Verify exact signed draft after upload
         env:
-          EXPECTED_RELEASE_DATABASE_ID: ${{ steps.unsigned_release.outputs.release_database_id }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_RELEASE_DATABASE_ID: ${{ steps.provenance.outputs.release_database_id }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          RELEASE_DIR="$RUNNER_TEMP/browser2ide-signing-signed-final"
-          RELEASE_JSON="$RUNNER_TEMP/browser2ide-signing-signed-final.json"
-          node tools/verify-release-assets.mjs signed \
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-attach-signed"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-attach-signed.json"
+          node release-bundle/tools/verify-release-assets.mjs signed \
             "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
             "$RELEASE_DIR/SHA256SUMS" \
             --expected-database-id "$EXPECTED_RELEASE_DATABASE_ID" \
-            --compare-all artifacts
+            --compare-all release-bundle/artifacts
           (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
-          node tools/verify-signed-firefox.mjs \
-            "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.zip" \
+          cmp -- \
             "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+            "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
+
+  publish:
+    needs: validate
+    if: ${{ needs.validate.result == 'success' && inputs.mode == 'publish' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: amo-signing
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Restore verified unsigned release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.validate.outputs.unsigned_artifact_name }}
+          path: release-bundle
+
+      - name: Fetch trusted signing run metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SIGN_RUN_ID: ${{ inputs.sign_run_id }}
+        run: |
+          set -euo pipefail
+          RUN_JSON="$RUNNER_TEMP/browser2ide-sign-run.json"
+          test ! -e "$RUN_JSON"
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${SIGN_RUN_ID}" > "$RUN_JSON"
+
+      - name: Restore immutable signed XPI provenance
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: browser2ide-signed-xpi-${{ inputs.tag }}-run-${{ inputs.sign_run_id }}
+          path: signed-xpi-provenance
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.sign_run_id }}
+
+      - name: Validate exact manually verified signed XPI
+        id: provenance
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.release_commit }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SIGN_RUN_ID: ${{ inputs.sign_run_id }}
+          VERIFIED_XPI_SHA256: ${{ inputs.verified_xpi_sha256 }}
+        run: |
+          set -euo pipefail
+          RELEASE_DATABASE_ID="$(node release-bundle/tools/release-signing-provenance.mjs validate-publish \
+            signed-xpi-provenance \
+            "$RUNNER_TEMP/browser2ide-sign-run.json" \
+            "$GITHUB_REPOSITORY" \
+            ".github/workflows/firefox-sign.yml" \
+            "workflow_dispatch" \
+            "$RELEASE_TAG" \
+            "$RELEASE_COMMIT" \
+            "$SIGN_RUN_ID" \
+            "$VERIFIED_XPI_SHA256")"
+          test "$RELEASE_DATABASE_ID" = "${{ needs.validate.outputs.release_database_id }}"
+          printf 'release_database_id=%s\n' "$RELEASE_DATABASE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download signed draft for publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-initial"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-initial.json"
+          test ! -e "$RELEASE_DIR"
+          test ! -e "$RELEASE_JSON"
+          mkdir "$RELEASE_DIR"
+          gh release download "$RELEASE_TAG" --dir "$RELEASE_DIR"
+          gh release view "$RELEASE_TAG" --json databaseId,isDraft,assets > "$RELEASE_JSON"
+
+      - name: Verify signed draft identity for publication
+        env:
+          EXPECTED_RELEASE_DATABASE_ID: ${{ steps.provenance.outputs.release_database_id }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-initial"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-initial.json"
+          node release-bundle/tools/verify-release-assets.mjs signed \
+            "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
-            "browser2ide@local"
+            "$RELEASE_DIR/SHA256SUMS" \
+            --expected-database-id "$EXPECTED_RELEASE_DATABASE_ID" \
+            --compare-unsigned-artifacts release-bundle/artifacts
+          (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
+          cmp -- \
+            "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
+            "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
 
       - name: Redownload signed draft immediately before publication
-        if: inputs.mode == 'publish'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
@@ -386,30 +690,26 @@ jobs:
           gh release download "$RELEASE_TAG" --dir "$RELEASE_DIR"
           gh release view "$RELEASE_TAG" --json databaseId,isDraft,assets > "$RELEASE_JSON"
 
-      - name: Revalidate signed draft immediately before publication
-        if: inputs.mode == 'publish'
+      - name: Revalidate exact signed draft immediately before publication
         env:
-          EXPECTED_RELEASE_DATABASE_ID: ${{ steps.publish_release.outputs.release_database_id }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_RELEASE_DATABASE_ID: ${{ steps.provenance.outputs.release_database_id }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           RELEASE_DIR="$RUNNER_TEMP/browser2ide-publish-final"
           RELEASE_JSON="$RUNNER_TEMP/browser2ide-publish-final.json"
-          node tools/verify-release-assets.mjs signed \
+          node release-bundle/tools/verify-release-assets.mjs signed \
             "$RELEASE_JSON" \
             "$RELEASE_VERSION" \
             "$RELEASE_DIR/SHA256SUMS" \
             --expected-database-id "$EXPECTED_RELEASE_DATABASE_ID" \
-            --compare-unsigned-artifacts artifacts
+            --compare-unsigned-artifacts release-bundle/artifacts
           (cd "$RELEASE_DIR" && sha256sum --check --strict SHA256SUMS)
-          node tools/verify-signed-firefox.mjs \
-            "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.zip" \
+          cmp -- \
             "$RELEASE_DIR/browser2ide-firefox-${RELEASE_VERSION}.xpi" \
-            "$RELEASE_VERSION" \
-            "browser2ide@local"
+            "signed-xpi-provenance/browser2ide-firefox-${RELEASE_VERSION}.xpi"
 
       - name: Publish installed-verified release
-        if: inputs.mode == 'publish'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}

@@ -1,38 +1,58 @@
 # Browser2IDE Release Guide
 
 This is the owner runbook for signed public releases. Version `0.2.0` is still
-unreleased: do not create its release tag or publish a GitHub release until AMO
-signing and the installed-product verification are ready.
+unreleased. Do not create its release tag or publish a GitHub release until AMO
+signing and the installed-product verification are complete.
 
-## One-Time Setup
+## One-Time Security Setup
 
-1. Register the Firefox extension in the Mozilla Add-ons Developer Hub for
-   unlisted distribution. Its add-on ID must exactly match
-   `browser_specific_settings.gecko.id` in
-   `extensions/firefox/manifest.json`; the current ID is
-   `browser2ide@local`. Changing this value after registration creates a
-   different add-on identity.
-2. In the Mozilla Developer Hub, create JWT API credentials for the account
-   that owns that add-on.
-3. In GitHub, open **Settings > Secrets and variables > Actions** and add
-   repository secrets named `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`.
-4. Configure a branch ruleset (or branch protection) for `master` that requires
-   the `CI` checks, blocks force-pushes and deletion, and limits bypasses. Configure
-   a tag ruleset (or tag protection) for `v*` that prevents release tags from being
-   updated or deleted and limits who can create them. Both release workflows also
-   require the tag commit to be an ancestor of `origin/master`.
+Complete these controls in order. The release workflow intentionally cannot use
+AMO credentials until this setup exists.
 
-Never commit, print, paste into an issue, or store either credential as a
-workflow variable. The signing workflow exposes both values only to its single
-secret-check and `web-ext sign` step. Revoke and replace both credentials if
-either value may have been disclosed.
+1. Protect `master` with a branch ruleset (or branch protection) that requires CI,
+   blocks force-pushes and deletion, and limits bypasses. Protect `v*` tags from
+   update or deletion and limit who can create them.
+2. Register the Firefox extension for unlisted distribution in Mozilla Add-ons.
+   Its add-on ID must exactly match `browser_specific_settings.gecko.id` in
+   `extensions/firefox/manifest.json`; the current ID is `browser2ide@local`.
+3. Create the GitHub Environment named `amo-signing` under **Settings >
+   Environments**.
+4. Restrict `amo-signing` deployments to the protected `master` branch. Add at
+   least one required reviewer who is not the person dispatching the workflow,
+   and enable **Prevent self-review** so self-review is disabled. Do not allow
+   unprotected branches or tags to deploy to this environment.
+5. Only after those protections are active, create Mozilla JWT credentials and
+   add `AMO_JWT_ISSUER` and `AMO_JWT_SECRET` as environment secrets inside
+   `amo-signing`. Do not create repository-level copies.
 
-A protected GitHub Environment with required reviewer approval is recommended but
-not required for AMO signing secrets. It is not a hidden prerequisite for the
-`0.2.0` alpha. Adopting one later requires a reviewed
-workflow change that names the environment and moves the two secrets into it.
+Complete the protected-branch restriction, required reviewer, and disabled
+self-review controls before adding `AMO_JWT_ISSUER` or `AMO_JWT_SECRET`.
 
-## Prepare A Version
+Every manual signing or publication run must be dispatched from `master`. The
+workflow checks `refs/heads/master`, and every job with AMO secrets or
+`contents: write` also requires the protected `amo-signing` environment. A branch
+copy of the workflow therefore cannot reach credentials or mutate a release.
+
+Never commit, print, paste into an issue, or store either credential as a workflow
+variable. The signing job has `contents: read`; only its `web-ext sign` step receives
+the two environment secrets. The separate attach and publish jobs have
+`contents: write`, receive no AMO secrets, and do not check out repository code.
+Revoke and replace both credentials if either value may have been disclosed.
+
+All third-party Actions are pinned to reviewed immutable commits:
+
+| Action | Version | Commit |
+| --- | --- | --- |
+| `actions/checkout` | `v7.0.1` | `3d3c42e5aac5ba805825da76410c181273ba90b1` |
+| `actions/setup-node` | `v7.0.0` | `820762786026740c76f36085b0efc47a31fe5020` |
+| `actions/upload-artifact` | `v7.0.1` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` |
+| `actions/download-artifact` | `v8.0.1` | `3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c` |
+| `pnpm/action-setup` | `v6.0.9` | `0ebf47130e4866e96fce0953f49152a61190b271` |
+
+Review official release notes before changing a pin. Keep the full 40-character
+commit and the human-readable version comment together.
+
+## Prepare A Release
 
 Update the version in all six product files:
 
@@ -41,16 +61,15 @@ Update the version in all six product files:
 - `extensions/firefox/package.json` and `manifest.json`;
 - `extensions/chrome/package.json` and `manifest.json`.
 
-Also update versioned artifact names and expectations in package scripts,
-smoke scripts, release tools, tests, and documentation. Search for the previous
-version before committing:
+Also update versioned artifact names and expectations in package scripts, smoke
+scripts, release tools, tests, and documentation. Search for the previous version:
 
 ```powershell
 rg -n '0\.2\.0' package.json extensions tools docs .github
 ```
 
-Keep the changelog entry under `Unreleased` until the signed XPI has passed the
-installed verification. From a clean checkout, run the complete local gate:
+Keep the changelog entry under `Unreleased` until the signed XPI passes installed
+verification. From a clean checkout, run:
 
 ```powershell
 corepack pnpm install --frozen-lockfile
@@ -66,8 +85,7 @@ git diff --check
 git diff --exit-code
 ```
 
-Review `artifacts/SHA256SUMS` and verify all unsigned local artifacts before
-continuing. On Linux or Git Bash:
+Review `artifacts/SHA256SUMS`. On Linux or Git Bash, verify it with:
 
 ```bash
 cd artifacts
@@ -76,9 +94,8 @@ sha256sum --check --strict SHA256SUMS
 
 ## Commit And Tag
 
-Commit and push the prepared version, then wait for the `CI` workflow on
-`master` to pass. Confirm that AMO secrets and the signing path are ready before
-creating any release tag.
+Commit and push the prepared version, then wait for CI on `master` to pass. Confirm
+that the protected `amo-signing` environment and its required reviewer are ready.
 
 Create and inspect an annotated tag:
 
@@ -90,17 +107,17 @@ git push origin v0.2.0
 ```
 
 `git cat-file` must print `tag`; a lightweight tag is rejected. Cryptographic tag
-signing is not configured for the `0.2.0` alpha: there is no release public key,
-and this runbook does not claim GPG verification. Both release workflows require
-an annotated tag object, its exact commit on `origin/master`, and package and
-manifest versions that exactly match the `vX.Y.Z` tag.
+signing is not configured for the `0.2.0` alpha, and this runbook does not claim GPG
+verification. Both release workflows require the annotated tag commit to be an
+ancestor of `origin/master`, and all package and manifest versions must match the
+`vX.Y.Z` tag.
 
 ## Create The Draft
 
-Pushing the tag starts the `Release draft` workflow. It checks out the tag without
-persisting Git credentials,
-validates all six versions, runs the complete build/test/integration/lint gate,
-packages and verifies the artifacts, and creates a GitHub draft release with:
+Pushing the tag starts **Release draft**. Its read-only `package` job runs the full
+gate and uploads an immutable short-lived workflow artifact. A separate minimal
+`create_draft` job receives `contents: write`, downloads only that artifact, validates
+the exact five-file set and checksums, and creates a GitHub draft containing:
 
 ```text
 browser2ide-chrome-X.Y.Z.zip
@@ -115,156 +132,63 @@ installation. Leave the release in draft.
 
 ## Sign Firefox
 
-In GitHub Actions, run **Sign Firefox and publish release** with the exact tag
-and mode `sign`; leave `resume_run_id` empty for this initial submission. The
-workflow checks out that tag, rebuilds and verifies the complete unsigned
-artifact set, downloads the remote draft, captures its immutable release database
-ID, and requires the exact five unsigned assets and checksums to match the rebuild
-byte-for-byte. Only then does it invoke `web-ext` 10.4.0 from
-`extensions/firefox` with channel `unlisted`. API credentials are supplied only
-through `WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET`; command-line secret arguments
-and config discovery are disabled. It
-also submits the verified Firefox source ZIP so Mozilla reviewers can
-reproduce the build.
+Open **Actions > Sign Firefox and publish release > Run workflow**. Select branch
+`master`, enter the exact tag, choose mode `sign`, and leave `resume_run_id`,
+`sign_run_id`, and `verified_xpi_sha256` empty.
 
-`web-ext` writes the AMO upload UUID, channel, and package CRC to
-`extensions/firefox/.amo-upload-uuid` only after AMO validation succeeds. It
-writes this state before creating the version and waiting for approval. Thus
-the workflow can guarantee stateful resume for an approval timeout or a later
-AMO failure, but not for a validation timeout.
+The read-only validation job rebuilds all unsigned artifacts and requires the remote
+draft database ID, exact asset set, checksums, and bytes to match. The protected
+`sign` job repeats that remote check immediately before AMO, then invokes the pinned
+`web-ext` package with channel `unlisted`, config discovery disabled, and the verified
+source ZIP attached for Mozilla review.
 
-After every attempted `web-ext sign`, the workflow's `always()` steps preserve
-the state when it exists as a tag/run-specific GitHub Actions artifact for seven
-days. The bundle contains the sanitized UUID/channel/CRC file and a provenance
-file bound to repository, workflow path, `workflow_dispatch`, tag commit, workflow
-commit, and run ID. It contains no AMO issuer, secret, token, or other API
-credential. A validation timeout can produce no state artifact because the file
-has not yet been written. In that case, `actions/upload-artifact` reports the
-configured `if-no-files-found: warn`; the warning is truthful and does not
-authorize a new submission.
+`web-ext` writes `.amo-upload-uuid` only after AMO validation succeeds. After every
+attempt, the workflow preserves available sanitized UUID/channel/CRC state plus
+repository, workflow, tag, commit, and run provenance for seven days. Stateful resume
+is valid only for approval timeout or a later failure:
 
-Mozilla may delay automated signing or require review. Validation and approval
-each have an explicit 15-minute timeout; the GitHub job has additional time to
-preserve available state after `web-ext` returns. Either timeout can leave work
-pending at AMO and is not permission to create another submission.
+1. inspect the existing version in the AMO Developer Hub;
+2. do not submit the same version again with an empty `resume_run_id`;
+3. while the state artifact exists, dispatch mode `sign` from `master` with the same
+   tag and the failed numeric run ID in `resume_run_id`;
+4. if another resumed run times out, inspect AMO again and resume from that later run.
 
-If a sign run reaches approval timeout or fails later:
+The restored run must be a completed failure or timeout from this repository,
+`workflow_dispatch`, `master`, the same workflow, and the matching workflow commit.
+A validation timeout can produce no state artifact. In that case, do not resubmit;
+resolve the existing upload with Mozilla.
 
-1. Do not launch mode `sign` again with an empty `resume_run_id`.
-2. Open the AMO Developer Hub and inspect the existing version's status.
-3. While the state artifact exists, launch mode `sign` with the same tag and
-   set `resume_run_id` to the numeric GitHub run ID that timed out. The workflow
-   reconstructs the expected artifact name, queries that run through the GitHub
-   API, validates its repository/workflow/event/commits/run ID against the restored
-   provenance, restores `.amo-upload-uuid`, and asks `web-ext` to continue the same
-   upload.
-4. If another resumed run times out, inspect AMO again and use that run's ID for
-   the next resume. Never discard available state merely to start over.
+After AMO returns one XPI, the workflow checks its manifest version and Gecko ID,
+requires unsigned runtime entries to remain byte-identical, and permits only expected
+`META-INF` additions. This structural check does not cryptographically verify Mozilla
+signature metadata. Firefox Stable installation is a separate required test.
 
-If validation timeout occurs or the run has no state artifact, do not use an
-empty `resume_run_id` and do not submit again. Follow the Developer Hub recovery
-below.
+The sign job then creates an immutable 90-day artifact containing only:
 
-After AMO returns exactly one XPI, the workflow verifies its manifest version and
-Gecko ID, requires every unsigned runtime entry to remain byte-identical, and
-allows only the expected `META-INF` signing additions. It then names the file
-`browser2ide-firefox-X.Y.Z.xpi` and regenerates `SHA256SUMS`. Immediately before
-`--clobber`, the workflow downloads the draft again and requires the same database
-ID, draft state, exact unsigned assets, original checksums, and rebuilt bytes.
-After upload it requires that same ID and the exact signed six-asset draft. The
-unsigned ZIP is retained as the reproducible build input; the XPI is the Firefox
-Stable install artifact.
-
-### Recovery After Missing Or Expired State
-
-A missing or expired state artifact does not justify another AMO submission.
-This includes validation timeout, where `web-ext` may have uploaded the package
-but could not write resumable state. Check the AMO Developer Hub first. If the
-version is pending, wait for Mozilla. If it is approved, download its signed XPI
-from the Developer Hub and attach that exact file to the draft. If the Developer
-Hub has neither a signed artifact nor a clear status, stop and resolve the
-submission with Mozilla before continuing. A new version is required only when
-Mozilla rejects the submission or code/metadata changes are needed, not merely
-because review is slow or the state artifact is unavailable.
-
-Before changing any release asset, prove the release is still a draft, download
-the exact original five-asset unsigned set, and validate every checksum. Only
-then add the AMO file. The following commands run in Linux or Git Bash from the
-repository root; replace `AMO_DOWNLOAD_DIR` with the directory containing only
-the XPI downloaded from the Developer Hub:
-
-```bash
-set -euo pipefail
-TAG="v0.2.0"
-VERSION="$(node tools/verify-release-version.mjs "$TAG")"
-RECOVERY_DIR="artifacts/recovery-${VERSION}"
-UNSIGNED_RELEASE_JSON="artifacts/recovery-unsigned-${VERSION}.json"
-UNSIGNED_CHECKSUM="artifacts/recovery-unsigned-SHA256SUMS-${VERSION}"
-PREUPLOAD_DIR="artifacts/recovery-preupload-${VERSION}"
-PREUPLOAD_RELEASE_JSON="artifacts/recovery-preupload-${VERSION}.json"
-AMO_DOWNLOAD_DIR="/absolute/path/to/amo-download"
-
-test "$(gh release view "$TAG" --json isDraft --jq '.isDraft')" = "true"
-test ! -e "$RECOVERY_DIR"
-test ! -e "$UNSIGNED_RELEASE_JSON"
-test ! -e "$UNSIGNED_CHECKSUM"
-test ! -e "$PREUPLOAD_DIR"
-test ! -e "$PREUPLOAD_RELEASE_JSON"
-mkdir "$RECOVERY_DIR"
-gh release download "$TAG" --dir "$RECOVERY_DIR"
-gh release view "$TAG" --json databaseId,isDraft,assets > "$UNSIGNED_RELEASE_JSON"
-RELEASE_DATABASE_ID="$(node tools/verify-release-assets.mjs unsigned "$UNSIGNED_RELEASE_JSON" "$VERSION" "$RECOVERY_DIR/SHA256SUMS")"
-(cd "$RECOVERY_DIR" && sha256sum --check --strict SHA256SUMS)
-cp -- "$RECOVERY_DIR/SHA256SUMS" "$UNSIGNED_CHECKSUM"
-
-mapfile -d '' -t XPI_FILES < <(find "$AMO_DOWNLOAD_DIR" -maxdepth 1 -type f -name '*.xpi' -print0)
-test "${#XPI_FILES[@]}" -eq 1
-SIGNED_XPI="$RECOVERY_DIR/browser2ide-firefox-${VERSION}.xpi"
-test ! -e "$SIGNED_XPI"
-node tools/verify-signed-firefox.mjs \
-  "$RECOVERY_DIR/browser2ide-firefox-${VERSION}.zip" \
-  "${XPI_FILES[0]}" \
-  "$VERSION" \
-  "browser2ide@local"
-mv -- "${XPI_FILES[0]}" "$SIGNED_XPI"
-
-node tools/write-checksums.mjs "$RECOVERY_DIR"
-
-mkdir "$PREUPLOAD_DIR"
-gh release download "$TAG" --dir "$PREUPLOAD_DIR"
-gh release view "$TAG" --json databaseId,isDraft,assets > "$PREUPLOAD_RELEASE_JSON"
-node tools/verify-release-assets.mjs unsigned \
-  "$PREUPLOAD_RELEASE_JSON" \
-  "$VERSION" \
-  "$PREUPLOAD_DIR/SHA256SUMS" \
-  --expected-database-id "$RELEASE_DATABASE_ID" \
-  --compare-unsigned-artifacts "$RECOVERY_DIR"
-cmp -- "$PREUPLOAD_DIR/SHA256SUMS" "$UNSIGNED_CHECKSUM"
-(cd "$PREUPLOAD_DIR" && sha256sum --check --strict SHA256SUMS)
-
-gh release upload "$TAG" "$SIGNED_XPI" "$RECOVERY_DIR/SHA256SUMS" --clobber
-
-VERIFY_DIR="artifacts/recovery-verify-${VERSION}"
-RELEASE_JSON="artifacts/recovery-release-${VERSION}.json"
-test ! -e "$VERIFY_DIR"
-mkdir "$VERIFY_DIR"
-gh release download "$TAG" --dir "$VERIFY_DIR"
-gh release view "$TAG" --json databaseId,isDraft,assets > "$RELEASE_JSON"
-node tools/verify-release-assets.mjs signed \
-  "$RELEASE_JSON" \
-  "$VERSION" \
-  "$VERIFY_DIR/SHA256SUMS" \
-  --expected-database-id "$RELEASE_DATABASE_ID" \
-  --compare-all "$RECOVERY_DIR"
-(cd "$VERIFY_DIR" && sha256sum --check --strict SHA256SUMS)
-node tools/verify-signed-firefox.mjs \
-  "$VERIFY_DIR/browser2ide-firefox-${VERSION}.zip" \
-  "$VERIFY_DIR/browser2ide-firefox-${VERSION}.xpi" \
-  "$VERSION" \
-  "browser2ide@local"
+```text
+browser2ide-firefox-X.Y.Z.xpi
+signed-xpi-provenance.json
 ```
 
-Complete the installed verification with this XPI, then use mode `publish`.
+The provenance binds repository, workflow, tag, release commit, workflow commit,
+release database ID, sign run ID, filename, and XPI SHA-256. The workflow summary
+prints the sign run ID and digest. A separate protected `attach` job has no AMO
+secrets; it rechecks the draft immediately before mutation, attaches that exact XPI,
+regenerates `SHA256SUMS`, and redownloads the six-file draft for byte-for-byte
+verification.
+
+### Missing Signing State Or Provenance
+
+A missing or expired state artifact does not authorize another AMO submission. Check
+the AMO Developer Hub and resolve the existing version with Mozilla. Likewise, a
+missing or expired signed-XPI provenance artifact blocks automated publication. Do not
+reconstruct it by editing release assets or inventing a digest. Leave the release in
+draft and use a separately reviewed recovery change or a new version after the AMO
+status is understood.
+
+This fail-closed rule intentionally replaces ad hoc manual release-asset recovery.
+It preserves the binding between the AMO-returned bytes, the trusted workflow run,
+the draft identity, and the later manual Firefox Stable test.
 
 ## Verify Installed Artifacts
 
@@ -272,26 +196,52 @@ Download all six draft assets and validate `SHA256SUMS`. Complete
 `docs/installed-verification.md` without development launchers. In particular:
 
 1. install `browser2ide-firefox-X.Y.Z.xpi` in Firefox Stable;
-2. restart Firefox and confirm that the signed extension remains installed;
+2. restart Firefox and confirm the signed extension remains installed;
 3. install the VSIX and load the Chrome ZIP using the documented release flow;
-4. verify linking, DOM selection, CSS/SCSS source opening, and selected/parent
-   highlights;
-5. preserve the verification record required by the release checklist.
+4. verify linking and DOM selection, then verify CSS/SCSS resolution in the active document
+   and selected/parent highlighting without automatic source-file opening;
+5. complete the two VS Code window and two browser window isolation checks;
+6. preserve the verification record with the sign run ID and exact XPI SHA-256.
 
-Do not continue if a checksum, signature, restart, or installed workflow check
-fails. Fix the code in a new version rather than changing the pushed tag.
+Compute the digest from the exact XPI that passed Firefox Stable. PowerShell:
+
+```powershell
+(Get-FileHash .\browser2ide-firefox-0.2.0.xpi -Algorithm SHA256).Hash.ToLowerInvariant()
+```
+
+Linux or Git Bash:
+
+```bash
+sha256sum browser2ide-firefox-0.2.0.xpi
+```
+
+The value must exactly match the digest in the signing workflow summary and
+`signed-xpi-provenance.json`. Do not continue if a checksum, restart, isolation, or
+installed workflow check fails. Fix code in a new version rather than changing the
+pushed tag.
 
 ## Publish
 
-After installed verification passes, run **Sign Firefox and publish release**
-again for the same tag with mode `publish`. This mode does not expose AMO
-secrets or sign again. It rebuilds the unsigned artifacts from the tag,
-downloads the draft, captures its database ID, requires the exact six-file asset
-set, matching hashes, rebuilt unsigned bytes, and a valid signed-XPI relationship.
-Immediately before publication it downloads and verifies the draft again against
-the same ID, then executes `gh release edit <tag> --draft=false`.
+After installed verification passes, dispatch **Sign Firefox and publish release**
+from branch `master` with:
 
-Confirm the public release contains only:
+- the same tag;
+- mode `publish`;
+- `sign_run_id` set to the completed successful signing workflow run;
+- `verified_xpi_sha256` set to the exact lowercase digest copied after the Firefox
+  Stable test;
+- an empty `resume_run_id`.
+
+Publication retrieves only the tag-and-run-specific immutable provenance artifact.
+It verifies that the referenced run completed successfully on `master` in this
+repository and workflow, recomputes the artifact XPI digest, and requires it to equal
+both provenance and `verified_xpi_sha256`. Before any release mutation, it also
+requires the same release database ID, exact six-file draft, valid checksums, rebuilt
+unsigned bytes, and byte equality between the draft XPI and provenance artifact.
+
+Immediately before `gh release edit <tag> --draft=false`, the protected publish job
+redownloads and repeats those checks. It receives no AMO secret and does not sign
+again. Confirm the public release contains only:
 
 ```text
 browser2ide-chrome-X.Y.Z.zip
@@ -302,21 +252,17 @@ browser2ide-vscode-X.Y.Z.vsix
 SHA256SUMS
 ```
 
-Only now move the changelog entry from `Unreleased` to its release date in the
-next normal commit. Unlisted AMO signing makes the XPI installable but does not
-create a listed AMO store page.
+Only after publication move the changelog entry from `Unreleased` to its release
+date in the next normal commit. Unlisted AMO signing makes the XPI installable but
+does not create a listed AMO store page.
 
-## Rollback And Recovery
+## Failure Policy
 
-If draft creation, signing, or installed verification fails, leave the release
-in draft and identify which stage failed. Resume an approval-timeout or later
-failure only while its validated state artifact exists. For validation timeout
-or missing state, use the Developer Hub recovery above. Do not create another
-upload for a version that is pending or already approved.
+If draft creation, signing, provenance validation, or installed verification fails,
+leave the release in draft and identify the failing stage. Never delete, move, or
+rewrite a pushed release tag. Do not remove history to hide a defective release.
 
-Never delete, move, or rewrite a pushed release tag, and never remove published
-history to hide a defective release. For a code defect, document it and ship a
-new patch version and tag. For a credential incident, revoke the AMO credentials
-immediately, rotate both GitHub secrets, preserve the release history for audit,
-and remove a hosted artifact only when the artifact itself exposes sensitive
-material.
+For a code defect, document it and ship a new patch version and tag. For a credential
+incident, revoke the AMO credentials immediately, rotate both environment secrets,
+preserve release history for audit, and remove a hosted artifact only if the artifact
+itself exposes sensitive material.

@@ -208,6 +208,7 @@ function parseWorkflowRun(source) {
   const workflowPath = normalizeWorkflowRunPath(value?.path);
   if (
     value?.event !== "workflow_dispatch" ||
+    value?.head_branch !== "master" ||
     !COMMIT_PATTERN.test(value?.head_sha ?? "") ||
     !REPOSITORY_PATTERN.test(value?.repository?.full_name ?? "") ||
     value?.status !== "completed" ||
