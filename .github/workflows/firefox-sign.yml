@@ -1,0 +1,151 @@
+name: Sign Firefox and publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag (vX.Y.Z)
+        required: true
+        type: string
+      mode:
+        description: Sign and attach XPI, or publish an installed-verified draft
+        required: true
+        default: sign
+        type: choice
+        options:
+          - sign
+          - publish
+
+permissions:
+  contents: write
+
+concurrency:
+  group: firefox-sign-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out requested tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Verify checkout is the requested annotated release tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = "tag"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          RELEASE_VERSION="$(node tools/verify-release-version.mjs "$RELEASE_TAG")"
+          printf 'version=%s\n' "$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild and verify unsigned artifacts
+        run: corepack pnpm package
+
+      - name: Verify release is still a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = "true"
+
+      - name: Check secrets and sign unlisted Firefox XPI
+        if: inputs.mode == 'sign'
+        working-directory: extensions/firefox
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${WEB_EXT_API_KEY:-}" || -z "${WEB_EXT_API_SECRET:-}" ]]; then
+            echo "::error::AMO signing credentials are not configured" >&2
+            exit 1
+          fi
+          test ! -e ../../artifacts/firefox-signed
+          mkdir ../../artifacts/firefox-signed
+          corepack pnpm exec web-ext sign \
+            --channel=unlisted \
+            --source-dir=. \
+            --artifacts-dir=../../artifacts/firefox-signed \
+            --api-key="$WEB_EXT_API_KEY" \
+            --api-secret="$WEB_EXT_API_SECRET" \
+            --upload-source-code="../../artifacts/browser2ide-firefox-source-${RELEASE_VERSION}.zip" \
+            --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**" \
+            --no-input \
+            --timeout=900000
+
+      - name: Normalize the single signed artifact
+        if: inputs.mode == 'sign'
+        id: signed
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' -t XPI_FILES < <(find artifacts/firefox-signed -maxdepth 1 -type f -name '*.xpi' -print0)
+          test "${#XPI_FILES[@]}" -eq 1
+          SIGNED_XPI="artifacts/browser2ide-firefox-${RELEASE_VERSION}.xpi"
+          test ! -e "$SIGNED_XPI"
+          mv -- "${XPI_FILES[0]}" "$SIGNED_XPI"
+          printf 'path=%s\n' "$SIGNED_XPI" >> "$GITHUB_OUTPUT"
+
+      - name: Add signed XPI to checksums and draft
+        if: inputs.mode == 'sign'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SIGNED_XPI: ${{ steps.signed.outputs.path }}
+        run: |
+          set -euo pipefail
+          node tools/write-checksums.mjs artifacts
+          gh release upload "$RELEASE_TAG" "$SIGNED_XPI" artifacts/SHA256SUMS --clobber
+
+      - name: Verify exact signed draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          VERIFY_DIR="$RUNNER_TEMP/browser2ide-release-assets"
+          RELEASE_JSON="$RUNNER_TEMP/browser2ide-release.json"
+          mkdir "$VERIFY_DIR"
+          gh release download "$RELEASE_TAG" --dir "$VERIFY_DIR"
+          gh release view "$RELEASE_TAG" --json isDraft,assets > "$RELEASE_JSON"
+          node tools/verify-release-assets.mjs "$RELEASE_JSON" "$RELEASE_VERSION" "$VERIFY_DIR/SHA256SUMS"
+          (cd "$VERIFY_DIR" && sha256sum --check --strict SHA256SUMS)
+
+      - name: Publish installed-verified release
+        if: inputs.mode == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
