@@ -2,6 +2,14 @@
   "name": "browser2ide",
   "private": true,
   "version": "0.1.0",
+  "description": "Connect browser DevTools to your IDE and highlight the source code related to a selected DOM element.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/conus-vision/Browser2IDE.git"
+  },
+  "bugs": "https://github.com/conus-vision/Browser2IDE/issues",
+  "homepage": "https://github.com/conus-vision/Browser2IDE#readme",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "build": "pnpm -r --workspace-concurrency=1 build",
