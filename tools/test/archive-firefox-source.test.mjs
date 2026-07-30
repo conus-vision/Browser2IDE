@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 import { archiveArguments } from "../archive-firefox-source.mjs";
 
 test("source archive scopes Git safe.directory to the current repository", () => {
+  const repositoryRoot = resolve("fixtures", "browser2ide");
+  const portableRepositoryRoot = repositoryRoot.replaceAll("\\", "/");
+
   assert.deepEqual(
-    archiveArguments(
-      "F:\\repo\\browser2ide",
-    ),
+    archiveArguments(repositoryRoot),
     [
       "-c",
-      "safe.directory=F:/repo/browser2ide",
+      `safe.directory=${portableRepositoryRoot}`,
       "-c",
       "core.autocrlf=false",
       "archive",

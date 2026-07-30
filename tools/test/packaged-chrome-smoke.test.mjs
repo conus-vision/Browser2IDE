@@ -51,7 +51,7 @@ test("accepts only the exact validated Chrome runtime archive", () => {
 });
 
 test("launch arguments always isolate Chrome in the supplied temporary profile", () => {
-  const profile = "C:\\Temp\\browser2ide-smoke\\profile";
+  const profile = resolve("tmp/browser2ide-smoke/profile");
   const args = buildChromeArguments(profile);
 
   assert.ok(args.includes(`--user-data-dir=${profile}`));
