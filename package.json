@@ -23,7 +23,7 @@
     "package:vscode": "pnpm --filter browser2ide-vscode run package",
     "package:chrome": "pnpm --filter browser2ide-chrome run package",
     "package:firefox": "pnpm --filter browser2ide-firefox run package",
-    "package:firefox-source": "git archive --format=zip --output=artifacts/browser2ide-firefox-source-0.2.0.zip HEAD",
+    "package:firefox-source": "node tools/archive-firefox-source.mjs",
     "artifacts:verify": "node tools/verify-artifacts.mjs artifacts",
     "artifacts:checksums": "node tools/write-checksums.mjs artifacts"
   },
