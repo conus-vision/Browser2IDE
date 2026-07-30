@@ -28,7 +28,7 @@ body:
     attributes:
       label: Browser and version
       description: Include the browser name and complete version.
-      placeholder: Firefox 128.0 or Chrome 127.0.0.0
+      placeholder: Firefox 142.0 or Chrome 127.0.0.0
     validations:
       required: true
   - type: dropdown
