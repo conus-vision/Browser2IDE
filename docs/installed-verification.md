@@ -217,7 +217,7 @@ state; no separate bridge process should be started.
 
 ## 0.2.0 Candidate Verification Record
 
-Prepared on 2026-07-30. This section distinguishes checks that can run against
+Prepared on 2026-07-31. This section distinguishes checks that can run against
 packaged artifacts from the terminal-free manual acceptance matrix above. A
 marker is evidence only after the exact command exits successfully in the
 candidate checkout; expected output is not recorded as an observed result.
@@ -231,11 +231,11 @@ Candidate source commit: `dd8e41f6b65b1fb889727d08a1c4e7fe5cbf31cd`.
 
 Observed artifact smoke evidence:
 
-- `corepack pnpm smoke:vscode-package` exited with code 0 on 2026-07-30. It
+- `corepack pnpm smoke:vscode-package` exited with code 0 on 2026-07-31. It
   installed the actual VSIX into isolated extension and user-data directories,
   activated Browser2IDE 0.2.0, and emitted
   `INSTALLED_VSIX_ACTIVATION_OK browser2ide.browser2ide-vscode`.
-- `corepack pnpm smoke:chrome-package` exited with code 0 on 2026-07-30. It
+- `corepack pnpm smoke:chrome-package` exited with code 0 on 2026-07-31. It
   validated and extracted only the exact Chrome runtime allowlist, launched
   Chrome Stable 150.0.7871.187 with a disposable user-data directory, loaded
   Browser2IDE 0.2.0 through CDP, observed its MV3 service worker, and emitted

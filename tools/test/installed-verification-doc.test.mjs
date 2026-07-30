@@ -85,6 +85,12 @@ test("candidate record distinguishes observed and pending evidence", () => {
 });
 
 test("candidate record binds smoke evidence to exact source and artifact bytes", () => {
+  assert.match(verificationRecord, /Prepared on 2026-07-31\./);
+  assert.equal(
+    (verificationRecord.match(/on 2026-07-31\./g) ?? []).length,
+    3,
+  );
+  assert.doesNotMatch(verificationRecord, /2026-07-30/);
   assert.match(
     verificationRecord,
     /Candidate source commit: `dd8e41f6b65b1fb889727d08a1c4e7fe5cbf31cd`\./,
