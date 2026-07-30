@@ -1,13 +1,15 @@
-# Browser2IDE MVP Verification
+# Browser2IDE Development Host Verification
+
+For installation and terminal-free acceptance of packaged release candidates,
+start with the [installed artifact verification guide](installed-verification.md).
 
 This contributor runbook verifies Firefox and Chrome/Chromium against the same
 browser-window linking and document-first source workflow. HTTP serves only the
 fixture and its CSS resources; Browser2IDE product traffic remains WebSocket.
 
-Normal use with installed extensions is terminal-free. This runbook uses an
+Normal use with installed extensions is terminal-free. This contributor runbook uses an
 Extension Development Host and development-loaded browser extensions because
-it tests a source checkout. Plan 3 covers signed and packaged installed
-artifacts.
+it tests a source checkout.
 
 ## Prerequisites
 

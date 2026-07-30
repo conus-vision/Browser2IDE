@@ -29,15 +29,22 @@ editors.
 
 ## Install
 
-The 0.2.0 release files are not published yet. When they are available, the
-GitHub Release will provide:
+The installable `0.2.0` files are release candidates and are not published yet.
+When the signed release is available, its GitHub Release will provide:
 
-- [browser2ide-vscode-0.2.0.vsix](https://github.com/conus-vision/Browser2IDE/releases/download/v0.2.0/browser2ide-vscode-0.2.0.vsix)
-- [browser2ide-chrome-0.2.0.zip](https://github.com/conus-vision/Browser2IDE/releases/download/v0.2.0/browser2ide-chrome-0.2.0.zip)
-- [browser2ide-firefox-0.2.0.xpi](https://github.com/conus-vision/Browser2IDE/releases/download/v0.2.0/browser2ide-firefox-0.2.0.xpi)
+- `browser2ide-vscode-0.2.0.vsix`;
+- `browser2ide-chrome-0.2.0.zip`;
+- `browser2ide-firefox-0.2.0.xpi`, signed by Mozilla.
 
-Until those artifacts are published, use a source checkout and follow the
-[MVP verification guide](docs/mvp-verification.md).
+There is currently no signed Firefox XPI or published `0.2.0` release. The
+unsigned Firefox ZIP produced by the build is source-submission input and is not
+a persistently installable Firefox Stable add-on.
+
+Use the [installed artifact guide](docs/installed-verification.md) for UI
+installation, linking, and candidate acceptance. It also records which `0.2.0`
+checks are complete and which still require signed-release evidence. Contributors
+testing a source checkout should use the separate
+[Development Host verification guide](docs/mvp-verification.md).
 
 ## Link A Browser Window
 

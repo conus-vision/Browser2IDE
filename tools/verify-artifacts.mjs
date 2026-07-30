@@ -21,7 +21,7 @@ const EXPECTED_ARTIFACTS = new Map([
   [`browser2ide-firefox-${VERSION}.zip`, "firefox"],
   [`browser2ide-firefox-source-${VERSION}.zip`, "firefox-source"],
 ]);
-const BROWSER_ARCHIVE_FILES = [
+export const BROWSER_ARCHIVE_FILES = Object.freeze([
   "LICENSE",
   "THIRD_PARTY_NOTICES",
   "manifest.json",
@@ -33,7 +33,7 @@ const BROWSER_ARCHIVE_FILES = [
   "dist/panel.css",
   "dist/panel.html",
   "dist/panel.js",
-];
+]);
 const VSIX_ARCHIVE_FILES = [
   "[Content_Types].xml",
   "extension.vsixmanifest",
