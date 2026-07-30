@@ -87,15 +87,15 @@ test("candidate record distinguishes observed and pending evidence", () => {
 test("candidate record binds smoke evidence to exact source and artifact bytes", () => {
   assert.match(
     verificationRecord,
-    /Candidate source commit: `15ad8893945048d68314ed0665b38eb2738929c9`\./,
+    /Candidate source commit: `dd8e41f6b65b1fb889727d08a1c4e7fe5cbf31cd`\./,
   );
   assert.match(
     verificationRecord,
-    /`browser2ide-vscode-0\.2\.0\.vsix` SHA-256:\s*`f766b5ed7d898747c8af8ee15b7342933f0a4901f40bce058efd08af07e91929`\./,
+    /`browser2ide-vscode-0\.2\.0\.vsix` SHA-256:\s*`ce9b480cac8819027b0a271eecbdbb6aadbc8a76ee82638f019e363aee9067c8`\./,
   );
   assert.match(
     verificationRecord,
-    /`browser2ide-chrome-0\.2\.0\.zip` SHA-256:\s*`0a2126d1df3c957982209f56998fa892187e8030d448275924692d8d7dede34e`\./,
+    /`browser2ide-chrome-0\.2\.0\.zip` SHA-256:\s*`15cf32e6e9a873f6739335a25641fdd7970801b20f4046955aaaa279c0a56b4b`\./,
   );
   assert.match(
     verificationRecord,
@@ -103,7 +103,7 @@ test("candidate record binds smoke evidence to exact source and artifact bytes",
   );
   assert.match(
     verificationRecord,
-    /`PACKAGED_CHROME_MV3_OK Chrome\/150\.0\.7871\.187 Browser2IDE 0\.2\.0\s+fabfckmgcbokjighbhnningclbckebik\/dist\/background\.js`\./,
+    /`PACKAGED_CHROME_MV3_OK Chrome\/150\.0\.7871\.187 Browser2IDE 0\.2\.0\s+onikikjlbofeoocjemeiepanccoaempd\/dist\/background\.js`\./,
   );
   assert.equal(
     (verificationRecord.match(/PACKAGED_CHROME_MV3_OK/g) ?? []).length,
