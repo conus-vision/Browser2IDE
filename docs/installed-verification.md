@@ -222,6 +222,13 @@ packaged artifacts from the terminal-free manual acceptance matrix above. A
 marker is evidence only after the exact command exits successfully in the
 candidate checkout; expected output is not recorded as an observed result.
 
+Candidate source commit: `15ad8893945048d68314ed0665b38eb2738929c9`.
+
+- `browser2ide-vscode-0.2.0.vsix` SHA-256:
+  `f766b5ed7d898747c8af8ee15b7342933f0a4901f40bce058efd08af07e91929`.
+- `browser2ide-chrome-0.2.0.zip` SHA-256:
+  `0a2126d1df3c957982209f56998fa892187e8030d448275924692d8d7dede34e`.
+
 Observed artifact smoke evidence:
 
 - `corepack pnpm smoke:vscode-package` exited with code 0 on 2026-07-30. It
@@ -233,7 +240,7 @@ Observed artifact smoke evidence:
   Chrome Stable 150.0.7871.187 with a disposable user-data directory, loaded
   Browser2IDE 0.2.0 through CDP, observed its MV3 service worker, and emitted
   `PACKAGED_CHROME_MV3_OK Chrome/150.0.7871.187 Browser2IDE 0.2.0
-  icjilfeicecacnpghfoikecjojdlconl/dist/background.js`.
+  fabfckmgcbokjighbhnningclbckebik/dist/background.js`.
 
 On Linux, the packaged Chrome smoke requires a graphical session or Xvfb. The
 script validates that `DISPLAY` or `WAYLAND_DISPLAY` is set before it spawns

@@ -84,6 +84,21 @@ test("candidate record distinguishes observed and pending evidence", () => {
   );
 });
 
+test("candidate record binds smoke evidence to exact source and artifact bytes", () => {
+  assert.match(
+    verificationRecord,
+    /Candidate source commit: `[0-9a-f]{40}`\./,
+  );
+  assert.match(
+    verificationRecord,
+    /`browser2ide-vscode-0\.2\.0\.vsix` SHA-256:\s*`[0-9a-f]{64}`\./,
+  );
+  assert.match(
+    verificationRecord,
+    /`browser2ide-chrome-0\.2\.0\.zip` SHA-256:\s*`[0-9a-f]{64}`\./,
+  );
+});
+
 test("README points to installed verification without missing media", () => {
   assert.match(readme, /docs\/installed-verification\.md/);
   assert.doesNotMatch(readme, /browser2ide-(?:linking\.png|inspect\.gif)/);
