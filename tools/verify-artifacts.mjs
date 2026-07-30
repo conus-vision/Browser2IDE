@@ -79,6 +79,7 @@ const REQUIRED_SOURCE_FILES = [
   "packages/protocol/src/schema.ts",
   "tools/archive-firefox-source.mjs",
   "tools/browser-bundle-notices.mjs",
+  "tools/normalize-browser-archive.mjs",
   "tools/release-policy.mjs",
   "tools/verify-artifacts.mjs",
   "tools/write-checksums.mjs",
