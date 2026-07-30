@@ -215,9 +215,25 @@ describe("WindowConnectionCoordinator", () => {
     expect(harness.timers.pendingCount()).toBe(0);
   });
 
-  it("owns capped reconnect timing and cancels it with the final panel", async () => {
+  it("terminates an unreachable initial code link without retrying", async () => {
     const harness = coordinatorHarness();
-    const registration = harness.coordinator.registerPanel({
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const client = await harness.link(10, "4873507");
+
+    client.emitState("disconnected");
+
+    expect(harness.coordinator.state(10)).toBe("error");
+    expect(client.linkCalls).toEqual(["07"]);
+    expect(harness.timers.pendingCount()).toBe(0);
+  });
+
+  it("caps stored-credential reconnects and enters offline", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
       windowId: 10,
       tabId: 101,
       sourceId: "panel-101",
@@ -237,11 +253,55 @@ describe("WindowConnectionCoordinator", () => {
       expect(harness.timers.delays.at(-1)).toBe(expectedDelay);
     }
 
+    harness.timers.runNext();
+    client.emitState("disconnected");
+
     expect(harness.createdClients).toHaveLength(1);
+    expect(harness.coordinator.state(10)).toBe("offline");
+    expect(harness.timers.pendingCount()).toBe(0);
+  });
+
+  it("cancels stored reconnect with the final panel", async () => {
+    const harness = coordinatorHarness();
+    const registration = harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+
+    client.emitState("disconnected");
+    expect(harness.timers.pendingCount()).toBe(1);
+
     registration.dispose();
     expect(client.disconnectCalls).toBe(1);
     expect(harness.timers.pendingCount()).toBe(0);
     expect(() => harness.timers.runNext()).toThrow("Expected a pending timer");
+  });
+
+  it("resets stored reconnect backoff after online recovery", async () => {
+    const harness = coordinatorHarness();
+    harness.coordinator.registerPanel({
+      windowId: 10,
+      tabId: 101,
+      sourceId: "panel-101",
+    });
+    const client = await harness.link(10, "4873507");
+    await harness.authenticate(client, windowLink());
+
+    client.emitState("disconnected");
+    harness.timers.runNext();
+    client.emitState("disconnected");
+    expect(harness.timers.delays.at(-1)).toBe(2_000);
+
+    client.emitState("connected");
+    expect(harness.coordinator.state(10)).toBe("linked");
+    expect(harness.timers.pendingCount()).toBe(0);
+
+    client.emitState("disconnected");
+    expect(harness.coordinator.state(10)).toBe("reconnecting");
+    expect(harness.timers.delays.at(-1)).toBe(1_000);
   });
 
   it("does not install a stale reconnect timer after a state callback relinks", async () => {
@@ -276,11 +336,10 @@ describe("WindowConnectionCoordinator", () => {
 
     replacement.emitState("disconnected");
 
-    expect(harness.coordinator.state(10)).toBe("reconnecting");
-    expect(harness.timers.pendingCount()).toBe(1);
-    expect(harness.timers.delays).toEqual([1_000]);
-    harness.timers.runNext();
-    expect(replacement.linkCalls).toEqual(["08", "08"]);
+    expect(harness.coordinator.state(10)).toBe("error");
+    expect(harness.timers.pendingCount()).toBe(0);
+    expect(harness.timers.delays).toEqual([]);
+    expect(replacement.linkCalls).toEqual(["08"]);
   });
 
   it("revokes and deletes links on unlink and browser-window removal", async () => {
@@ -319,7 +378,7 @@ describe("WindowConnectionCoordinator", () => {
     expect(harness.coordinator.state(20)).toBe("notLinked");
   });
 
-  it("preserves each registered panel source for simultaneous publishes", async () => {
+  it("preserves sources without exposing internal routing metadata", async () => {
     const harness = coordinatorHarness();
     harness.coordinator.registerPanel({
       windowId: 10,
@@ -353,16 +412,8 @@ describe("WindowConnectionCoordinator", () => {
       "panel-102",
     ]);
     expect(client.inspectCalls.map(({ payload }) => payload.metadata)).toEqual([
-      {
-        existing: "preserved",
-        browserWindowId: 10,
-        tabId: 101,
-      },
-      {
-        existing: "preserved",
-        browserWindowId: 10,
-        tabId: 102,
-      },
+      { existing: "preserved" },
+      { existing: "preserved" },
     ]);
     expect(payload.metadata).toEqual({
       existing: "preserved",
@@ -416,10 +467,7 @@ describe("WindowConnectionCoordinator", () => {
     expect(client.inspectCalls.at(-1)).toMatchObject({
       sourceId: "panel-101",
       payload: {
-        metadata: {
-          browserWindowId: 10,
-          tabId: 101,
-        },
+        metadata: {},
       },
     });
 

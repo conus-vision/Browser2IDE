@@ -100,12 +100,12 @@ describe("browser-window workflow", () => {
     expect(instanceA.sourceIds).not.toContain("panel-201");
     expect(instanceB.sourceIds).not.toContain("panel-101");
     expect(instanceA.received.map(({ payload }) => payload.metadata)).toEqual([
-      { browserWindowId: 10, tabId: 101 },
-      { browserWindowId: 10, tabId: 102 },
+      {},
+      {},
     ]);
     expect(instanceB.received.map(({ payload }) => payload.metadata)).toEqual([
-      { browserWindowId: 20, tabId: 201 },
-      { browserWindowId: 20, tabId: 202 },
+      {},
+      {},
     ]);
     expect(
       coordinator.publishInspect(10, "panel-201", selection(201)),

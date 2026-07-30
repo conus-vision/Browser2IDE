@@ -145,6 +145,36 @@ describe("background inspect session", () => {
     ]);
   });
 
+  it("fails closed and notifies the panel when the content document disappears", async () => {
+    const panelPort = new FakePort("browser2ide.devtools.channel-1");
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage() {},
+    });
+    const session = attachBackgroundInspectSession(
+      panelPort,
+      coordinator,
+      17,
+    );
+
+    panelPort.emitMessage(request("enable", true));
+    await session.whenIdle();
+    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    coordinator.attachContentLease(17, contentLease);
+
+    contentLease.emitDisconnect();
+
+    expect(panelPort.sent.at(-1)).toEqual({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    const nextDocumentLease = new FakePort(
+      "browser2ide.inspect.contentLease",
+    );
+    coordinator.attachContentLease(17, nextDocumentLease);
+    expect(nextDocumentLease.disconnected).toBe(true);
+  });
+
   it("does not let an old port disable a newer owner for the same tab", async () => {
     const firstEnable = deferred<void>();
     const calls: unknown[] = [];

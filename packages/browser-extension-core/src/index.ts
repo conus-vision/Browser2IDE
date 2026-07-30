@@ -106,6 +106,7 @@ export {
   isValidDevtoolsChannel,
   parseDevtoolsPanelPortName,
   parseInspectControllerCommand,
+  parseInspectPortInvalidated,
   parseInspectPortRequest,
   parseInspectPortResult,
 } from "./inspectPortProtocol.js";
@@ -113,6 +114,7 @@ export type {
   BackgroundInspectPort,
   ContentInspectPort,
   InspectPortEvent,
+  InspectPortInvalidated,
   InspectPortRequest,
   InspectPortResult,
   PanelInspectPort,

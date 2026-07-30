@@ -22,6 +22,11 @@ export type InspectPortResult =
       readonly error: string;
     };
 
+export interface InspectPortInvalidated {
+  readonly type: "browser2ide.inspect.invalidated";
+  readonly reason: "documentDisconnected";
+}
+
 export interface InspectPortEvent<T> {
   addListener(listener: T): void;
   removeListener(listener: T): void;
@@ -123,6 +128,20 @@ export function parseInspectPortResult(
         requestId: value.requestId,
         ok: false,
         error: value.error,
+      }
+    : undefined;
+}
+
+export function parseInspectPortInvalidated(
+  value: unknown,
+): InspectPortInvalidated | undefined {
+  return isRecord(value) &&
+      hasOnlyKeys(value, ["type", "reason"]) &&
+      value.type === "browser2ide.inspect.invalidated" &&
+      value.reason === "documentDisconnected"
+    ? {
+        type: value.type,
+        reason: value.reason,
       }
     : undefined;
 }

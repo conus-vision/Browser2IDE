@@ -87,6 +87,8 @@ describe("BrowserWindowLinkStore", () => {
   it.each([
     ["remote URL", { url: "ws://192.0.2.10:48735" }],
     ["mismatched URL port", { url: "ws://127.0.0.1:48736" }],
+    ["port below managed range", { port: 48_734, url: "ws://127.0.0.1:48734" }],
+    ["port above managed range", { port: 48_835, url: "ws://127.0.0.1:48835" }],
     ["out-of-range port", { port: 65_536 }],
     ["empty session ID", { sessionId: "" }],
     ["invalid bridge instance ID", { bridgeInstanceId: "instance-a" }],
@@ -104,6 +106,14 @@ describe("BrowserWindowLinkStore", () => {
   it.each([
     ["remote URL", { url: "ws://example.test:48735" }],
     ["mismatched URL port", { url: "ws://127.0.0.1:48736" }],
+    ["stale port below managed range", {
+      port: 48_734,
+      url: "ws://127.0.0.1:48734",
+    }],
+    ["stale port above managed range", {
+      port: 48_835,
+      url: "ws://127.0.0.1:48835",
+    }],
     ["unknown field", { rawCode: "4873507" }],
     ["short token", { authToken: "short" }],
   ])("cleans up a loaded record with %s", async (_label, override) => {

@@ -1,3 +1,7 @@
+import {
+  MANAGED_BRIDGE_PORT_END,
+  MANAGED_BRIDGE_PORT_START,
+} from "@browser2ide/protocol";
 import { z } from "zod";
 
 export interface BrowserWindowLink {
@@ -25,7 +29,11 @@ const browserWindowLinkFields = [
 const browserWindowLinkSchema = z
   .object({
     url: z.string(),
-    port: z.number().int().min(10_000).max(65_535),
+    port: z
+      .number()
+      .int()
+      .min(MANAGED_BRIDGE_PORT_START)
+      .max(MANAGED_BRIDGE_PORT_END),
     sessionId: z.string().min(1),
     bridgeInstanceId: z.string().uuid(),
     authToken: z.string().min(32),

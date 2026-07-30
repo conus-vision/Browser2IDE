@@ -134,6 +134,37 @@ describe("startPanelRuntime", () => {
     runtime.dispose();
   });
 
+  it("turns Inspect off when navigation invalidates the content lease", async () => {
+    const runtime = createRuntime();
+    await runtime.ready;
+    const port = requiredPort(ports, 0);
+    port.emitMessage({ type: "browser2ide.windowState", state: "linked" });
+    await flushAsync();
+
+    const inspect = dom.element("inspect-mode");
+    inspect.checked = true;
+    inspect.dispatch("change");
+    await flushAsync();
+    const request = port.sent[0] as { requestId: string };
+    port.emitMessage({
+      type: "browser2ide.inspect.result",
+      requestId: request.requestId,
+      ok: true,
+    });
+    await flushAsync();
+    expect(inspect.checked).toBe(true);
+
+    port.emitMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    await flushAsync();
+
+    expect(inspect.checked).toBe(false);
+    expect(inspect.disabled).toBe(false);
+    runtime.dispose();
+  });
+
   it("uses unload to clear the code, disconnect the port, and remove bindings", async () => {
     const runtime = createRuntime();
     await runtime.ready;

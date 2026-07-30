@@ -5,6 +5,7 @@ import {
 import {
   BrowserBridgeClient,
   BrowserProtocolError,
+  withoutInternalRoutingMetadata,
   type BrowserBridgeClientOptions,
   type BrowserConnectionState,
   type BrowserCredentials,
@@ -92,6 +93,7 @@ interface WindowRecord {
 
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 5_000;
+const RECONNECT_MAX_ATTEMPTS = 5;
 const inertRegistrationHandle = Object.freeze({ dispose(): void {} });
 
 export class WindowConnectionCoordinator {
@@ -248,14 +250,7 @@ export class WindowConnectionCoordinator {
 
     try {
       return record.client.sendInspect(
-        {
-          ...payload,
-          metadata: {
-            ...payload.metadata,
-            browserWindowId: entry.registration.windowId,
-            tabId: entry.registration.tabId,
-          },
-        },
+        withoutInternalRoutingMetadata(payload),
         sourceId,
       );
     } catch {
@@ -517,6 +512,8 @@ export class WindowConnectionCoordinator {
     record.pendingLink = undefined;
     if (record.clientConnected) {
       this.setState(record, "linked");
+    } else if (record.registrations.size > 0) {
+      this.scheduleReconnect(record, generation, token);
     }
   }
 
@@ -550,6 +547,17 @@ export class WindowConnectionCoordinator {
         return;
       case "disconnected":
         record.clientConnected = false;
+        if (record.pendingLink?.kind === "code") {
+          this.stopTerminalAttempt(record, "error");
+          return;
+        }
+        if (
+          record.pendingLink?.kind === "credentials" &&
+          record.credentialsWritePending
+        ) {
+          this.setState(record, "offline");
+          return;
+        }
         if (record.registrations.size > 0 && this.hasReconnectIntent(record)) {
           this.scheduleReconnect(record, generation, token);
         } else {
@@ -595,7 +603,7 @@ export class WindowConnectionCoordinator {
       return;
     }
     if (error.code === "bridge.offline") {
-      this.setState(record, "offline");
+      this.stopStoredReconnect(record);
     }
   }
 
@@ -637,6 +645,10 @@ export class WindowConnectionCoordinator {
     if (!token || !this.canScheduleReconnect(record, generation, token)) {
       return;
     }
+    if (record.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+      this.stopStoredReconnect(record);
+      return;
+    }
 
     this.setState(record, "reconnecting");
     if (!token || !this.canScheduleReconnect(record, generation, token)) {
@@ -654,15 +666,10 @@ export class WindowConnectionCoordinator {
         return;
       }
       const client = record.client;
-      const intent = record.link ??
-        (record.pendingLink?.kind === "credentials"
-          ? record.pendingLink.link
-          : undefined);
+      const intent = record.link;
       try {
         if (intent) {
           client?.connect(credentialsFor(intent));
-        } else if (record.pendingLink?.kind === "code") {
-          client?.link(record.pendingLink.pin);
         }
       } catch {
         this.setState(record, "error");
@@ -790,7 +797,16 @@ export class WindowConnectionCoordinator {
   }
 
   private hasReconnectIntent(record: WindowRecord): boolean {
-    return record.link !== undefined || record.pendingLink !== undefined;
+    return record.link !== undefined;
+  }
+
+  private stopStoredReconnect(record: WindowRecord): void {
+    this.invalidate(record);
+    this.disconnectClient(record);
+    record.pendingLink = undefined;
+    record.credentialsWritePending = false;
+    record.reconnectAttempts = 0;
+    this.setState(record, "offline");
   }
 
   private isCurrent(record: WindowRecord, generation: number): boolean {

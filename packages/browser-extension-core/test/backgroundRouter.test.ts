@@ -441,6 +441,7 @@ describe("BackgroundRouter", () => {
       requestId: "trusted",
       enabled: true,
     });
+    await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
 
     const crossTabLease = harness.port(INSPECT_CONTENT_LEASE_PORT_NAME, {
@@ -511,6 +512,131 @@ describe("BackgroundRouter", () => {
       },
     ]);
     expect(harness.coordinator.unlinks).toEqual([10]);
+  });
+
+  it("migrates a moved tab before Link, Unlink, and Inspect", async () => {
+    const tabs = new Map([[17, 10]]);
+    const harness = createHarness({ tabs });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+
+    tabs.set(17, 20);
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "browser2ide.linkWindow",
+          channel: "channel-1",
+          code: "4873507",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    tabs.set(17, 30);
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "browser2ide.unlinkWindow",
+          channel: "channel-1",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: true });
+    port.emitMessage({
+      type: "browser2ide.inspect.setEnabled",
+      requestId: "moved-enable",
+      enabled: true,
+    });
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+
+    expect(harness.coordinator.links.map(({ windowId }) => windowId)).toEqual([20]);
+    expect(harness.coordinator.unlinks).toEqual([30]);
+    expect(harness.coordinator.registrations.at(-1)).toMatchObject({
+      windowId: 30,
+      tabId: 17,
+      sourceId: "source-17",
+    });
+    expect(harness.coordinator.activeSources()).toEqual(["source-17"]);
+    expect(harness.inspectCalls).toEqual([
+      ["inject", { target: { tabId: 17 }, files: ["dist/contentScript.js"] }],
+      ["tab", 17, { type: "enableInspectMode" }],
+    ]);
+    expect(harness.getTabCalls).toEqual([17, 17, 17, 17]);
+  });
+
+  it("invalidates a closed tab before window commands or Inspect", async () => {
+    const tabs = new Map([[17, 10]]);
+    const harness = createHarness({ tabs });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+    tabs.delete(17);
+
+    port.emitMessage({
+      type: "browser2ide.inspect.setEnabled",
+      requestId: "closed-enable",
+      enabled: true,
+    });
+    await flushMicrotasks();
+    await harness.inspectCoordinator.whenIdle(17);
+    await expect(
+      harness.router.routeMessage(
+        {
+          type: "browser2ide.unlinkWindow",
+          channel: "channel-1",
+        },
+        panelSender("channel-1"),
+      ),
+    ).resolves.toEqual({ ok: false, error: "stalePanel" });
+
+    expect(harness.inspectCalls).toEqual([]);
+    expect(harness.coordinator.unlinks).toEqual([]);
+    expect(harness.coordinator.activeSources()).toEqual([]);
+    expect(port.sent).toContainEqual({
+      type: "browser2ide.inspect.result",
+      requestId: "closed-enable",
+      ok: false,
+      error: "stalePanel",
+    });
+  });
+
+  it("does not dispatch a command after its tab lookup loses the panel", async () => {
+    const movedTab = deferred<{ id: number; windowId: number }>();
+    let lookupCount = 0;
+    const harness = createHarness({
+      getTab: async (tabId) => {
+        lookupCount += 1;
+        return lookupCount === 1
+          ? { id: tabId, windowId: 10 }
+          : movedTab.promise;
+      },
+    });
+    const port = await harness.registerAndConnect(
+      "channel-1",
+      17,
+      "source-17",
+    );
+
+    const command = harness.router.routeMessage(
+      {
+        type: "browser2ide.linkWindow",
+        channel: "channel-1",
+        code: "4873507",
+      },
+      panelSender("channel-1"),
+    );
+    await Promise.resolve();
+    port.disconnect();
+    movedTab.resolve({ id: 17, windowId: 20 });
+
+    await expect(command).resolves.toEqual({ ok: false, error: "stalePanel" });
+    expect(harness.coordinator.links).toEqual([]);
   });
 
   it("rejects spoofed panel URLs, channels, IDs, and extra command keys", async () => {
@@ -700,7 +826,7 @@ describe("BackgroundRouter", () => {
       },
       panelSender("channel-1"),
     );
-    await Promise.resolve();
+    await flushMicrotasks();
 
     port.disconnect();
     linkResult.resolve();
@@ -726,7 +852,7 @@ describe("BackgroundRouter", () => {
       },
       panelSender("channel-1"),
     );
-    await Promise.resolve();
+    await flushMicrotasks();
 
     port.disconnect();
     linkResult.reject(new Error("secret stale failure"));
@@ -752,7 +878,7 @@ describe("BackgroundRouter", () => {
       },
       panelSender("channel-1"),
     );
-    await Promise.resolve();
+    await flushMicrotasks();
     firstPort.disconnect();
 
     const recoveredPort = harness.panelPort("channel-1");
@@ -800,6 +926,7 @@ describe("BackgroundRouter", () => {
       requestId: "enable",
       enabled: true,
     });
+    await flushMicrotasks();
     await harness.inspectCoordinator.whenIdle(17);
 
     harness.router.dispose();
@@ -1085,6 +1212,12 @@ function inspectPayload(): InspectPayload {
     context: { url: "https://example.test/page", metadata: {} },
     metadata: {},
   };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 12; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 interface Deferred<T> {

@@ -125,6 +125,36 @@ describe("BrowserBridgeClient", () => {
     expect(harness.credentials).toEqual([CREDENTIALS]);
   });
 
+  it("terminates an unreachable initial link without reconnecting", () => {
+    const harness = createHarness();
+
+    harness.client.link("07");
+    harness.sockets[0].serverClose();
+
+    expect(harness.states.at(-1)).toBe("error");
+    expect(harness.errors.at(-1)).toMatchObject({
+      code: "link.unreachable",
+    });
+    expect(harness.delays).toEqual([]);
+    expect(harness.sockets).toHaveLength(1);
+  });
+
+  it("does not reconnect credentials issued before link authentication", () => {
+    const harness = createHarness();
+
+    harness.client.link("07");
+    harness.sockets[0].open();
+    acceptLink(harness.sockets[0]);
+    harness.sockets[0].serverClose();
+
+    expect(harness.states.at(-1)).toBe("error");
+    expect(harness.errors.at(-1)).toMatchObject({
+      code: "link.unreachable",
+    });
+    expect(harness.delays).toEqual([]);
+    expect(harness.credentials).toEqual([]);
+  });
+
   it("lets an external owner disable automatic reconnect timing", () => {
     const harness = createHarness({ autoReconnect: false });
 
@@ -135,6 +165,25 @@ describe("BrowserBridgeClient", () => {
 
     expect(harness.states.at(-1)).toBe("disconnected");
     expect(harness.delays).toEqual([]);
+  });
+
+  it("caps saved-credential reconnects with bridge.offline", () => {
+    const harness = createHarness();
+
+    harness.client.connect(CREDENTIALS);
+    harness.sockets[0].serverClose();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      harness.runNextTimer();
+      harness.sockets.at(-1)?.serverClose();
+    }
+
+    expect(harness.delays).toEqual([1_000, 2_000, 4_000, 5_000, 5_000]);
+    expect(harness.sockets).toHaveLength(6);
+    expect(harness.states.at(-1)).toBe("error");
+    expect(harness.errors.at(-1)).toMatchObject({ code: "bridge.offline" });
+    expect(() => harness.runNextTimer()).toThrow(
+      "Expected a pending reconnect timer",
+    );
   });
 
   it("reuses complete credentials, then sends inspect and answers ping", () => {
@@ -194,16 +243,17 @@ describe("BrowserBridgeClient", () => {
     });
     authenticate(harness.sockets[0]);
 
-    expect(
-      harness.client.sendInspect(
-        {
-          ...selection(".card"),
-          metadata: { browserWindowId: 10, tabId: 101 },
-        },
-        "panel-101",
-      ),
-    ).toBe(true);
-    expect(JSON.parse(harness.sockets[0].sent[1])).toMatchObject({
+    const payload = {
+      ...selection(".card"),
+      metadata: {
+        trace: "preserved",
+        browserWindowId: 10,
+        tabId: 101,
+      },
+    };
+    expect(harness.client.sendInspect(payload, "panel-101")).toBe(true);
+    const message = JSON.parse(harness.sockets[0].sent[1]);
+    expect(message).toMatchObject({
       type: "inspect",
       source: {
         role: "browser",
@@ -211,7 +261,12 @@ describe("BrowserBridgeClient", () => {
         label: "Firefox window 10",
         metadata: { windowId: 10 },
       },
-      metadata: { browserWindowId: 10, tabId: 101 },
+    });
+    expect(message.metadata).toEqual({ trace: "preserved" });
+    expect(payload.metadata).toEqual({
+      trace: "preserved",
+      browserWindowId: 10,
+      tabId: 101,
     });
   });
 
