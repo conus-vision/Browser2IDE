@@ -1,7 +1,10 @@
 import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import type { SourceWorkspace } from "@browser2ide/plugin-api";
-import { SourceMapLoader } from "../src/sourcePlugins/sourceMapLoader.js";
+import {
+  SOURCE_MAP_CACHE_LIMIT,
+  SourceMapLoader,
+} from "../src/sourcePlugins/sourceMapLoader.js";
 
 const rawMap = {
   version: 3,
@@ -97,7 +100,42 @@ describe("SourceMapLoader", () => {
 
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  it("reuses the current map and evicts least-recent historical maps", async () => {
+    const loader = new SourceMapLoader();
+    const workspace = memoryWorkspace({});
+    const first = await loadInlineMap(loader, workspace, "first");
+    const current = await loadInlineMap(loader, workspace, "current");
+    for (let index = 0; index < SOURCE_MAP_CACHE_LIMIT - 2; index += 1) {
+      await loadInlineMap(loader, workspace, `filler-${index}`);
+    }
+
+    expect((await loadInlineMap(loader, workspace, "current")).rawMap).toBe(
+      current.rawMap,
+    );
+    await loadInlineMap(loader, workspace, "overflow");
+
+    expect((await loadInlineMap(loader, workspace, "current")).rawMap).toBe(
+      current.rawMap,
+    );
+    expect((await loadInlineMap(loader, workspace, "first")).rawMap).not.toBe(
+      first.rawMap,
+    );
+  });
 });
+
+async function loadInlineMap(
+  loader: SourceMapLoader,
+  workspace: SourceWorkspace,
+  name: string,
+) {
+  const map = JSON.stringify({ ...rawMap, file: `${name}.css` });
+  return loader.load(
+    `file:///workspace/dist/${name}.css`,
+    `a{}\n/*# sourceMappingURL=data:application/json,${encodeURIComponent(map)} */`,
+    workspace,
+  );
+}
 
 function memoryWorkspace(
   files: Readonly<Record<string, string>>,

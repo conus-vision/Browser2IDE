@@ -11,6 +11,7 @@ import {
 } from "@browser2ide/protocol";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
 import {
+  GENERATED_STYLESHEET_CACHE_LIMIT,
   findMatchingCssRules,
   normalizeSelector,
   StylesheetAstCache,
@@ -894,6 +895,51 @@ describe("CssSourcePlugin", () => {
     expect(findMatchingCssRules(parsed, bySelector, source).map(
       (rule) => rule.selector,
     )).toEqual([".rule-512"]);
+  });
+
+  it("reuses the current generated AST and evicts least-recent history", () => {
+    const ast = new StylesheetAstCache();
+    const firstText = ".first { color: red; }";
+    const currentText = ".current { color: blue; }";
+    const first = ast.parseText("file:///generated/first.css", "css", firstText);
+    const current = ast.parseText(
+      "file:///generated/current.css",
+      "css",
+      currentText,
+    );
+    for (
+      let index = 0;
+      index < GENERATED_STYLESHEET_CACHE_LIMIT - 2;
+      index += 1
+    ) {
+      ast.parseText(
+        `file:///generated/filler-${index}.css`,
+        "css",
+        `.filler-${index} { order: ${index}; }`,
+      );
+    }
+
+    expect(ast.parseText(
+      "file:///generated/current.css",
+      "css",
+      currentText,
+    )).toBe(current);
+    ast.parseText(
+      "file:///generated/overflow.css",
+      "css",
+      ".overflow { display: block; }",
+    );
+
+    expect(ast.parseText(
+      "file:///generated/current.css",
+      "css",
+      currentText,
+    )).toBe(current);
+    expect(ast.parseText(
+      "file:///generated/first.css",
+      "css",
+      firstText,
+    )).not.toBe(first);
   });
 
   it("does not match an ambiguous or different active CSS source", async () => {

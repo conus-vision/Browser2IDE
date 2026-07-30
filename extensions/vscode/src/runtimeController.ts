@@ -41,8 +41,6 @@ export class ExtensionRuntimeController {
   private readonly stateSubscription: DisposableLike;
   private client: RuntimeClientLike | undefined;
   private operationTail: Promise<void> = Promise.resolve();
-  private startPromise: Promise<void> | undefined;
-  private stopPromise: Promise<void> | undefined;
   private disposePromise: Promise<void> | undefined;
   private disposed = false;
 
@@ -57,41 +55,14 @@ export class ExtensionRuntimeController {
     if (this.disposed) {
       return Promise.resolve();
     }
-    if (this.client) {
-      return Promise.resolve();
-    }
-    if (this.startPromise) {
-      return this.startPromise;
-    }
-
-    const operation = this.enqueue(() => this.startNow());
-    let tracked: Promise<void>;
-    tracked = operation.finally(() => {
-      if (this.startPromise === tracked) {
-        this.startPromise = undefined;
-      }
-    });
-    this.startPromise = tracked;
-    return tracked;
+    return this.enqueue(() => this.startNow());
   }
 
   stop(): Promise<void> {
     if (this.disposePromise) {
       return this.disposePromise;
     }
-    if (this.stopPromise) {
-      return this.stopPromise;
-    }
-
-    const operation = this.enqueue(() => this.stopNow());
-    let tracked: Promise<void>;
-    tracked = operation.finally(() => {
-      if (this.stopPromise === tracked) {
-        this.stopPromise = undefined;
-      }
-    });
-    this.stopPromise = tracked;
-    return tracked;
+    return this.enqueue(() => this.stopNow());
   }
 
   async copyLinkCode(): Promise<void> {
@@ -113,10 +84,7 @@ export class ExtensionRuntimeController {
     }
 
     this.disposed = true;
-    const operation = this.enqueue(async () => {
-      this.disposeClient();
-      await this.options.manager.stop();
-    });
+    const operation = this.enqueue(() => this.stopNow());
     this.disposePromise = operation.finally(() => {
       this.stateSubscription.dispose();
       this.options.status.dispose();
@@ -162,6 +130,9 @@ export class ExtensionRuntimeController {
 
   private async stopNow(): Promise<void> {
     this.disposeClient();
+    if (this.options.manager.snapshot().state === "stopped") {
+      return;
+    }
     await this.options.manager.stop();
   }
 

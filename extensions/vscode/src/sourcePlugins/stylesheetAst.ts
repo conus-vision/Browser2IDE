@@ -17,6 +17,7 @@ import {
   INSPECT_LIMITS,
   type CssRuleFact,
 } from "@browser2ide/protocol";
+import { BoundedLruCache } from "./boundedLruCache.js";
 
 export type StylesheetSyntax = "css" | "scss";
 
@@ -42,10 +43,13 @@ export interface ParsedStylesheet {
 
 const FALLBACK_BUCKET_LIMIT = 32;
 const FALLBACK_ENTRY_LIMIT = INSPECT_LIMITS.cssRules * 2;
+export const GENERATED_STYLESHEET_CACHE_LIMIT = 32;
 
 export class StylesheetAstCache {
   private readonly documents = new Map<string, ParsedStylesheet>();
-  private readonly generated = new Map<string, ParsedStylesheet>();
+  private readonly generated = new BoundedLruCache<string, ParsedStylesheet>(
+    GENERATED_STYLESHEET_CACHE_LIMIT,
+  );
 
   public parseDocument(
     document: SourceDocument,
