@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import {
 } from "../release-publishing.mjs";
 
 const version = "0.2.0";
+const databaseId = "987654321";
 const unsignedName = `browser2ide-firefox-${version}.zip`;
 const signedName = `browser2ide-firefox-${version}.xpi`;
 const unsignedNames = [
@@ -50,17 +51,18 @@ test("draft release must contain signed and unsigned Firefox artifacts with chec
     `\n${"5".repeat(64)}  ${signedName}\n`,
   );
 
-  assert.doesNotThrow(() =>
+  assert.equal(
     assertReleaseAssets(
-      { isDraft: true, assets: names.map((name) => ({ name })) },
+      { databaseId: Number(databaseId), isDraft: true, assets: names.map((name) => ({ name })) },
       version,
       checksums,
     ),
+    databaseId,
   );
   assert.throws(
     () =>
       assertReleaseAssets(
-        { isDraft: false, assets: names.map((name) => ({ name })) },
+        { databaseId: Number(databaseId), isDraft: false, assets: names.map((name) => ({ name })) },
         version,
         checksums,
       ),
@@ -69,7 +71,7 @@ test("draft release must contain signed and unsigned Firefox artifacts with chec
   assert.throws(
     () =>
       assertReleaseAssets(
-        { isDraft: true, assets: [...names, "unexpected.zip"].map((name) => ({ name })) },
+        { databaseId: Number(databaseId), isDraft: true, assets: [...names, "unexpected.zip"].map((name) => ({ name })) },
         version,
         checksums,
       ),
@@ -78,17 +80,18 @@ test("draft release must contain signed and unsigned Firefox artifacts with chec
 });
 
 test("unsigned recovery phase accepts only the original five-asset draft", () => {
-  assert.doesNotThrow(() =>
+  assert.equal(
     assertUnsignedReleaseAssets(
-      { isDraft: true, assets: unsignedNames.map((name) => ({ name })) },
+      { databaseId, isDraft: true, assets: unsignedNames.map((name) => ({ name })) },
       version,
       original,
     ),
+    databaseId,
   );
   assert.throws(
     () =>
       assertUnsignedReleaseAssets(
-        { isDraft: false, assets: unsignedNames.map((name) => ({ name })) },
+        { databaseId, isDraft: false, assets: unsignedNames.map((name) => ({ name })) },
         version,
         original,
       ),
@@ -97,7 +100,7 @@ test("unsigned recovery phase accepts only the original five-asset draft", () =>
   assert.throws(
     () =>
       assertUnsignedReleaseAssets(
-        { isDraft: true, assets: [...unsignedNames, signedName].map((name) => ({ name })) },
+        { databaseId, isDraft: true, assets: [...unsignedNames, signedName].map((name) => ({ name })) },
         version,
         original,
       ),
@@ -106,7 +109,7 @@ test("unsigned recovery phase accepts only the original five-asset draft", () =>
   assert.throws(
     () =>
       assertUnsignedReleaseAssets(
-        { isDraft: true, assets: unsignedNames.map((name) => ({ name })) },
+        { databaseId, isDraft: true, assets: unsignedNames.map((name) => ({ name })) },
         version,
         original.replace(/\n$/, `\n${"5".repeat(64)}  ${signedName}\n`),
       ),
@@ -114,20 +117,86 @@ test("unsigned recovery phase accepts only the original five-asset draft", () =>
   );
 });
 
+test("release identity is mandatory and immutable across verification phases", () => {
+  const release = {
+    databaseId: Number(databaseId),
+    isDraft: true,
+    assets: unsignedNames.map((name) => ({ name })),
+  };
+
+  assert.equal(assertUnsignedReleaseAssets(release, version, original, databaseId), databaseId);
+  assert.throws(
+    () => assertUnsignedReleaseAssets(release, version, original, "987654322"),
+    /database id differs/i,
+  );
+  assert.throws(
+    () => assertUnsignedReleaseAssets({ ...release, databaseId: undefined }, version, original),
+    /database id/i,
+  );
+  assert.throws(
+    () => assertUnsignedReleaseAssets({ ...release, databaseId: 1.5 }, version, original),
+    /database id/i,
+  );
+});
+
 test("release asset verifier CLI requires an explicit unsigned phase", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-unsigned-release-"));
   try {
+    const remoteDirectory = resolve(directory, "remote");
+    const localDirectory = resolve(directory, "local");
+    await mkdir(remoteDirectory);
+    await mkdir(localDirectory);
     const releasePath = resolve(directory, "release.json");
-    const checksumPath = resolve(directory, "SHA256SUMS");
+    const checksumPath = resolve(remoteDirectory, "SHA256SUMS");
     await writeFile(
       releasePath,
-      JSON.stringify({ isDraft: true, assets: unsignedNames.map((name) => ({ name })) }),
+      JSON.stringify({
+        databaseId: Number(databaseId),
+        isDraft: true,
+        assets: unsignedNames.map((name) => ({ name })),
+      }),
     );
-    await writeFile(checksumPath, original);
+    for (const name of unsignedNames) {
+      const content = name === "SHA256SUMS" ? original : `artifact:${name}\n`;
+      await writeFile(resolve(remoteDirectory, name), content);
+      await writeFile(resolve(localDirectory, name), content);
+    }
 
-    const valid = runVerifier("unsigned", releasePath, version, checksumPath);
+    const valid = runVerifier(
+      "unsigned",
+      releasePath,
+      version,
+      checksumPath,
+      "--expected-database-id",
+      databaseId,
+      "--compare-all",
+      localDirectory,
+    );
     assert.equal(valid.status, 0, valid.stderr);
-    assert.match(valid.stdout, /exact unsigned asset set/);
+    assert.equal(valid.stdout, `${databaseId}\n`);
+
+    const wrongIdentity = runVerifier(
+      "unsigned",
+      releasePath,
+      version,
+      checksumPath,
+      "--expected-database-id",
+      "987654322",
+    );
+    assert.notEqual(wrongIdentity.status, 0);
+    assert.match(wrongIdentity.stderr, /database id differs/i);
+
+    await writeFile(resolve(remoteDirectory, unsignedName), "tampered\n");
+    const tampered = runVerifier(
+      "unsigned",
+      releasePath,
+      version,
+      checksumPath,
+      "--compare-all",
+      localDirectory,
+    );
+    assert.notEqual(tampered.status, 0);
+    assert.match(tampered.stderr, /differs between release and rebuild/i);
 
     const wrongPhase = runVerifier("signed", releasePath, version, checksumPath);
     assert.notEqual(wrongPhase.status, 0);

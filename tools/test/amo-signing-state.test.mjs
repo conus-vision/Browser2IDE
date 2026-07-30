@@ -6,14 +6,37 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
+  createAmoUploadProvenance,
   createAmoStateArtifactName,
   parseAmoUploadState,
+  parseAmoUploadProvenance,
+  validateAmoResumeProvenance,
 } from "../amo-signing-state.mjs";
 
 const validState = {
   uploadUuid: "123e4567-e89b-42d3-a456-426614174000",
   channel: "unlisted",
   xpiCrcHash: "a".repeat(64),
+};
+const releaseCommit = "1".repeat(40);
+const workflowCommit = "2".repeat(40);
+const validProvenanceInput = {
+  repository: "conus-vision/Browser2IDE",
+  workflowPath: ".github/workflows/firefox-sign.yml",
+  eventName: "workflow_dispatch",
+  releaseTag: "v0.2.0",
+  releaseCommit,
+  workflowCommit,
+  runId: "123456789",
+};
+const validRun = {
+  id: 123456789,
+  event: "workflow_dispatch",
+  head_sha: workflowCommit,
+  path: ".github/workflows/firefox-sign.yml@master",
+  status: "completed",
+  conclusion: "failure",
+  repository: { full_name: "conus-vision/Browser2IDE" },
 };
 
 test("AMO state artifact names use only a validated tag and positive run id", () => {
@@ -47,6 +70,78 @@ test("AMO upload state accepts UUID, channel and CRC only", () => {
   }
 });
 
+test("resume provenance is canonical and contains no credential-shaped fields", () => {
+  const provenance = createAmoUploadProvenance(validProvenanceInput);
+  assert.deepEqual(parseAmoUploadProvenance(JSON.stringify(provenance)), provenance);
+  assert.deepEqual(Object.keys(provenance).sort(), [
+    "eventName",
+    "releaseCommit",
+    "releaseTag",
+    "repository",
+    "runId",
+    "schemaVersion",
+    "workflowCommit",
+    "workflowPath",
+  ]);
+  for (const forbidden of ["apiKey", "apiSecret", "token", "credential"]) {
+    assert.throws(
+      () => parseAmoUploadProvenance(JSON.stringify({ ...provenance, [forbidden]: "unsafe" })),
+      /Invalid AMO upload provenance/,
+    );
+  }
+});
+
+test("resume provenance is bound to repository, workflow, event, tag, commits, and run id", () => {
+  const provenance = createAmoUploadProvenance(validProvenanceInput);
+  assert.deepEqual(
+    validateAmoResumeProvenance(
+      JSON.stringify(provenance),
+      JSON.stringify(validRun),
+      validProvenanceInput,
+    ),
+    provenance,
+  );
+
+  for (const [key, value] of [
+    ["repository", "attacker/Browser2IDE"],
+    ["workflowPath", ".github/workflows/other.yml"],
+    ["eventName", "push"],
+    ["releaseTag", "v0.2.1"],
+    ["releaseCommit", "3".repeat(40)],
+    ["runId", "123456788"],
+  ]) {
+    assert.throws(
+      () => validateAmoResumeProvenance(
+        JSON.stringify(provenance),
+        JSON.stringify(validRun),
+        { ...validProvenanceInput, [key]: value },
+      ),
+      /provenance/i,
+    );
+  }
+
+  for (const runMutation of [
+    { repository: { full_name: "attacker/Browser2IDE" } },
+    { path: ".github/workflows/other.yml" },
+    { path: ".github/workflows/firefox-sign.yml@../../unsafe" },
+    { path: ".github/workflows/firefox-sign.yml@@master" },
+    { event: "push" },
+    { head_sha: "4".repeat(40) },
+    { id: 123456788 },
+    { status: "in_progress" },
+    { conclusion: "success" },
+  ]) {
+    assert.throws(
+      () => validateAmoResumeProvenance(
+        JSON.stringify(provenance),
+        JSON.stringify({ ...validRun, ...runMutation }),
+        validProvenanceInput,
+      ),
+      /workflow run|provenance/i,
+    );
+  }
+});
+
 test("preserve command writes a canonical hidden state file without extra fields", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-amo-state-"));
   try {
@@ -62,6 +157,41 @@ test("preserve command writes a canonical hidden state file without extra fields
       `${JSON.stringify(validState)}\n`,
     );
     assert.doesNotMatch(result.stdout, /123e4567|a{16}/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("preserve bundle writes sanitized state and validated provenance together", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "browser2ide-amo-bundle-"));
+  try {
+    const source = resolve(directory, "source.json");
+    const destination = resolve(directory, "artifact");
+    await writeFile(source, JSON.stringify(validState));
+
+    const result = runTool(
+      "preserve-bundle",
+      source,
+      destination,
+      validProvenanceInput.repository,
+      validProvenanceInput.workflowPath,
+      validProvenanceInput.eventName,
+      validProvenanceInput.releaseTag,
+      validProvenanceInput.releaseCommit,
+      validProvenanceInput.workflowCommit,
+      validProvenanceInput.runId,
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      await readFile(resolve(destination, ".amo-upload-uuid"), "utf8"),
+      `${JSON.stringify(validState)}\n`,
+    );
+    assert.deepEqual(
+      JSON.parse(await readFile(resolve(destination, ".amo-upload-provenance.json"), "utf8")),
+      createAmoUploadProvenance(validProvenanceInput),
+    );
+    assert.doesNotMatch(result.stdout, /123e4567|a{16}|secret|credential/i);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

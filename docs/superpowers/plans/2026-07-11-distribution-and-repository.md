@@ -495,16 +495,17 @@ and fail immediately if either secret is absent. Sign only from
     --channel=unlisted
     --source-dir=extensions/firefox
     --artifacts-dir=artifacts/firefox-signed
-    --api-key="$WEB_EXT_API_KEY"
-    --api-secret="$WEB_EXT_API_SECRET"
+    --no-config-discovery
     --ignore-files package.json pnpm-lock.yaml tsconfig.json esbuild.mjs "src/**" "test/**"
+    --approval-timeout=900000
     --timeout=900000
 ```
 
 Rename the returned XPI to `browser2ide-firefox-0.2.0.xpi`, update
-`SHA256SUMS`, upload both with `gh release upload --clobber`, verify VSIX, Chrome
-ZIP, source ZIP, and signed XPI are present, then run `gh release edit <tag>
---draft=false`.
+`SHA256SUMS`, verify the immutable draft identity immediately before
+`gh release upload --clobber`, and verify the exact signed asset set afterward.
+Keep the release draft until the signed XPI passes installed-product verification;
+publish through a separate verified mode only then.
 
 Never echo secrets and never run this workflow on pull requests.
 

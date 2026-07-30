@@ -12,14 +12,23 @@ test("tag workflow builds a verified draft release", async () => {
 
   assert.deepEqual(workflow.on.push.tags, ["v*"]);
   assert.equal(workflow.permissions.contents, "write");
+  const checkout = workflow.jobs.package.steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  assert.equal(checkout.with["fetch-depth"], 0);
+  assert.equal(checkout.with["persist-credentials"], false);
   assert.match(source, /verify-release-version\.mjs/);
   assert.match(source, /git cat-file -t/);
+  assert.match(source, /git merge-base --is-ancestor/);
+  assert.match(source, /refs\/remotes\/origin\/master/);
   assert.match(source, /corepack pnpm package/);
   assert.match(source, /gh release create/);
   assert.match(source, /--draft/);
   assert.match(source, /artifacts\/SHA256SUMS/);
   assert.doesNotMatch(source, /run:[^\n]*\$\{\{ github\.ref_name \}\}/);
   assert.doesNotMatch(source, /AMO_JWT_(?:ISSUER|SECRET)/);
+
+  assertGhTokenIsScopedToGhSteps(workflow.jobs.package.steps);
 });
 
 test("Firefox signing is manual, tag-bound, and publishes only after asset verification", async () => {
@@ -40,7 +49,15 @@ test("Firefox signing is manual, tag-bound, and publishes only after asset verif
   assert.equal(workflow.permissions.actions, "read");
   assert.equal(workflow.on.pull_request, undefined);
   assert.ok(workflow.jobs.sign["timeout-minutes"] >= 60);
+  assert.equal(workflow.jobs.sign.environment, undefined);
+  const checkout = workflow.jobs.sign.steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  assert.equal(checkout.with["fetch-depth"], 0);
+  assert.equal(checkout.with["persist-credentials"], false);
   assert.match(source, /refs\/tags\/\$RELEASE_TAG/);
+  assert.match(source, /git merge-base --is-ancestor/);
+  assert.match(source, /refs\/remotes\/origin\/master/);
   assert.match(source, /verify-release-version\.mjs/);
   assert.match(source, /corepack pnpm package/);
   assert.match(source, /--channel=unlisted/);
@@ -62,8 +79,10 @@ test("Firefox signing is manual, tag-bound, and publishes only after asset verif
   assert.match(signStep.run, /web-ext sign/);
   assert.match(signStep.run, /--upload-source-code=/);
   assert.match(signStep.run, /--no-input/);
+  assert.match(signStep.run, /--no-config-discovery/);
   assert.match(signStep.run, /--approval-timeout=900000/);
   assert.match(signStep.run, /--timeout=900000/);
+  assert.doesNotMatch(signStep.run, /--api-key|--api-secret/);
   assert.equal(
     workflow.jobs.sign.steps.filter((step) =>
       Object.keys(step.env ?? {}).some((name) => name.startsWith("WEB_EXT_API_")),
@@ -84,7 +103,9 @@ test("Firefox signing is manual, tag-bound, and publishes only after asset verif
     (step) => step.name === "Prepare available AMO upload state for preservation",
   );
   assert.match(preserveStep.if, /always\(\)/);
-  assert.match(preserveStep.run, /amo-signing-state\.mjs preserve/);
+  assert.match(preserveStep.if, /steps\.amo_sign\.outcome/);
+  assert.match(preserveStep.run, /amo-signing-state\.mjs preserve-bundle/);
+  assert.match(preserveStep.run, /\.amo-upload-provenance\.json/);
 
   const uploadStateStep = workflow.jobs.sign.steps.find(
     (step) => step.name === "Preserve available AMO upload state",
@@ -96,16 +117,148 @@ test("Firefox signing is manual, tag-bound, and publishes only after asset verif
   assert.ok(uploadStateStep.with["retention-days"] <= 7);
   assert.equal(uploadStateStep.with.overwrite, true);
   assert.match(uploadStateStep.with.name, /steps\.release\.outputs\.current_state_artifact/);
-  assert.match(uploadStateStep.with.path, /\.amo-upload-uuid/);
+  assert.match(uploadStateStep.with.path, /browser2ide-amo-state/);
 
   const signIndex = workflow.jobs.sign.steps.indexOf(signStep);
   assert.ok(workflow.jobs.sign.steps.indexOf(preserveStep) > signIndex);
   assert.ok(workflow.jobs.sign.steps.indexOf(uploadStateStep) > signIndex);
   assert.match(source, /\^\[1-9\]\[0-9\]\*\$/);
 
+  const runMetadataStep = workflow.jobs.sign.steps.find(
+    (step) => step.name === "Fetch prior signing run metadata",
+  );
+  assert.ok(runMetadataStep);
+  assert.match(runMetadataStep.if, /resume_run_id/);
+  assert.match(runMetadataStep.run, /gh api/);
+  assert.match(runMetadataStep.run, /actions\/runs\/\$\{RESUME_RUN_ID\}/);
+
+  const validateResumeStep = workflow.jobs.sign.steps.find(
+    (step) => step.name === "Validate restored AMO upload state and provenance",
+  );
+  assert.ok(validateResumeStep);
+  assert.match(validateResumeStep.run, /validate-resume/);
+  assert.match(validateResumeStep.run, /\.amo-upload-provenance\.json/);
+  assert.match(validateResumeStep.run, /GITHUB_REPOSITORY/);
+  assert.match(validateResumeStep.run, /\.github\/workflows\/firefox-sign\.yml/);
+  assert.match(validateResumeStep.run, /workflow_dispatch/);
+  assert.match(validateResumeStep.run, /RELEASE_COMMIT/);
+  assert.match(validateResumeStep.run, /RESUME_RUN_ID/);
+
+  const unsignedDownload = stepIndex(
+    workflow.jobs.sign.steps,
+    "Download unsigned draft for signing",
+  );
+  const unsignedVerify = stepIndex(
+    workflow.jobs.sign.steps,
+    "Verify unsigned draft identity before AMO",
+  );
+  assert.ok(unsignedDownload < unsignedVerify && unsignedVerify < signIndex);
+  const unsignedVerifier = workflow.jobs.sign.steps[unsignedVerify];
+  assert.match(unsignedVerifier.run, /verify-release-assets\.mjs unsigned/);
+  assert.match(unsignedVerifier.run, /--compare-all/);
+  assert.match(unsignedVerifier.run, /release_database_id/);
+
+  const xpiVerify = stepIndex(
+    workflow.jobs.sign.steps,
+    "Normalize and verify the single signed artifact",
+  );
+  assert.ok(xpiVerify > signIndex);
+  assert.match(
+    workflow.jobs.sign.steps[xpiVerify].run,
+    /verify-signed-firefox\.mjs/,
+  );
+
+  const preUploadDownload = stepIndex(
+    workflow.jobs.sign.steps,
+    "Redownload unsigned draft immediately before upload",
+  );
+  const preUploadVerify = stepIndex(
+    workflow.jobs.sign.steps,
+    "Revalidate unsigned draft immediately before upload",
+  );
+  const checksumIndex = stepIndex(
+    workflow.jobs.sign.steps,
+    "Regenerate signed checksums",
+  );
+  const uploadIndex = stepIndex(
+    workflow.jobs.sign.steps,
+    "Upload signed XPI to draft",
+  );
+  assert.ok(xpiVerify < checksumIndex && checksumIndex < preUploadDownload);
+  assert.ok(preUploadDownload < preUploadVerify);
+  assert.ok(preUploadVerify < uploadIndex);
+  assert.match(
+    workflow.jobs.sign.steps[preUploadVerify].run,
+    /--expected-database-id/,
+  );
+  assert.match(workflow.jobs.sign.steps[preUploadVerify].run, /--compare-unsigned-artifacts/);
+  assert.match(workflow.jobs.sign.steps[preUploadVerify].run, /cmp --/);
+
+  const postUploadVerify = stepIndex(
+    workflow.jobs.sign.steps,
+    "Verify signed draft after upload",
+  );
+  assert.ok(postUploadVerify > uploadIndex);
+  assert.match(
+    workflow.jobs.sign.steps[postUploadVerify].run,
+    /verify-release-assets\.mjs signed/,
+  );
+  assert.match(
+    workflow.jobs.sign.steps[postUploadVerify].run,
+    /--expected-database-id/,
+  );
+
+  const publishCapture = stepIndex(
+    workflow.jobs.sign.steps,
+    "Verify signed draft identity for publication",
+  );
+  const publishRedownload = stepIndex(
+    workflow.jobs.sign.steps,
+    "Redownload signed draft immediately before publication",
+  );
+  const publishRecheck = stepIndex(
+    workflow.jobs.sign.steps,
+    "Revalidate signed draft immediately before publication",
+  );
+  const publish = stepIndex(
+    workflow.jobs.sign.steps,
+    "Publish installed-verified release",
+  );
+  assert.ok(publishCapture < publishRedownload);
+  assert.ok(publishRedownload < publishRecheck && publishRecheck < publish);
+  assert.match(workflow.jobs.sign.steps[publishRecheck].run, /--expected-database-id/);
+  assert.match(workflow.jobs.sign.steps[publishRecheck].run, /verify-release-assets\.mjs signed/);
+
+  for (const name of [
+    "Download unsigned draft for signing",
+    "Redownload unsigned draft immediately before upload",
+    "Download signed draft after upload",
+    "Download signed draft for publication",
+    "Redownload signed draft immediately before publication",
+  ]) {
+    assert.match(workflow.jobs.sign.steps[stepIndex(workflow.jobs.sign.steps, name)].run, /databaseId,isDraft,assets/);
+  }
+
+  assertGhTokenIsScopedToGhSteps(workflow.jobs.sign.steps);
+
   const verifyAssets = source.indexOf("verify-release-assets.mjs");
-  const publish = source.indexOf("--draft=false");
-  assert.ok(verifyAssets >= 0 && publish > verifyAssets);
+  const publishCommand = source.indexOf("--draft=false");
+  assert.ok(verifyAssets >= 0 && publishCommand > verifyAssets);
+});
+
+test("release guide uses annotated alpha tags and documents repository protections", async () => {
+  const source = await readFile(resolve(root, "docs/release.md"), "utf8");
+
+  assert.match(source, /git tag -a v0\.2\.0/);
+  assert.doesNotMatch(source, /git tag -s|git verify-tag/);
+  assert.match(
+    source,
+    /cryptographic tag\s+signing is not configured for the `0\.2\.0` alpha/i,
+  );
+  assert.match(source, /branch protection|branch ruleset/i);
+  assert.match(source, /tag protection|tag ruleset/i);
+  assert.match(source, /protected GitHub Environment/i);
+  assert.match(source, /recommended[^.]+not required|not required[^.]+recommended/i);
 });
 
 test("release guide limits stateful resume to post-validation failures", async () => {
@@ -141,6 +294,7 @@ test("manual fallback verifies the unsigned draft before changing release assets
   const unsignedVerify = recovery.indexOf("verify-release-assets.mjs unsigned");
   const unsignedHashes = recovery.indexOf("sha256sum --check", unsignedVerify);
   const rename = recovery.indexOf("mv --");
+  const xpiVerify = recovery.indexOf("verify-signed-firefox.mjs");
   const rewriteChecksums = recovery.indexOf("write-checksums.mjs");
   const upload = recovery.indexOf("gh release upload");
   const signedVerify = recovery.indexOf("verify-release-assets.mjs signed");
@@ -155,10 +309,31 @@ test("manual fallback verifies the unsigned draft before changing release assets
   assert.ok(download > draftCheck);
   assert.ok(unsignedVerify > download);
   assert.ok(unsignedHashes > unsignedVerify);
-  assert.ok(rename > unsignedHashes);
+  assert.ok(xpiVerify > unsignedHashes);
+  assert.ok(rename > xpiVerify);
   assert.ok(rewriteChecksums > rename);
   assert.ok(upload > rewriteChecksums);
   assert.ok(signedVerify > upload);
   assert.ok(signedHashes > signedVerify);
   assert.ok(publish > signedHashes);
+  assert.match(recovery, /databaseId,isDraft,assets/);
+  assert.match(recovery, /--expected-database-id/);
 });
+
+function stepIndex(steps, name) {
+  const index = steps.findIndex((step) => step.name === name);
+  assert.ok(index >= 0, `Missing workflow step: ${name}`);
+  return index;
+}
+
+function assertGhTokenIsScopedToGhSteps(steps) {
+  for (const step of steps) {
+    if (!Object.hasOwn(step.env ?? {}, "GH_TOKEN")) continue;
+    assert.match(step.run ?? "", /(?:^|\n)\s*gh\s/m, `${step.name} must invoke gh`);
+    assert.doesNotMatch(
+      step.run ?? "",
+      /node\s+tools\/|corepack\s+pnpm|\bgit\s/,
+      `${step.name} must not run repository code with GH_TOKEN`,
+    );
+  }
+}
