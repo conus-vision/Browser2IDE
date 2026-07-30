@@ -1,11 +1,79 @@
 import { describe, expect, it } from "vitest";
 import {
   BackgroundInspectCoordinator,
+  BackgroundInspectSession,
   attachBackgroundInspectSession,
 } from "../src/backgroundInspectSession.js";
 import type { InspectPortRequest } from "../src/inspectPortProtocol.js";
 
 describe("background inspect session", () => {
+  it("lets the router defer a successful acknowledgement until postflight", async () => {
+    const sent: unknown[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage() {},
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      (message) => sent.push(message),
+    );
+
+    await expect(session.execute(request("enable", true))).resolves.toEqual({
+      result: {
+        type: "browser2ide.inspect.result",
+        requestId: "enable",
+        ok: true,
+      },
+      delivered: false,
+    });
+    expect(sent).toEqual([]);
+  });
+
+  it("settles a deferred acknowledgement exactly once when retired", async () => {
+    const enable = deferred<void>();
+    const sent: unknown[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(_tabId, message) {
+        if (isRecord(message) && message.type === "enableInspectMode") {
+          await enable.promise;
+        }
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      (message) => sent.push(message),
+    );
+
+    const result = session.execute(request("enable", true));
+    await flushAsync();
+    session.retire("stalePanel");
+
+    await expect(result).resolves.toEqual({
+      result: {
+        type: "browser2ide.inspect.result",
+        requestId: "enable",
+        ok: false,
+        error: "stalePanel",
+      },
+      delivered: true,
+    });
+    expect(sent).toEqual([
+      {
+        type: "browser2ide.inspect.result",
+        requestId: "enable",
+        ok: false,
+        error: "stalePanel",
+      },
+    ]);
+
+    enable.resolve();
+    await session.whenIdle();
+    expect(sent).toHaveLength(1);
+  });
+
   it("uses its trusted tab and rejects a panel-supplied tab ID", async () => {
     const calls: unknown[] = [];
     const port = new FakePort("browser2ide.devtools.channel-1");

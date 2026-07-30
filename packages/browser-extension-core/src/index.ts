@@ -8,7 +8,10 @@ export {
   BackgroundInspectCoordinator,
   BackgroundInspectSession,
 } from "./backgroundInspectSession.js";
-export type { BackgroundInspectApi } from "./backgroundInspectSession.js";
+export type {
+  BackgroundInspectApi,
+  BackgroundInspectSessionOutcome,
+} from "./backgroundInspectSession.js";
 export { startBackgroundRuntime } from "./backgroundRuntime.js";
 export type {
   BackgroundRuntime,

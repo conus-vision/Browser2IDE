@@ -212,7 +212,7 @@ export class BackgroundInspectCoordinator {
 
 export class BackgroundInspectSession {
   private readonly owner = {};
-  private readonly pendingRequestIds = new Set<string>();
+  private readonly pendingRequests = new Set<PendingInspectRequest>();
   private lastOperation = Promise.resolve();
   private disconnected = false;
 
@@ -233,10 +233,21 @@ export class BackgroundInspectSession {
     if (!request || this.disconnected) {
       return;
     }
-    this.track(request);
+    void this.track(request, true);
+  }
+
+  public execute(
+    message: unknown,
+  ): Promise<BackgroundInspectSessionOutcome | undefined> {
+    const request = parseInspectPortRequest(message);
+    if (!request || this.disconnected) {
+      return Promise.resolve(undefined);
+    }
+    return this.track(request, false);
   }
 
   public disconnect(): void {
+    this.settlePending("stalePanel", false);
     this.close();
   }
 
@@ -244,14 +255,7 @@ export class BackgroundInspectSession {
     if (this.disconnected) {
       return;
     }
-    for (const requestId of this.pendingRequestIds) {
-      try {
-        this.sendFailure(requestId, error);
-      } catch {
-        // Retiring ownership must continue even if its panel is disappearing.
-      }
-    }
-    this.pendingRequestIds.clear();
+    this.settlePending(error, true);
     this.close();
   }
 
@@ -259,8 +263,20 @@ export class BackgroundInspectSession {
     return this.lastOperation;
   }
 
-  private track(request: InspectPortRequest): void {
-    this.pendingRequestIds.add(request.requestId);
+  private track(
+    request: InspectPortRequest,
+    deliverResult: boolean,
+  ): Promise<BackgroundInspectSessionOutcome> {
+    let resolveOutcome!: (outcome: BackgroundInspectSessionOutcome) => void;
+    const outcome = new Promise<BackgroundInspectSessionOutcome>((resolve) => {
+      resolveOutcome = resolve;
+    });
+    const pending: PendingInspectRequest = {
+      requestId: request.requestId,
+      deliverResult,
+      resolve: resolveOutcome,
+    };
+    this.pendingRequests.add(pending);
     const operation = this.coordinator.setEnabled(
       this.owner,
       this.tabId,
@@ -270,36 +286,60 @@ export class BackgroundInspectSession {
     this.lastOperation = operation.catch(() => undefined);
     void operation.then(
       () => {
-        if (this.finishRequest(request.requestId)) {
-          this.sendMessage({
-            type: "browser2ide.inspect.result",
-            requestId: request.requestId,
-            ok: true,
-          });
-        }
+        this.finishRequest(pending, {
+          type: "browser2ide.inspect.result",
+          requestId: request.requestId,
+          ok: true,
+        });
       },
       () => {
-        if (this.finishRequest(request.requestId)) {
-          this.sendFailure(request.requestId);
-        }
+        this.finishRequest(pending, {
+          type: "browser2ide.inspect.result",
+          requestId: request.requestId,
+          ok: false,
+          error: "Inspect mode update failed",
+        });
       },
     );
+    return outcome;
   }
 
-  private finishRequest(requestId: string): boolean {
-    return !this.disconnected && this.pendingRequestIds.delete(requestId);
-  }
-
-  private sendFailure(
-    requestId: string,
-    error = "Inspect mode update failed",
+  private finishRequest(
+    pending: PendingInspectRequest,
+    result: InspectPortResult,
   ): void {
-    this.sendMessage({
-      type: "browser2ide.inspect.result",
-      requestId,
-      ok: false,
-      error,
-    });
+    if (this.disconnected || !this.pendingRequests.delete(pending)) {
+      return;
+    }
+    if (pending.deliverResult) {
+      try {
+        this.sendMessage(result);
+      } finally {
+        pending.resolve({ result, delivered: true });
+      }
+      return;
+    }
+    pending.resolve({ result, delivered: false });
+  }
+
+  private settlePending(error: string, deliverResult: boolean): void {
+    for (const pending of [...this.pendingRequests]) {
+      this.pendingRequests.delete(pending);
+      const result: InspectPortResult = {
+        type: "browser2ide.inspect.result",
+        requestId: pending.requestId,
+        ok: false,
+        error,
+      };
+      if (deliverResult) {
+        try {
+          this.sendMessage(result);
+        } catch {
+          // Retiring ownership must continue if the panel disappears.
+        }
+      }
+      pending.resolve({ result, delivered: deliverResult });
+    }
   }
 
   private close(): void {
@@ -307,7 +347,6 @@ export class BackgroundInspectSession {
       return;
     }
     this.disconnected = true;
-    this.pendingRequestIds.clear();
     this.lastOperation = this.coordinator
       .release(this.owner, this.tabId)
       .catch(() => undefined);
@@ -322,6 +361,17 @@ export class BackgroundInspectSession {
       reason: "documentDisconnected",
     });
   }
+}
+
+export interface BackgroundInspectSessionOutcome {
+  readonly result: InspectPortResult;
+  readonly delivered: boolean;
+}
+
+interface PendingInspectRequest {
+  readonly requestId: string;
+  readonly deliverResult: boolean;
+  readonly resolve: (outcome: BackgroundInspectSessionOutcome) => void;
 }
 
 export function attachBackgroundInspectSession(

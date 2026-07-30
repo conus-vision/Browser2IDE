@@ -22,6 +22,8 @@ export interface BackgroundRuntimeOptions extends BackgroundInspectApi {
   readonly subscribeRuntimeMessages: BackgroundRouterSubscriptions["subscribeRuntimeMessages"];
   readonly subscribeRuntimePorts: BackgroundRouterSubscriptions["subscribeRuntimePorts"];
   readonly subscribeWindowRemoved: BackgroundRouterSubscriptions["subscribeWindowRemoved"];
+  readonly subscribeTabDetached: BackgroundRouterSubscriptions["subscribeTabDetached"];
+  readonly subscribeTabAttached: BackgroundRouterSubscriptions["subscribeTabAttached"];
   readonly onError?: (error: unknown) => void;
 }
 
@@ -48,6 +50,8 @@ export function startBackgroundRuntime(
       subscribeRuntimeMessages: options.subscribeRuntimeMessages,
       subscribeRuntimePorts: options.subscribeRuntimePorts,
       subscribeWindowRemoved: options.subscribeWindowRemoved,
+      subscribeTabDetached: options.subscribeTabDetached,
+      subscribeTabAttached: options.subscribeTabAttached,
     },
     onError: options.onError,
   });
