@@ -83,13 +83,18 @@ interface RegisteredInspectLease {
 export class BackgroundInspectLeaseRegistry {
   private readonly leases = new Map<number, RegisteredInspectLease>();
 
-  public attach(tabId: number, port: ContentInspectPort): void {
+  public attach(
+    tabId: number,
+    port: ContentInspectPort,
+    onUnexpectedDisconnect: () => void,
+  ): void {
     this.release(tabId);
     const lease: RegisteredInspectLease = {
       port,
       onDisconnect: () => {
         if (this.leases.get(tabId) === lease) {
           this.leases.delete(tabId);
+          onUnexpectedDisconnect();
         }
       },
     };

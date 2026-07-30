@@ -33,7 +33,7 @@ describe("parseLinkCode", () => {
     expect(() => parseLinkCode(input)).toThrow();
   });
 
-  it.each(["0999907", "6553607"])(
+  it.each(["1000007", "4873407", "4883507", "6553507"])(
     "rejects an out-of-range port in %s",
     (input) => {
       expect(() => parseLinkCode(input)).toThrow();
@@ -41,8 +41,8 @@ describe("parseLinkCode", () => {
   );
 
   it.each([
-    ["1000007", 10_000],
-    ["6553507", 65_535],
+    ["4873507", 48_735],
+    ["4883407", 48_834],
   ])("accepts the boundary port in %s", (input, port) => {
     expect(parseLinkCode(input)).toMatchObject({ port });
   });

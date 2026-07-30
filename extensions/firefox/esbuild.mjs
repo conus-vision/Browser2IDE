@@ -1,10 +1,20 @@
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import {
+  normalizeBrowserPackageTimestamps,
+  writeBrowserBundleNotices,
+  writeBrowserProjectLicense,
+} from "../../tools/browser-bundle-notices.mjs";
 
-const outdir = "dist";
+const extensionRoot = dirname(fileURLToPath(import.meta.url));
+const outdir = resolve(extensionRoot, "dist");
 
+await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
-await build({
+const result = await build({
+  absWorkingDir: extensionRoot,
   entryPoints: {
     devtools: "src/devtools.ts",
     panel: "src/panel.ts",
@@ -16,14 +26,20 @@ await build({
   format: "iife",
   target: "firefox142",
   outdir,
-  sourcemap: true,
+  minify: true,
+  sourcemap: false,
+  metafile: true,
 });
 
-await copyFile("src/devtools.html", `${outdir}/devtools.html`);
+await copyFile(resolve(extensionRoot, "src/devtools.html"), resolve(outdir, "devtools.html"));
 
 for (const asset of ["panel.html", "panel.css", "browser2ide.svg"]) {
   await copyFile(
-    `../../packages/browser-extension-core/assets/${asset}`,
-    `${outdir}/${asset}`,
+    resolve(extensionRoot, `../../packages/browser-extension-core/assets/${asset}`),
+    resolve(outdir, asset),
   );
 }
+
+await writeBrowserProjectLicense(extensionRoot);
+await writeBrowserBundleNotices(result.metafile, extensionRoot);
+await normalizeBrowserPackageTimestamps(extensionRoot);

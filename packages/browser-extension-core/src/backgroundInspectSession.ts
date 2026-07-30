@@ -2,6 +2,7 @@ import {
   parseInspectPortRequest,
   type BackgroundInspectPort,
   type ContentInspectPort,
+  type InspectPortInvalidated,
   type InspectPortRequest,
   type InspectPortResult,
 } from "./inspectPortProtocol.js";
@@ -17,13 +18,19 @@ export interface BackgroundInspectApi {
 
 interface TabInspectState {
   queue: Promise<void>;
-  owner: object | undefined;
+  owner: ActiveInspectOwner | undefined;
   releasingOwner: object | undefined;
+}
+
+interface ActiveInspectOwner {
+  readonly token: object;
+  readonly onInvalidated: () => void;
 }
 
 export class BackgroundInspectCoordinator {
   private readonly tabs = new Map<number, TabInspectState>();
   private readonly leases = new BackgroundInspectLeaseRegistry();
+  private readonly invalidatedOwners = new WeakSet<object>();
 
   public constructor(private readonly api: BackgroundInspectApi) {}
 
@@ -31,12 +38,14 @@ export class BackgroundInspectCoordinator {
     owner: object,
     tabId: number,
     enabled: boolean,
+    onInvalidated: () => void = () => {},
   ): Promise<void> {
     const state = this.stateFor(tabId);
     if (enabled) {
-      state.owner = owner;
+      this.invalidatedOwners.delete(owner);
+      state.owner = { token: owner, onInvalidated };
       state.releasingOwner = undefined;
-    } else if (state.owner === owner) {
+    } else if (state.owner?.token === owner) {
       state.owner = undefined;
       state.releasingOwner = owner;
       this.leases.release(tabId);
@@ -72,7 +81,9 @@ export class BackgroundInspectCoordinator {
       }
       return;
     }
-    this.leases.attach(tabId, port);
+    this.leases.attach(tabId, port, () =>
+      this.invalidateContentOwner(tabId),
+    );
   }
 
   public whenIdle(tabId: number): Promise<void> {
@@ -84,7 +95,7 @@ export class BackgroundInspectCoordinator {
     owner: object,
     tabId: number,
   ): Promise<void> {
-    if (state.owner !== owner) {
+    if (state.owner?.token !== owner) {
       return;
     }
     try {
@@ -92,19 +103,35 @@ export class BackgroundInspectCoordinator {
         target: { tabId },
         files: ["dist/contentScript.js"],
       });
-      if (state.owner !== owner) {
+      if (state.owner?.token !== owner) {
         return;
       }
       await this.api.sendTabMessage(tabId, {
         type: "enableInspectMode",
       });
+      if (
+        state.owner?.token !== owner &&
+        this.invalidatedOwners.has(owner)
+      ) {
+        throw new Error("Inspect content document was disconnected");
+      }
     } catch (error) {
-      if (state.owner === owner) {
+      let shouldDisable = false;
+      if (state.owner?.token === owner) {
         state.owner = undefined;
         state.releasingOwner = owner;
         this.leases.release(tabId);
+        shouldDisable = true;
+      } else if (
+        state.owner === undefined &&
+        this.invalidatedOwners.has(owner)
+      ) {
+        state.releasingOwner = owner;
+        shouldDisable = true;
       }
-      const disabled = await this.tryDisable(tabId);
+      const disabled = shouldDisable
+        ? await this.tryDisable(tabId)
+        : false;
       if (
         disabled &&
         state.owner === undefined &&
@@ -155,6 +182,22 @@ export class BackgroundInspectCoordinator {
     return result;
   }
 
+  private invalidateContentOwner(tabId: number): void {
+    const state = this.tabs.get(tabId);
+    const owner = state?.owner;
+    if (!state || !owner) {
+      return;
+    }
+    state.owner = undefined;
+    state.releasingOwner = undefined;
+    this.invalidatedOwners.add(owner.token);
+    try {
+      owner.onInvalidated();
+    } catch {
+      // Panel notification cannot restore invalidated inspect ownership.
+    }
+  }
+
   private async tryDisable(tabId: number): Promise<boolean> {
     try {
       await this.api.sendTabMessage(tabId, {
@@ -169,13 +212,16 @@ export class BackgroundInspectCoordinator {
 
 export class BackgroundInspectSession {
   private readonly owner = {};
+  private readonly pendingRequests = new Set<PendingInspectRequest>();
   private lastOperation = Promise.resolve();
   private disconnected = false;
 
   public constructor(
     private readonly coordinator: BackgroundInspectCoordinator,
     private readonly tabId: number,
-    private readonly sendResult: (result: InspectPortResult) => void,
+    private readonly sendMessage: (
+      message: InspectPortResult | InspectPortInvalidated,
+    ) => void,
   ) {
     if (!Number.isSafeInteger(tabId) || tabId < 0) {
       throw new Error("Invalid trusted inspect tab");
@@ -187,10 +233,116 @@ export class BackgroundInspectSession {
     if (!request || this.disconnected) {
       return;
     }
-    this.track(request);
+    void this.track(request, true);
+  }
+
+  public execute(
+    message: unknown,
+  ): Promise<BackgroundInspectSessionOutcome | undefined> {
+    const request = parseInspectPortRequest(message);
+    if (!request || this.disconnected) {
+      return Promise.resolve(undefined);
+    }
+    return this.track(request, false);
   }
 
   public disconnect(): void {
+    this.settlePending("stalePanel", false);
+    this.close();
+  }
+
+  public retire(error: string): void {
+    if (this.disconnected) {
+      return;
+    }
+    this.settlePending(error, true);
+    this.close();
+  }
+
+  public whenIdle(): Promise<void> {
+    return this.lastOperation;
+  }
+
+  private track(
+    request: InspectPortRequest,
+    deliverResult: boolean,
+  ): Promise<BackgroundInspectSessionOutcome> {
+    let resolveOutcome!: (outcome: BackgroundInspectSessionOutcome) => void;
+    const outcome = new Promise<BackgroundInspectSessionOutcome>((resolve) => {
+      resolveOutcome = resolve;
+    });
+    const pending: PendingInspectRequest = {
+      requestId: request.requestId,
+      deliverResult,
+      resolve: resolveOutcome,
+    };
+    this.pendingRequests.add(pending);
+    const operation = this.coordinator.setEnabled(
+      this.owner,
+      this.tabId,
+      request.enabled,
+      () => this.handleInvalidation(),
+    );
+    this.lastOperation = operation.catch(() => undefined);
+    void operation.then(
+      () => {
+        this.finishRequest(pending, {
+          type: "browser2ide.inspect.result",
+          requestId: request.requestId,
+          ok: true,
+        });
+      },
+      () => {
+        this.finishRequest(pending, {
+          type: "browser2ide.inspect.result",
+          requestId: request.requestId,
+          ok: false,
+          error: "Inspect mode update failed",
+        });
+      },
+    );
+    return outcome;
+  }
+
+  private finishRequest(
+    pending: PendingInspectRequest,
+    result: InspectPortResult,
+  ): void {
+    if (this.disconnected || !this.pendingRequests.delete(pending)) {
+      return;
+    }
+    if (pending.deliverResult) {
+      try {
+        this.sendMessage(result);
+      } finally {
+        pending.resolve({ result, delivered: true });
+      }
+      return;
+    }
+    pending.resolve({ result, delivered: false });
+  }
+
+  private settlePending(error: string, deliverResult: boolean): void {
+    for (const pending of [...this.pendingRequests]) {
+      this.pendingRequests.delete(pending);
+      const result: InspectPortResult = {
+        type: "browser2ide.inspect.result",
+        requestId: pending.requestId,
+        ok: false,
+        error,
+      };
+      if (deliverResult) {
+        try {
+          this.sendMessage(result);
+        } catch {
+          // Retiring ownership must continue if the panel disappears.
+        }
+      }
+      pending.resolve({ result, delivered: deliverResult });
+    }
+  }
+
+  private close(): void {
     if (this.disconnected) {
       return;
     }
@@ -200,43 +352,26 @@ export class BackgroundInspectSession {
       .catch(() => undefined);
   }
 
-  public whenIdle(): Promise<void> {
-    return this.lastOperation;
-  }
-
-  private track(request: InspectPortRequest): void {
-    const operation = this.coordinator.setEnabled(
-      this.owner,
-      this.tabId,
-      request.enabled,
-    );
-    this.lastOperation = operation.catch(() => undefined);
-    void operation.then(
-      () => {
-        if (!this.disconnected) {
-          this.sendResult({
-            type: "browser2ide.inspect.result",
-            requestId: request.requestId,
-            ok: true,
-          });
-        }
-      },
-      () => {
-        if (!this.disconnected) {
-          this.sendFailure(request.requestId);
-        }
-      },
-    );
-  }
-
-  private sendFailure(requestId: string): void {
-    this.sendResult({
-      type: "browser2ide.inspect.result",
-      requestId,
-      ok: false,
-      error: "Inspect mode update failed",
+  private handleInvalidation(): void {
+    if (this.disconnected) {
+      return;
+    }
+    this.sendMessage({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
     });
   }
+}
+
+export interface BackgroundInspectSessionOutcome {
+  readonly result: InspectPortResult;
+  readonly delivered: boolean;
+}
+
+interface PendingInspectRequest {
+  readonly requestId: string;
+  readonly deliverResult: boolean;
+  readonly resolve: (outcome: BackgroundInspectSessionOutcome) => void;
 }
 
 export function attachBackgroundInspectSession(
@@ -244,7 +379,9 @@ export function attachBackgroundInspectSession(
   coordinator: BackgroundInspectCoordinator,
   trustedTabId: number,
 ): BackgroundInspectSession {
-  const safePost = (result: InspectPortResult): void => {
+  const safePost = (
+    result: InspectPortResult | InspectPortInvalidated,
+  ): void => {
     try {
       port.postMessage(result);
     } catch {

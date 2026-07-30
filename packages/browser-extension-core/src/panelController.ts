@@ -1,4 +1,5 @@
 import { parseLinkCode } from "./linkCode.js";
+import { parseInspectPortInvalidated } from "./inspectPortProtocol.js";
 import {
   ClipboardPaste,
   MousePointer2,
@@ -363,6 +364,14 @@ export class PanelController {
   }
 
   private async handleWindowState(message: unknown): Promise<void> {
+    if (parseInspectPortInvalidated(message)) {
+      if (!this.disposed) {
+        this.inspectController.handleTransportDisconnect();
+        this.errorText = undefined;
+        this.render();
+      }
+      return;
+    }
     const nextState = parseWindowState(message);
     if (!nextState || this.disposed) {
       return;

@@ -5,6 +5,7 @@ import type {
   SourceWorkspace,
 } from "@browser2ide/plugin-api";
 import type { RawSourceMap } from "source-map";
+import { BoundedLruCache } from "./boundedLruCache.js";
 
 export type LoadedRawSourceMap = Omit<RawSourceMap, "file"> & {
   readonly file?: string;
@@ -16,8 +17,12 @@ export interface SourceMapLoadResult {
   readonly diagnostics: readonly PluginDiagnostic[];
 }
 
+export const SOURCE_MAP_CACHE_LIMIT = 32;
+
 export class SourceMapLoader {
-  private readonly cache = new Map<string, LoadedRawSourceMap>();
+  private readonly cache = new BoundedLruCache<string, LoadedRawSourceMap>(
+    SOURCE_MAP_CACHE_LIMIT,
+  );
 
   public async load(
     generatedUri: string,

@@ -1,11 +1,79 @@
 import { describe, expect, it } from "vitest";
 import {
   BackgroundInspectCoordinator,
+  BackgroundInspectSession,
   attachBackgroundInspectSession,
 } from "../src/backgroundInspectSession.js";
 import type { InspectPortRequest } from "../src/inspectPortProtocol.js";
 
 describe("background inspect session", () => {
+  it("lets the router defer a successful acknowledgement until postflight", async () => {
+    const sent: unknown[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage() {},
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      (message) => sent.push(message),
+    );
+
+    await expect(session.execute(request("enable", true))).resolves.toEqual({
+      result: {
+        type: "browser2ide.inspect.result",
+        requestId: "enable",
+        ok: true,
+      },
+      delivered: false,
+    });
+    expect(sent).toEqual([]);
+  });
+
+  it("settles a deferred acknowledgement exactly once when retired", async () => {
+    const enable = deferred<void>();
+    const sent: unknown[] = [];
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage(_tabId, message) {
+        if (isRecord(message) && message.type === "enableInspectMode") {
+          await enable.promise;
+        }
+      },
+    });
+    const session = new BackgroundInspectSession(
+      coordinator,
+      17,
+      (message) => sent.push(message),
+    );
+
+    const result = session.execute(request("enable", true));
+    await flushAsync();
+    session.retire("stalePanel");
+
+    await expect(result).resolves.toEqual({
+      result: {
+        type: "browser2ide.inspect.result",
+        requestId: "enable",
+        ok: false,
+        error: "stalePanel",
+      },
+      delivered: true,
+    });
+    expect(sent).toEqual([
+      {
+        type: "browser2ide.inspect.result",
+        requestId: "enable",
+        ok: false,
+        error: "stalePanel",
+      },
+    ]);
+
+    enable.resolve();
+    await session.whenIdle();
+    expect(sent).toHaveLength(1);
+  });
+
   it("uses its trusted tab and rejects a panel-supplied tab ID", async () => {
     const calls: unknown[] = [];
     const port = new FakePort("browser2ide.devtools.channel-1");
@@ -71,6 +139,47 @@ describe("background inspect session", () => {
       ["tab", 17, { type: "disableInspectMode" }],
     ]);
     expect(port.sent).toEqual([]);
+  });
+
+  it("settles a pending request as stale before retiring a live panel session", async () => {
+    const enable = deferred<void>();
+    const calls: unknown[] = [];
+    const port = new FakePort("browser2ide.devtools.channel-1");
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript(details) {
+        calls.push(["inject", details]);
+      },
+      async sendTabMessage(tabId, message) {
+        calls.push(["tab", tabId, message]);
+        if (isRecord(message) && message.type === "enableInspectMode") {
+          await enable.promise;
+        }
+      },
+    });
+    const session = attachBackgroundInspectSession(port, coordinator, 17);
+
+    port.emitMessage(request("pending-enable", true));
+    await flushAsync();
+    session.retire("stalePanel");
+
+    expect(port.sent).toEqual([
+      {
+        type: "browser2ide.inspect.result",
+        requestId: "pending-enable",
+        ok: false,
+        error: "stalePanel",
+      },
+    ]);
+
+    enable.resolve();
+    await session.whenIdle();
+
+    expect(calls.at(-1)).toEqual([
+      "tab",
+      17,
+      { type: "disableInspectMode" },
+    ]);
+    expect(port.sent).toHaveLength(1);
   });
 
   it("serializes enable and disable requests on the owning port", async () => {
@@ -143,6 +252,36 @@ describe("background inspect session", () => {
       { type: "enableInspectMode" },
       { type: "disableInspectMode" },
     ]);
+  });
+
+  it("fails closed and notifies the panel when the content document disappears", async () => {
+    const panelPort = new FakePort("browser2ide.devtools.channel-1");
+    const coordinator = new BackgroundInspectCoordinator({
+      async executeScript() {},
+      async sendTabMessage() {},
+    });
+    const session = attachBackgroundInspectSession(
+      panelPort,
+      coordinator,
+      17,
+    );
+
+    panelPort.emitMessage(request("enable", true));
+    await session.whenIdle();
+    const contentLease = new FakePort("browser2ide.inspect.contentLease");
+    coordinator.attachContentLease(17, contentLease);
+
+    contentLease.emitDisconnect();
+
+    expect(panelPort.sent.at(-1)).toEqual({
+      type: "browser2ide.inspect.invalidated",
+      reason: "documentDisconnected",
+    });
+    const nextDocumentLease = new FakePort(
+      "browser2ide.inspect.contentLease",
+    );
+    coordinator.attachContentLease(17, nextDocumentLease);
+    expect(nextDocumentLease.disconnected).toBe(true);
   });
 
   it("does not let an old port disable a newer owner for the same tab", async () => {

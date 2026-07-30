@@ -6,6 +6,8 @@ describe("startBackgroundRuntime", () => {
     const messages = eventHarness();
     const ports = eventHarness();
     const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
     const storage = memoryStorage();
     const getTab = vi.fn(async (tabId: number) => ({ id: tabId, windowId: 7 }));
 
@@ -19,11 +21,15 @@ describe("startBackgroundRuntime", () => {
       subscribeRuntimeMessages: messages.subscribe,
       subscribeRuntimePorts: ports.subscribe,
       subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
     });
 
     expect(messages.listener).toBeTypeOf("function");
     expect(ports.listener).toBeTypeOf("function");
     expect(windows.listener).toBeTypeOf("function");
+    expect(detachedTabs.listener).toBeTypeOf("function");
+    expect(attachedTabs.listener).toBeTypeOf("function");
 
     await messages.emit(
       {
@@ -41,12 +47,16 @@ describe("startBackgroundRuntime", () => {
     expect(messages.remove).toHaveBeenCalledOnce();
     expect(ports.remove).toHaveBeenCalledOnce();
     expect(windows.remove).toHaveBeenCalledOnce();
+    expect(detachedTabs.remove).toHaveBeenCalledOnce();
+    expect(attachedTabs.remove).toHaveBeenCalledOnce();
   });
 
   it("removes only the closed browser window session record", async () => {
     const messages = eventHarness();
     const ports = eventHarness();
     const windows = eventHarness();
+    const detachedTabs = eventHarness();
+    const attachedTabs = eventHarness();
     const storage = memoryStorage();
     await storage.set({
       "browser2ide.windowLink.7": validStoredLink(),
@@ -63,6 +73,8 @@ describe("startBackgroundRuntime", () => {
       subscribeRuntimeMessages: messages.subscribe,
       subscribeRuntimePorts: ports.subscribe,
       subscribeWindowRemoved: windows.subscribe,
+      subscribeTabDetached: detachedTabs.subscribe,
+      subscribeTabAttached: attachedTabs.subscribe,
     });
 
     windows.emit(7);

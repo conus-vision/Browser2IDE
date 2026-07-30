@@ -1,0 +1,599 @@
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { test } from "node:test";
+import { pathToFileURL } from "node:url";
+import * as chromeSmokeModule from "../smoke-packaged-chrome.mjs";
+import {
+  CHROME_ARCHIVE_FILES,
+  assertLinuxGraphicalSession,
+  buildChromeArguments,
+  buildChromeSpawnOptions,
+  chromeExecutableCandidates,
+  findBrowser2IDEServiceWorker,
+  isBrowser2IDEManifest,
+  openCdp,
+  shutdownOwnedChildTree,
+  validatePackagedChromeArchive,
+} from "../smoke-packaged-chrome.mjs";
+
+function createArchive(paths = CHROME_ARCHIVE_FILES) {
+  const files = new Map(paths.map((path) => [path, Buffer.from(path)]));
+  files.set(
+    "manifest.json",
+    Buffer.from(
+      JSON.stringify({
+        name: "Browser2IDE",
+        version: "0.2.0",
+        manifest_version: 3,
+        background: { service_worker: "dist/background.js" },
+      }),
+    ),
+  );
+  return { files, paths: [...paths] };
+}
+
+test("accepts only the exact validated Chrome runtime archive", () => {
+  assert.equal(
+    validatePackagedChromeArchive(createArchive()).name,
+    "Browser2IDE",
+  );
+  assert.throws(
+    () =>
+      validatePackagedChromeArchive(
+        createArchive([...CHROME_ARCHIVE_FILES, "unexpected.txt"]),
+      ),
+    /unexpected archive path unexpected\.txt/,
+  );
+});
+
+test("launch arguments always isolate Chrome in the supplied temporary profile", () => {
+  const profile = "C:\\Temp\\browser2ide-smoke\\profile";
+  const args = buildChromeArguments(profile);
+
+  assert.ok(args.includes(`--user-data-dir=${profile}`));
+  assert.ok(args.includes("--remote-debugging-port=0"));
+  assert.equal(args.some((argument) => argument.startsWith("--profile-directory")), false);
+  assert.equal(args.some((argument) => argument.includes("User Data")), false);
+});
+
+test("Chrome candidates never become relative when environment roots are absent", () => {
+  const candidates = chromeExecutableCandidates("win32", {});
+  assert.deepEqual(candidates, []);
+  assert.deepEqual(chromeExecutableCandidates("linux", {}), [
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+  ]);
+});
+
+test("Linux packaged smoke requires a graphical session or Xvfb", () => {
+  assert.throws(
+    () => assertLinuxGraphicalSession("linux", {}),
+    /graphical session or Xvfb/,
+  );
+  assert.doesNotThrow(() => assertLinuxGraphicalSession("linux", { DISPLAY: ":99" }));
+  assert.doesNotThrow(() =>
+    assertLinuxGraphicalSession("linux", { WAYLAND_DISPLAY: "wayland-0" }),
+  );
+  assert.doesNotThrow(() => assertLinuxGraphicalSession("win32", {}));
+});
+
+test("Chrome spawn owns a POSIX process group without detaching on Windows", () => {
+  assert.equal(buildChromeSpawnOptions("linux").detached, true);
+  assert.equal(buildChromeSpawnOptions("darwin").detached, true);
+  assert.equal(buildChromeSpawnOptions("win32").detached, false);
+});
+
+test("smoke operation preserves primary and cleanup failures in that order", async () => {
+  assert.equal(
+    typeof chromeSmokeModule.runSmokeOperationWithCleanup,
+    "function",
+    "smoke cleanup orchestration must be independently testable",
+  );
+  const primaryError = new Error("primary smoke failure");
+  const cleanupError = new Error("cleanup failure");
+
+  await assert.rejects(
+    chromeSmokeModule.runSmokeOperationWithCleanup(
+      async () => {
+        throw primaryError;
+      },
+      async () => {
+        throw cleanupError;
+      },
+    ),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /smoke failed.*cleanup also failed/i);
+      assert.ok(error.message.includes(primaryError.message));
+      assert.ok(error.message.includes(cleanupError.message));
+      assert.ok(
+        error.message.indexOf(primaryError.message) <
+          error.message.indexOf(cleanupError.message),
+      );
+      assert.deepEqual(error.errors, [primaryError, cleanupError]);
+      return true;
+    },
+  );
+});
+
+test("owned Windows child shutdown escalates to its exact PID tree", async () => {
+  const child = mockRunningChild(4321);
+  const calls = [];
+  let waits = 0;
+  const cdp = {
+    async send(method) {
+      calls.push(["cdp", method]);
+    },
+    close() {
+      calls.push(["cdp-close"]);
+    },
+  };
+
+  await shutdownOwnedChildTree({
+    child,
+    cdp,
+    platform: "win32",
+    timeoutMs: 10,
+    waitForExitFn: async () => {
+      waits += 1;
+      calls.push(["wait", waits]);
+      if (waits === 1) throw new Error("still running");
+      child.exitCode = 0;
+    },
+    spawnSyncFn(command, arguments_, options) {
+      calls.push(["force", command, arguments_, options]);
+      return { status: 0, signal: null, stderr: Buffer.alloc(0) };
+    },
+  });
+
+  assert.deepEqual(calls.slice(0, 4), [
+    ["cdp", "Browser.close"],
+    ["cdp-close"],
+    ["wait", 1],
+    ["force", "taskkill", ["/PID", "4321", "/T", "/F"], {
+      encoding: "utf8",
+      timeout: 10,
+      windowsHide: true,
+    }],
+  ]);
+  assert.deepEqual(calls.at(-1), ["wait", 2]);
+});
+
+test("owned POSIX child shutdown targets only its detached process group", async () => {
+  const child = mockRunningChild(7654);
+  const kills = [];
+  let waits = 0;
+
+  await shutdownOwnedChildTree({
+    child,
+    platform: "linux",
+    timeoutMs: 10,
+    waitForExitFn: async () => {
+      waits += 1;
+      if (waits === 1) throw new Error("still running");
+      child.signalCode = "SIGKILL";
+    },
+    killFn(pid, signal) {
+      kills.push([pid, signal]);
+    },
+  });
+
+  assert.deepEqual(kills, [[-7654, "SIGKILL"]]);
+});
+
+test("owned child shutdown reports a final cleanup failure", async () => {
+  const child = mockRunningChild(2468);
+  await assert.rejects(
+    shutdownOwnedChildTree({
+      child,
+      platform: "win32",
+      timeoutMs: 10,
+      waitForExitFn: async () => {
+        throw new Error("still running");
+      },
+      spawnSyncFn: () => ({ status: 0, signal: null, stderr: Buffer.alloc(0) }),
+    }),
+    /Chrome cleanup failed: owned child tree PID 2468 is still running/,
+  );
+});
+
+test("owned child shutdown detaches surviving child handles before failing", async () => {
+  const child = mockRunningChild(9753);
+  const calls = [];
+  for (const name of ["stdin", "stdout", "stderr"]) {
+    child[name] = {
+      destroy() {
+        calls.push(["destroy", name]);
+      },
+    };
+  }
+  child.unref = () => calls.push(["unref"]);
+
+  await assert.rejects(
+    shutdownOwnedChildTree({
+      child,
+      platform: "win32",
+      timeoutMs: 10,
+      waitForExitFn: async () => {
+        throw new Error("still running");
+      },
+      spawnSyncFn: () => ({ status: 0, signal: null, stderr: Buffer.alloc(0) }),
+    }),
+    /Chrome cleanup failed: owned child tree PID 9753 is still running/,
+  );
+  assert.deepEqual(calls, [
+    ["destroy", "stdin"],
+    ["destroy", "stdout"],
+    ["destroy", "stderr"],
+    ["unref"],
+  ]);
+});
+
+test("surviving owned child cannot keep the smoke parent command alive", {
+  timeout: 10_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "browser2ide-survivor-test-"));
+  const pidFile = join(root, "owned-child.pid");
+  const releaseFile = join(root, "release-owned-child");
+  const moduleUrl = pathToFileURL(
+    resolve("tools/smoke-packaged-chrome.mjs"),
+  ).href;
+  const script = `
+    import { spawn } from "node:child_process";
+    import { writeFileSync } from "node:fs";
+    import { shutdownOwnedChildTree } from ${JSON.stringify(moduleUrl)};
+
+    const fixtureScript = ${JSON.stringify(`
+      const { existsSync } = require("node:fs");
+      const releaseFile = process.argv[1];
+      const poll = setInterval(() => {
+        if (existsSync(releaseFile)) {
+          clearInterval(poll);
+          process.exit(0);
+        }
+      }, 20);
+      setTimeout(() => process.exit(0), 2000);
+    `)};
+    const ownedChild = spawn(
+      process.execPath,
+      ["--eval", fixtureScript, ${JSON.stringify(releaseFile)}],
+      {
+        detached: process.platform !== "win32",
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
+    writeFileSync(${JSON.stringify(pidFile)}, String(ownedChild.pid));
+    try {
+      await shutdownOwnedChildTree({
+        child: ownedChild,
+        platform: process.platform,
+        timeoutMs: 10,
+        waitForExitFn: async () => {
+          throw new Error("fixture deliberately survives");
+        },
+        spawnSyncFn: () => ({
+          status: 0,
+          signal: null,
+          stderr: Buffer.alloc(0),
+        }),
+        killFn: () => {},
+      });
+    } catch (error) {
+      console.error("EXPECTED_OWNED_CHILD_FAILURE " + error.message);
+      process.exitCode = 23;
+    }
+  `;
+  const parent = spawn(
+    process.execPath,
+    ["--input-type=module", "--eval", script],
+    { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+  );
+  let ownedPid;
+
+  try {
+    const result = await waitForSubprocess(parent, 750);
+    ownedPid = await readOwnedPid(pidFile);
+    assert.equal(result.code, 23, result.stderr);
+    assert.match(result.stderr, /EXPECTED_OWNED_CHILD_FAILURE/);
+  } finally {
+    ownedPid ??= await readOwnedPid(pidFile, 500).catch(() => undefined);
+    await writeFile(releaseFile, "release");
+    if (ownedPid) {
+      const fixtureExited = await waitForPidExit(ownedPid, 3_000);
+      if (!fixtureExited) {
+        forceKillExactPid(ownedPid, process.platform !== "win32");
+      }
+      assert.equal(fixtureExited, true, `owned fixture PID ${ownedPid} leaked`);
+    }
+    if (isPidAlive(parent.pid)) {
+      const parentExited = await waitForPidExit(parent.pid, 1_000);
+      if (!parentExited) forceKillExactPid(parent.pid, false);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CDP connection and commands have bounded timeouts", async () => {
+  let unopenedSocket;
+  class UnopenedSocket extends EventTarget {
+    readyState = 0;
+
+    constructor() {
+      super();
+      unopenedSocket = this;
+    }
+
+    close() {
+      this.readyState = 3;
+    }
+  }
+
+  await assert.rejects(
+    openCdp("ws://127.0.0.1:1/devtools/browser/test", {
+      WebSocketClass: UnopenedSocket,
+      timeoutMs: 10,
+    }),
+    /Timed out opening/,
+  );
+  assert.equal(unopenedSocket.readyState, 3);
+
+  class UnresponsiveSocket extends EventTarget {
+    readyState = 0;
+
+    constructor() {
+      super();
+      queueMicrotask(() => {
+        this.readyState = 1;
+        this.dispatchEvent(new Event("open"));
+      });
+    }
+
+    send() {}
+
+    close() {
+      this.readyState = 3;
+      this.dispatchEvent(new Event("close"));
+    }
+  }
+
+  const cdp = await openCdp("ws://127.0.0.1:1/devtools/browser/test", {
+    WebSocketClass: UnresponsiveSocket,
+    timeoutMs: 10,
+  });
+  await assert.rejects(cdp.send("Browser.getVersion"), /timed out/);
+  cdp.close();
+});
+
+test("CDP runtime errors dispose listeners and reject pending requests", async () => {
+  let socket;
+  class TrackingSocket {
+    readyState = 0;
+    closeCalls = 0;
+    listeners = new Map();
+
+    constructor() {
+      socket = this;
+      queueMicrotask(() => {
+        this.readyState = 1;
+        this.emit("open", {});
+      });
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) ?? new Set();
+      listeners.add(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    removeEventListener(type, listener) {
+      this.listeners.get(type)?.delete(listener);
+    }
+
+    emit(type, event) {
+      for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event);
+    }
+
+    send() {}
+
+    close() {
+      this.closeCalls += 1;
+      this.readyState = 3;
+      this.emit("close", {});
+    }
+
+    listenerCount(type) {
+      return this.listeners.get(type)?.size ?? 0;
+    }
+  }
+
+  const cdp = await openCdp("ws://127.0.0.1:1/devtools/browser/test", {
+    WebSocketClass: TrackingSocket,
+    timeoutMs: 50,
+  });
+  const pending = cdp.send("Browser.getVersion");
+  socket.emit("error", {});
+
+  await assert.rejects(pending, /WebSocket error/);
+  await assert.rejects(cdp.send("Target.getTargets"), /WebSocket is not open/);
+  assert.equal(socket.closeCalls, 1);
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.equal(socket.listenerCount("close"), 0);
+  assert.equal(socket.listenerCount("error"), 0);
+  cdp.close();
+  assert.equal(socket.closeCalls, 1);
+});
+
+test("finds the packaged Browser2IDE MV3 service worker", () => {
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const target = findBrowser2IDEServiceWorker([
+    { type: "page", url: "about:blank" },
+    {
+      targetId: "worker-1",
+      type: "service_worker",
+      url: `chrome-extension://${extensionId}/dist/background.js`,
+    },
+  ], extensionId);
+
+  assert.equal(target?.targetId, "worker-1");
+});
+
+test("ignores unrelated workers and non-extension targets", () => {
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  assert.equal(
+    findBrowser2IDEServiceWorker([
+      {
+        targetId: "worker-1",
+        type: "service_worker",
+        url: "https://example.test/service-worker.js",
+      },
+      {
+        targetId: "worker-2",
+        type: "worker",
+        url: `chrome-extension://${extensionId}/dist/background.js`,
+      },
+    ], extensionId),
+    undefined,
+  );
+});
+
+test("rejects ambiguous Browser2IDE service workers", () => {
+  const extensionId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  assert.throws(
+    () =>
+      findBrowser2IDEServiceWorker([
+        {
+          targetId: "worker-1",
+          type: "service_worker",
+          url: `chrome-extension://${extensionId}/dist/background.js`,
+        },
+        {
+          targetId: "worker-2",
+          type: "service_worker",
+          url: `chrome-extension://${extensionId}/dist/background.js`,
+        },
+      ], extensionId),
+    /multiple Browser2IDE service workers/,
+  );
+});
+
+test("recognizes Browser2IDE by the manifest exposed inside its worker", () => {
+  assert.equal(
+    isBrowser2IDEManifest({
+      name: "Browser2IDE",
+      version: "0.2.0",
+      manifest_version: 3,
+      background: { service_worker: "dist/background.js" },
+    }),
+    true,
+  );
+  assert.equal(
+    isBrowser2IDEManifest({
+      name: "Unrelated extension",
+      version: "0.2.0",
+      manifest_version: 3,
+      background: { service_worker: "dist/background.js" },
+    }),
+    false,
+  );
+});
+
+function mockRunningChild(pid) {
+  return Object.assign(new EventEmitter(), {
+    pid,
+    exitCode: null,
+    signalCode: null,
+  });
+}
+
+function waitForSubprocess(child, timeoutMs) {
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  return new Promise((resolve_, reject) => {
+    const finish = (callback) => {
+      clearTimeout(timer);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+      callback();
+    };
+    const onError = (error) => finish(() => reject(error));
+    const onExit = (code, signal) =>
+      finish(() => resolve_({ code, signal, stdout, stderr }));
+    const timer = setTimeout(() => {
+      finish(() =>
+        reject(
+          new Error(
+            `subprocess did not exit within ${timeoutMs}ms\nstdout: ${stdout}\nstderr: ${stderr}`,
+          ),
+        ),
+      );
+    }, timeoutMs);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
+async function readOwnedPid(path, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number(await readFile(path, "utf8"));
+      if (Number.isSafeInteger(pid) && pid > 0) return pid;
+      throw new Error(`fixture wrote invalid PID ${String(pid)}`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve_) => setTimeout(resolve_, 20));
+  }
+  throw new Error("fixture PID was not written in time");
+}
+
+function forceKillExactPid(pid, processGroup) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      encoding: "utf8",
+      timeout: 2_000,
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    process.kill(processGroup ? -pid : pid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
+
+function isPidAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForPidExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) return true;
+    await new Promise((resolve_) => setTimeout(resolve_, 20));
+  }
+  return !isPidAlive(pid);
+}

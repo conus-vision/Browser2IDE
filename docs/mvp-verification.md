@@ -1,13 +1,15 @@
-# Browser2IDE MVP Verification
+# Browser2IDE Development Host Verification
+
+For installation and terminal-free acceptance of packaged release candidates,
+start with the [installed artifact verification guide](installed-verification.md).
 
 This contributor runbook verifies Firefox and Chrome/Chromium against the same
 browser-window linking and document-first source workflow. HTTP serves only the
 fixture and its CSS resources; Browser2IDE product traffic remains WebSocket.
 
-Normal use with installed extensions is terminal-free. This runbook uses an
+Normal use with installed extensions is terminal-free. This contributor runbook uses an
 Extension Development Host and development-loaded browser extensions because
-it tests a source checkout. Plan 3 covers signed and packaged installed
-artifacts.
+it tests a source checkout.
 
 ## Prerequisites
 
@@ -45,6 +47,17 @@ corepack pnpm --filter @browser2ide/browser-extension-core exec vitest run test/
 
 On Windows, an active VS Code installer can temporarily hold the stable-channel
 update mutex. Let the update finish before rerunning the integration suite.
+
+The packaged Chrome artifact smoke is a separate contributor check:
+
+```powershell
+corepack pnpm smoke:chrome-package
+```
+
+On Linux it requires a graphical session or Xvfb. Run it from an existing
+session with `DISPLAY` or `WAYLAND_DISPLAY` set, or use the repository command
+under `xvfb-run -a`. The smoke script refuses to spawn Chrome when neither
+display variable is available.
 
 ## Build The Development Extensions
 

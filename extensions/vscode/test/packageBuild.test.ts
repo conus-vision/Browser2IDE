@@ -1,0 +1,138 @@
+import { execFileSync } from "node:child_process";
+import { builtinModules } from "node:module";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { beforeAll, describe, expect, it } from "vitest";
+
+const extensionRoot = fileURLToPath(new URL("..", import.meta.url));
+const bundleUrl = new URL("../dist/extension.cjs", import.meta.url);
+const metafileUrl = new URL("../dist/extension-meta.json", import.meta.url);
+const wasmUrl = new URL("../dist/mappings.wasm", import.meta.url);
+const sourceWasmUrl = new URL(
+  "../node_modules/source-map/lib/mappings.wasm",
+  import.meta.url,
+);
+const noticesUrl = new URL("../THIRD_PARTY_NOTICES", import.meta.url);
+const vscodeIgnoreUrl = new URL("../.vscodeignore", import.meta.url);
+const builtins = new Set([
+  ...builtinModules,
+  ...builtinModules.map((name) => `node:${name}`),
+]);
+
+beforeAll(() => {
+  execFileSync(process.execPath, ["esbuild.mjs"], {
+    cwd: extensionRoot,
+    stdio: "pipe",
+  });
+});
+
+describe("VS Code package build", () => {
+  it("has no external package requires except vscode", () => {
+    const bundle = readFileSync(bundleUrl, "utf8");
+    const requires = [
+      ...bundle.matchAll(/\brequire\((["'])([^"'./][^"']*)\1\)/g),
+    ].map((match) => match[2]);
+    const externalPackages = [...new Set(requires)]
+      .filter((name) => name !== "vscode" && !builtins.has(name))
+      .sort();
+
+    expect(externalPackages).toEqual([]);
+    expect(requires).toContain("vscode");
+  });
+
+  it("copies the source-map runtime WASM beside the bundle", () => {
+    expect(existsSync(wasmUrl)).toBe(true);
+    if (!existsSync(wasmUrl)) return;
+
+    expect(readFileSync(wasmUrl)).toEqual(readFileSync(sourceWasmUrl));
+  });
+
+  it("covers every bundled third-party package with full notices", () => {
+    expect(existsSync(metafileUrl)).toBe(true);
+    expect(existsSync(noticesUrl)).toBe(true);
+    if (!existsSync(metafileUrl) || !existsSync(noticesUrl)) return;
+
+    const metafile = JSON.parse(readFileSync(metafileUrl, "utf8")) as {
+      inputs: Record<string, unknown>;
+    };
+    const packageRoots = new Map(
+      Object.keys(metafile.inputs)
+        .map(packageFromMetafilePath)
+        .filter((entry): entry is { name: string; root: string } =>
+          entry !== undefined
+        )
+        .map((entry) => [entry.name, entry.root]),
+    );
+    const bundledPackages = [...packageRoots.keys()].sort();
+    const notices = readFileSync(noticesUrl, "utf8");
+    const noticedPackages = [...notices.matchAll(/^## (.+)@[^\r\n]+$/gm)]
+      .map((match) => match[1])
+      .sort();
+
+    expect(noticedPackages).toEqual(bundledPackages);
+    for (const [name, root] of packageRoots) {
+      const manifest = JSON.parse(
+        readFileSync(resolve(root, "package.json"), "utf8"),
+      ) as { version: string };
+      const licenseFile = readdirSync(root)
+        .filter((file) =>
+          /^(?:license|licence|copying)(?:[._-].*)?$/i.test(file)
+        )
+        .sort()[0];
+      expect(licenseFile, `${name} license file`).toBeDefined();
+      if (!licenseFile) continue;
+
+      const licenseText = readFileSync(resolve(root, licenseFile), "utf8")
+        .replaceAll("\r\n", "\n")
+        .trim();
+      const sectionStart = notices.indexOf(
+        `## ${name}@${manifest.version}\n`,
+      );
+      const sectionEnd = notices.indexOf("\n## ", sectionStart + 1);
+      const section = notices.slice(
+        sectionStart,
+        sectionEnd < 0 ? notices.length : sectionEnd,
+      );
+      expect(section, `${name} full license text`).toContain(licenseText);
+    }
+    expect(notices).toMatch(
+      /Runtime asset: dist\/mappings\.wasm \(from source-map@[^)]+\)/,
+    );
+  });
+
+  it("selects runtime assets and excludes package tooling", () => {
+    const patterns = readFileSync(vscodeIgnoreUrl, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean);
+
+    expect(patterns).toContain("!dist/extension.cjs");
+    expect(patterns).toContain("!dist/mappings.wasm");
+    expect(patterns).toContain("package-vsix.mjs");
+    expect(patterns).toContain("verify-vsix.mjs");
+  });
+});
+
+function packageFromMetafilePath(
+  path: string,
+): { name: string; root: string } | undefined {
+  const normalized = path.replaceAll("\\", "/");
+  const marker = "/node_modules/";
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex < 0) return undefined;
+
+  const packagePath = normalized.slice(markerIndex + marker.length).split("/");
+  const packageSegments = packagePath[0]?.startsWith("@")
+    ? packagePath.slice(0, 2).join("/")
+    : packagePath[0];
+  if (!packageSegments) return undefined;
+
+  return {
+    name: packageSegments,
+    root: resolve(
+      extensionRoot,
+      normalized.slice(0, markerIndex + marker.length),
+      packageSegments,
+    ),
+  };
+}

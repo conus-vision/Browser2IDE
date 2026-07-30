@@ -99,6 +99,81 @@ describe("runtime commands", () => {
     expect(harness.manager.stopCalls).toBe(1);
   });
 
+  it("ends running when start immediately follows stop without awaiting it", async () => {
+    const events: string[] = [];
+    const harness = runtimeHarness({ events });
+    await harness.controller.start();
+    const stopGate = harness.manager.deferNextStop();
+
+    const stopping = harness.controller.stop();
+    const restarting = harness.controller.start();
+    await stopGate.started;
+
+    expect(harness.clients).toHaveLength(1);
+    expect(harness.clients[0]?.disposeCalls).toBe(1);
+    stopGate.release();
+    await Promise.all([stopping, restarting]);
+
+    expect(harness.manager.snapshot().state).toBe("running");
+    expect(harness.manager.startCalls).toBe(2);
+    expect(harness.manager.stopCalls).toBe(1);
+    expect(harness.clients).toHaveLength(2);
+    expect(events).toEqual([
+      "manager:start",
+      "client:dispose",
+      "manager:stop:start",
+      "manager:stop",
+      "manager:start",
+    ]);
+  });
+
+  it("runs a queued restart after stop fails", async () => {
+    const harness = runtimeHarness();
+    await harness.controller.start();
+    harness.manager.stopError = new Error("stop failed");
+
+    const stopping = harness.controller.stop();
+    const restarting = harness.controller.start();
+
+    await expect(stopping).rejects.toThrow("stop failed");
+    await expect(restarting).resolves.toBeUndefined();
+    expect(harness.manager.snapshot().state).toBe("running");
+    expect(harness.manager.startCalls).toBe(2);
+    expect(harness.clients).toHaveLength(2);
+    expect(harness.clients[1]?.connectCalls).toBe(1);
+  });
+
+  it("coalesces duplicate stop effects while preserving command order", async () => {
+    const harness = runtimeHarness();
+    await harness.controller.start();
+
+    await Promise.all([harness.controller.stop(), harness.controller.stop()]);
+
+    expect(harness.manager.stopCalls).toBe(1);
+    expect(harness.clients[0]?.disposeCalls).toBe(1);
+    expect(harness.manager.snapshot().state).toBe("stopped");
+  });
+
+  it("disposal suppresses a queued restart and performs one final stop", async () => {
+    const harness = runtimeHarness();
+    await harness.controller.start();
+    const stopGate = harness.manager.deferNextStop();
+
+    const stopping = harness.controller.stop();
+    const restarting = harness.controller.start();
+    const disposing = harness.controller.dispose();
+    await stopGate.started;
+    stopGate.release();
+    await Promise.all([stopping, restarting, disposing]);
+
+    expect(harness.manager.snapshot().state).toBe("stopped");
+    expect(harness.manager.stopCalls).toBe(1);
+    expect(harness.clients).toHaveLength(1);
+    expect(harness.clients[0]?.disposeCalls).toBe(1);
+    expect(harness.manager.subscriptionDisposeCalls).toBe(1);
+    expect(harness.status.disposeCalls).toBe(1);
+  });
+
   it("registers start, stop, and copy commands and reports command failures", async () => {
     const harness = runtimeHarness();
     const callbacks = new Map<string, () => unknown>();
@@ -206,6 +281,9 @@ class FakeRuntimeManager implements RuntimeManagerLike {
   stopCalls = 0;
   subscriptionDisposeCalls = 0;
   startError: Error | undefined;
+  stopError: Error | undefined;
+  private stopGate: Deferred<void> | undefined;
+  private stopStarted: Deferred<void> | undefined;
   private readonly listeners = new Set<(snapshot: ReturnType<FakeRuntimeManager["snapshot"]>) => void>();
 
   constructor(
@@ -215,6 +293,7 @@ class FakeRuntimeManager implements RuntimeManagerLike {
 
   async start(): Promise<void> {
     this.startCalls += 1;
+    this.events.push("manager:start");
     if (this.startError) {
       const error = this.startError;
       this.startError = undefined;
@@ -226,9 +305,28 @@ class FakeRuntimeManager implements RuntimeManagerLike {
 
   async stop(): Promise<void> {
     this.stopCalls += 1;
+    this.events.push("manager:stop:start");
+    this.stopStarted?.resolve();
+    this.stopStarted = undefined;
+    const gate = this.stopGate;
+    this.stopGate = undefined;
+    await gate?.promise;
+    if (this.stopError) {
+      const error = this.stopError;
+      this.stopError = undefined;
+      throw error;
+    }
     this.events.push("manager:stop");
     this.state = "stopped";
     this.emit();
+  }
+
+  deferNextStop(): { readonly started: Promise<void>; release(): void } {
+    const started = deferred<void>();
+    const gate = deferred<void>();
+    this.stopStarted = started;
+    this.stopGate = gate;
+    return { started: started.promise, release: () => gate.resolve() };
   }
 
   snapshot() {
@@ -302,4 +400,17 @@ class FakeRuntimeClient implements RuntimeClientLike {
     this.disposeCalls += 1;
     this.events.push("client:dispose");
   }
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value?: T | PromiseLike<T>): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value?: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise as (value?: T | PromiseLike<T>) => void;
+  });
+  return { promise, resolve };
 }

@@ -1,3 +1,9 @@
+import {
+  isManagedBridgePort,
+  MANAGED_BRIDGE_PORT_END,
+  MANAGED_BRIDGE_PORT_START,
+} from "@browser2ide/protocol";
+
 export interface ParsedLinkCode {
   readonly value: string;
   readonly port: number;
@@ -16,8 +22,10 @@ export function parseLinkCode(value: string): ParsedLinkCode {
   }
 
   const port = Number(match[1]);
-  if (port < 10_000 || port > 65_535) {
-    throw new Error("Link code port must be between 10000 and 65535");
+  if (!isManagedBridgePort(port)) {
+    throw new Error(
+      `Link code port must be between ${MANAGED_BRIDGE_PORT_START} and ${MANAGED_BRIDGE_PORT_END}`,
+    );
   }
 
   const pin = match[2];

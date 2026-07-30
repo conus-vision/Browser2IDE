@@ -1,0 +1,59 @@
+name: Feature request
+description: Suggest an improvement to a Browser2IDE workflow.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: Describe the user problem and workflow before proposing a solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation or difficulty are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow
+      description: Describe the current workflow and who encounters the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_behavior
+    attributes:
+      label: Proposed behavior
+      description: Describe the behavior you would like Browser2IDE to provide.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds or other approaches you considered.
+    validations:
+      required: true
+  - type: dropdown
+    id: api_impact
+    attributes:
+      label: Protocol or plugin API impact
+      description: Would this change Browser2IDE's protocol or public source plugin API?
+      options:
+        - No protocol or plugin API changes
+        - Protocol change
+        - Plugin API change
+        - Both protocol and plugin API changes
+        - Unsure
+    validations:
+      required: true
+  - type: checkboxes
+    id: feature_existing_issues
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched the existing issues and did not find an existing request for this feature.
+          required: true
+    validations:
+      required: true

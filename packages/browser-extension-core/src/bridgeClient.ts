@@ -68,6 +68,18 @@ type ConnectionIntent =
   | { readonly kind: "link"; readonly pin: string }
   | { readonly kind: "credentials"; readonly credentials: BrowserCredentials };
 
+const MAX_RECONNECT_ATTEMPTS = 5;
+const browserRoutingMetadataKeys = new Set([
+  "windowid",
+  "tabid",
+  "browserwindowid",
+  "browsertabid",
+  "inspectedwindowid",
+  "inspectedtabid",
+  "panelwindowid",
+  "paneltabid",
+]);
+
 export class BrowserBridgeClient {
   private readonly socketFactory: (url: string) => BrowserSocket;
   private readonly messageId: () => string;
@@ -81,6 +93,7 @@ export class BrowserBridgeClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempts = 0;
   private reconnectEnabled = false;
+  private credentialsReconnectAllowed = false;
   private authenticated = false;
   private pendingCredentialNotification = false;
   private state: BrowserConnectionState = "disconnected";
@@ -90,13 +103,17 @@ export class BrowserBridgeClient {
       options.socketFactory ?? ((url) => new WebSocket(url) as BrowserSocket);
     this.messageId = options.messageId ?? defaultMessageId;
     this.now = options.now ?? (() => new Date());
-    this.connectionSource = ClientSourceSchema.parse(
+    const connectionSource = ClientSourceSchema.parse(
       options.source ?? {
         role: "browser",
         id: options.sourceId,
         metadata: {},
       },
     );
+    this.connectionSource = {
+      ...connectionSource,
+      metadata: withoutBrowserRoutingMetadata(connectionSource.metadata),
+    };
     this.scheduleTimer = options.setTimeout ?? setTimeout;
     this.cancelTimer = options.clearTimeout ?? clearTimeout;
   }
@@ -126,6 +143,7 @@ export class BrowserBridgeClient {
     this.authenticated = false;
     this.pendingCredentialNotification = false;
     this.reconnectAttempts = 0;
+    this.credentialsReconnectAllowed = false;
     this.setState("disconnected");
   }
 
@@ -154,6 +172,7 @@ export class BrowserBridgeClient {
     ) {
       return false;
     }
+    const safePayload = withoutInternalRoutingMetadata(payload);
     const message = Browser2IdeMessageSchema.safeParse({
       protocolVersion: PROTOCOL_VERSION,
       type: "inspect",
@@ -163,9 +182,9 @@ export class BrowserBridgeClient {
         ...this.connectionSource,
         id: sourceId,
       },
-      targets: payload.targets,
-      context: payload.context,
-      metadata: payload.metadata,
+      targets: safePayload.targets,
+      context: safePayload.context,
+      metadata: safePayload.metadata,
     });
     if (!message.success) {
       this.report(
@@ -197,6 +216,7 @@ export class BrowserBridgeClient {
     this.authenticated = false;
     this.pendingCredentialNotification = false;
     this.reconnectAttempts = 0;
+    this.credentialsReconnectAllowed = intent.kind === "credentials";
     this.reconnectEnabled = true;
     this.openSocket(false);
   }
@@ -282,6 +302,7 @@ export class BrowserBridgeClient {
       };
       this.credentials = credentials;
       this.connectionIntent = { kind: "credentials", credentials };
+      this.credentialsReconnectAllowed = false;
       this.pendingCredentialNotification = true;
       this.sendHello();
       return;
@@ -302,6 +323,7 @@ export class BrowserBridgeClient {
       }
       this.authenticated = true;
       this.reconnectAttempts = 0;
+      this.credentialsReconnectAllowed = true;
       if (this.pendingCredentialNotification) {
         this.pendingCredentialNotification = false;
         this.options.onCredentials?.(this.credentials);
@@ -380,6 +402,7 @@ export class BrowserBridgeClient {
     this.credentials = undefined;
     this.authenticated = false;
     this.pendingCredentialNotification = false;
+    this.credentialsReconnectAllowed = false;
 
     const socket = this.socket;
     this.socket = undefined;
@@ -397,12 +420,31 @@ export class BrowserBridgeClient {
     this.socket = undefined;
     this.authenticated = false;
     this.detach(socket);
-    if (!this.reconnectEnabled || !this.connectionIntent) {
+    const intent = this.connectionIntent;
+    if (!this.reconnectEnabled || !intent) {
       this.setState("disconnected");
+      return;
+    }
+    if (intent.kind === "link" || !this.credentialsReconnectAllowed) {
+      this.stopForProtocolError(
+        new BrowserProtocolError(
+          "link.unreachable",
+          "Link endpoint is unreachable",
+        ),
+      );
       return;
     }
     if (this.options.autoReconnect === false) {
       this.setState("disconnected");
+      return;
+    }
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      this.stopForProtocolError(
+        new BrowserProtocolError(
+          "bridge.offline",
+          "Bridge is offline after reconnect attempts were exhausted",
+        ),
+      );
       return;
     }
 
@@ -429,6 +471,42 @@ export class BrowserBridgeClient {
     socket.onclose = null;
     socket.onerror = null;
   }
+}
+
+export function withoutInternalRoutingMetadata(
+  payload: InspectPayload,
+): InspectPayload {
+  const metadata = { ...payload.metadata };
+  delete metadata.browserWindowId;
+  delete metadata.tabId;
+  return {
+    ...payload,
+    metadata,
+  };
+}
+
+function withoutBrowserRoutingMetadata(
+  metadata: Record<string, unknown>,
+): Record<string, unknown> {
+  return sanitizeBrowserMetadataValue(metadata) as Record<string, unknown>;
+}
+
+function sanitizeBrowserMetadataValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeBrowserMetadataValue);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!browserRoutingMetadataKeys.has(normalizedKey)) {
+      sanitized[key] = sanitizeBrowserMetadataValue(nestedValue);
+    }
+  }
+  return sanitized;
 }
 
 export interface InspectPublisherOptions {

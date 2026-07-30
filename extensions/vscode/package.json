@@ -2,8 +2,23 @@
   "name": "browser2ide-vscode",
   "publisher": "browser2ide",
   "displayName": "Browser2IDE",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
+  "license": "MIT",
+  "repository": "https://github.com/conus-vision/Browser2IDE.git",
+  "homepage": "https://github.com/conus-vision/Browser2IDE#readme",
+  "bugs": "https://github.com/conus-vision/Browser2IDE/issues",
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "browser",
+    "devtools",
+    "css",
+    "scss",
+    "source maps",
+    "websocket"
+  ],
   "type": "module",
   "engines": {
     "vscode": "^1.85.0"
@@ -104,6 +119,9 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "pnpm run build",
+    "package": "node ./package-vsix.mjs",
+    "smoke:vsix": "node ./smoke-installed-vsix.mjs ../../artifacts/browser2ide-vscode-0.2.0.vsix",
     "build": "pnpm run typecheck && node ./esbuild.mjs",
     "test": "pnpm --filter @browser2ide/protocol build && pnpm --filter @browser2ide/bridge build && vitest run --exclude \"test/integration/**\"",
     "test:integration": "pnpm run build && pnpm --filter source-plugin-fixture build && vscode-test --label sourcePluginApi",
@@ -127,6 +145,7 @@
     "@types/ws": "^8.5.12",
     "@vscode/test-cli": "0.0.15",
     "@vscode/test-electron": "3.0.0",
+    "@vscode/vsce": "3.9.2",
     "esbuild": "^0.21.5",
     "mocha": "^11.7.6",
     "vitest": "^2.1.0"

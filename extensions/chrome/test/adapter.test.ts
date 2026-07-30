@@ -11,6 +11,8 @@ const harness = vi.hoisted(() => {
   const runtimeMessage = event();
   const runtimeConnect = event();
   const windowRemoved = event();
+  const tabDetached = event();
+  const tabAttached = event();
   const panelShown = event();
   const runtimePort = {
     name: "browser2ide.devtools.test-channel",
@@ -31,6 +33,8 @@ const harness = vi.hoisted(() => {
     runtimeMessage,
     runtimeConnect,
     windowRemoved,
+    tabDetached,
+    tabAttached,
     panelShown,
     runtimePort,
     browser: {
@@ -44,6 +48,8 @@ const harness = vi.hoisted(() => {
           title: "must not cross the adapter",
         })),
         sendMessage: vi.fn(async (_tabId: number, _message: unknown) => undefined),
+        onDetached: tabDetached,
+        onAttached: tabAttached,
       },
       storage: {
         session: {
@@ -157,13 +163,43 @@ describe("Chrome platform adapters", () => {
     const portListener = vi.fn();
     const removePorts = call(options.subscribeRuntimePorts, portListener);
     const removeWindows = call(options.subscribeWindowRemoved, vi.fn());
+    const detachedListener = vi.fn();
+    const attachedListener = vi.fn();
+    const removeDetached = call(
+      options.subscribeTabDetached,
+      detachedListener,
+    );
+    const removeAttached = call(
+      options.subscribeTabAttached,
+      attachedListener,
+    );
     const wrappedPort = harness.runtimeConnect.addListener.mock.calls[0]?.[0];
     call(wrappedPort, harness.runtimePort);
     expect(portListener).toHaveBeenCalledWith(harness.runtimePort);
+    call(harness.tabDetached.addListener.mock.calls[0]?.[0], 91, {
+      oldWindowId: 17,
+      oldPosition: 2,
+    });
+    call(harness.tabAttached.addListener.mock.calls[0]?.[0], 91, {
+      newWindowId: 23,
+      newPosition: 4,
+    });
+    expect(detachedListener).toHaveBeenCalledWith(91, 17);
+    expect(attachedListener).toHaveBeenCalledWith(91, 23);
     call(removePorts);
     call(removeWindows);
+    call(removeDetached);
+    call(removeAttached);
     expect(harness.runtimeConnect.removeListener).toHaveBeenCalledOnce();
     expect(harness.windowRemoved.removeListener).toHaveBeenCalledOnce();
+    expect(harness.tabDetached.removeListener).toHaveBeenCalledOnce();
+    expect(harness.tabAttached.removeListener).toHaveBeenCalledOnce();
+    expect(harness.tabDetached.removeListener).toHaveBeenCalledWith(
+      harness.tabDetached.addListener.mock.calls[0]?.[0],
+    );
+    expect(harness.tabAttached.removeListener).toHaveBeenCalledWith(
+      harness.tabAttached.addListener.mock.calls[0]?.[0],
+    );
 
     const secret = new Error("secret background stack");
     call(options.onError, secret);

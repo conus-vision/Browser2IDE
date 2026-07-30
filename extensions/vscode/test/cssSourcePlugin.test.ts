@@ -11,6 +11,8 @@ import {
 } from "@browser2ide/protocol";
 import { CssSourcePlugin } from "../src/sourcePlugins/cssSourcePlugin.js";
 import {
+  DOCUMENT_STYLESHEET_CACHE_LIMIT,
+  GENERATED_STYLESHEET_CACHE_LIMIT,
   findMatchingCssRules,
   normalizeSelector,
   StylesheetAstCache,
@@ -896,6 +898,107 @@ describe("CssSourcePlugin", () => {
     )).toEqual([".rule-512"]);
   });
 
+  it("reuses the current generated AST and evicts least-recent history", () => {
+    const ast = new StylesheetAstCache();
+    const firstText = ".first { color: red; }";
+    const currentText = ".current { color: blue; }";
+    const first = ast.parseText("file:///generated/first.css", "css", firstText);
+    const current = ast.parseText(
+      "file:///generated/current.css",
+      "css",
+      currentText,
+    );
+    for (
+      let index = 0;
+      index < GENERATED_STYLESHEET_CACHE_LIMIT - 2;
+      index += 1
+    ) {
+      ast.parseText(
+        `file:///generated/filler-${index}.css`,
+        "css",
+        `.filler-${index} { order: ${index}; }`,
+      );
+    }
+
+    expect(ast.parseText(
+      "file:///generated/current.css",
+      "css",
+      currentText,
+    )).toBe(current);
+    ast.parseText(
+      "file:///generated/overflow.css",
+      "css",
+      ".overflow { display: block; }",
+    );
+
+    expect(ast.parseText(
+      "file:///generated/current.css",
+      "css",
+      currentText,
+    )).toBe(current);
+    expect(ast.parseText(
+      "file:///generated/first.css",
+      "css",
+      firstText,
+    )).not.toBe(first);
+  });
+
+  it("bounds parsed documents while retaining the latest URI version", () => {
+    const ast = new StylesheetAstCache();
+    const firstDocument = document(
+      ".first { color: red; }",
+      1,
+      "file:///workspace/first.css",
+    );
+    const currentV1 = document(
+      ".current { color: blue; }",
+      1,
+      "file:///workspace/current.css",
+    );
+    const currentV2 = document(
+      ".current { color: green; }",
+      2,
+      "file:///workspace/current.css",
+    );
+    const first = ast.parseDocument(firstDocument, "css");
+    const previous = ast.parseDocument(currentV1, "css");
+    const current = ast.parseDocument(currentV2, "css");
+    const generated = ast.parseText(
+      "file:///generated/shared.css",
+      "css",
+      ".generated { display: grid; }",
+    );
+
+    expect(current).not.toBe(previous);
+    expect(ast.parseDocument(currentV2, "css")).toBe(current);
+    for (
+      let index = 0;
+      index < DOCUMENT_STYLESHEET_CACHE_LIMIT - 2;
+      index += 1
+    ) {
+      ast.parseDocument(document(
+        `.document-${index} { order: ${index}; }`,
+        1,
+        `file:///workspace/document-${index}.css`,
+      ), "css");
+    }
+
+    expect(ast.parseDocument(currentV2, "css")).toBe(current);
+    ast.parseDocument(document(
+      ".overflow { display: block; }",
+      1,
+      "file:///workspace/overflow.css",
+    ), "css");
+
+    expect(ast.parseDocument(currentV2, "css")).toBe(current);
+    expect(ast.parseDocument(firstDocument, "css")).not.toBe(first);
+    expect(ast.parseText(
+      "file:///generated/shared.css",
+      "css",
+      ".generated { display: grid; }",
+    )).toBe(generated);
+  });
+
   it("does not match an ambiguous or different active CSS source", async () => {
     const ambiguous = await resolveCss(
       ".card {}",
@@ -1035,10 +1138,14 @@ function cssFact(
   };
 }
 
-function document(text: string, version: number): SourceDocument {
+function document(
+  text: string,
+  version: number,
+  uri = "file:///workspace/dist/app.css",
+): SourceDocument {
   const lines = text.split("\n");
   return {
-    uri: "file:///workspace/dist/app.css",
+    uri,
     languageId: "css",
     version,
     getText: () => text,

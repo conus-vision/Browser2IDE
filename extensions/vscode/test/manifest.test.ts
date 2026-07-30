@@ -6,10 +6,15 @@ describe("VS Code extension manifest", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../package.json", import.meta.url), "utf8"),
     ) as {
+      version: string;
+      license: string;
+      repository: string;
+      private?: boolean;
       type: string;
       main: string;
       activationEvents: string[];
       extensionKind: string[];
+      scripts: Record<string, string>;
       contributes: {
         commands: Array<{ command: string }>;
         configuration: { properties: Record<string, { default: unknown }> };
@@ -28,6 +33,15 @@ describe("VS Code extension manifest", () => {
     expect(manifest.main).toBe("./dist/extension.cjs");
     expect((manifest as { publisher?: string }).publisher).toBe("browser2ide");
     expect(manifest.activationEvents).toContain("onStartupFinished");
+    expect(manifest).toMatchObject({
+      version: "0.2.0",
+      license: "MIT",
+      repository: "https://github.com/conus-vision/Browser2IDE.git",
+      extensionKind: ["ui"],
+    });
+    expect(manifest.private).not.toBe(true);
+    expect(manifest.scripts["vscode:prepublish"]).toBe("pnpm run build");
+    expect(manifest.scripts.package).toBe("node ./package-vsix.mjs");
     expect(manifest.extensionKind).toEqual(["ui"]);
 
     expect(manifest.contributes.commands.map(({ command }) => command)).toEqual([

@@ -8,7 +8,10 @@ export {
   BackgroundInspectCoordinator,
   BackgroundInspectSession,
 } from "./backgroundInspectSession.js";
-export type { BackgroundInspectApi } from "./backgroundInspectSession.js";
+export type {
+  BackgroundInspectApi,
+  BackgroundInspectSessionOutcome,
+} from "./backgroundInspectSession.js";
 export { startBackgroundRuntime } from "./backgroundRuntime.js";
 export type {
   BackgroundRuntime,
@@ -106,6 +109,7 @@ export {
   isValidDevtoolsChannel,
   parseDevtoolsPanelPortName,
   parseInspectControllerCommand,
+  parseInspectPortInvalidated,
   parseInspectPortRequest,
   parseInspectPortResult,
 } from "./inspectPortProtocol.js";
@@ -113,6 +117,7 @@ export type {
   BackgroundInspectPort,
   ContentInspectPort,
   InspectPortEvent,
+  InspectPortInvalidated,
   InspectPortRequest,
   InspectPortResult,
   PanelInspectPort,

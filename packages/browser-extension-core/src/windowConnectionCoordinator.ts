@@ -5,6 +5,7 @@ import {
 import {
   BrowserBridgeClient,
   BrowserProtocolError,
+  withoutInternalRoutingMetadata,
   type BrowserBridgeClientOptions,
   type BrowserConnectionState,
   type BrowserCredentials,
@@ -92,6 +93,7 @@ interface WindowRecord {
 
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 5_000;
+const RECONNECT_MAX_ATTEMPTS = 5;
 const inertRegistrationHandle = Object.freeze({ dispose(): void {} });
 
 export class WindowConnectionCoordinator {
@@ -121,9 +123,11 @@ export class WindowConnectionCoordinator {
     windowId: number,
     code: string,
     source: ClientSource,
+    signal?: AbortSignal,
   ): Promise<void> {
     this.assertActive();
     assertWindowId(windowId);
+    throwIfAborted(signal);
     const parsedCode = parseLinkCode(code);
     const connectionSource = validatedConnectionSource(source);
     const record = this.recordFor(windowId);
@@ -138,7 +142,14 @@ export class WindowConnectionCoordinator {
     this.setState(record, "linking");
 
     try {
-      await this.enqueueStore(windowId, () => this.store.remove(windowId));
+      await waitForAbort(
+        this.enqueueStore(windowId, () => {
+          throwIfAborted(signal);
+          return this.store.remove(windowId);
+        }),
+        signal,
+        () => this.cancelWindowOperation(record, generation),
+      );
     } catch (error) {
       if (this.isCurrent(record, generation)) {
         this.setState(record, "error");
@@ -168,9 +179,13 @@ export class WindowConnectionCoordinator {
     }
   }
 
-  public async unlinkWindow(windowId: number): Promise<void> {
+  public async unlinkWindow(
+    windowId: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
     this.assertActive();
     assertWindowId(windowId);
+    throwIfAborted(signal);
     const record = this.records.get(windowId);
     let generation: number | undefined;
     if (record) {
@@ -185,7 +200,18 @@ export class WindowConnectionCoordinator {
     }
 
     try {
-      await this.enqueueStore(windowId, () => this.store.remove(windowId));
+      await waitForAbort(
+        this.enqueueStore(windowId, () => {
+          throwIfAborted(signal);
+          return this.store.remove(windowId);
+        }),
+        signal,
+        () => {
+          if (record && generation !== undefined) {
+            this.cancelWindowOperation(record, generation);
+          }
+        },
+      );
     } catch (error) {
       if (
         record &&
@@ -248,14 +274,7 @@ export class WindowConnectionCoordinator {
 
     try {
       return record.client.sendInspect(
-        {
-          ...payload,
-          metadata: {
-            ...payload.metadata,
-            browserWindowId: entry.registration.windowId,
-            tabId: entry.registration.tabId,
-          },
-        },
+        withoutInternalRoutingMetadata(payload),
         sourceId,
       );
     } catch {
@@ -517,6 +536,8 @@ export class WindowConnectionCoordinator {
     record.pendingLink = undefined;
     if (record.clientConnected) {
       this.setState(record, "linked");
+    } else if (record.registrations.size > 0) {
+      this.scheduleReconnect(record, generation, token);
     }
   }
 
@@ -550,6 +571,17 @@ export class WindowConnectionCoordinator {
         return;
       case "disconnected":
         record.clientConnected = false;
+        if (record.pendingLink?.kind === "code") {
+          this.stopTerminalAttempt(record, "error");
+          return;
+        }
+        if (
+          record.pendingLink?.kind === "credentials" &&
+          record.credentialsWritePending
+        ) {
+          this.setState(record, "offline");
+          return;
+        }
         if (record.registrations.size > 0 && this.hasReconnectIntent(record)) {
           this.scheduleReconnect(record, generation, token);
         } else {
@@ -595,7 +627,7 @@ export class WindowConnectionCoordinator {
       return;
     }
     if (error.code === "bridge.offline") {
-      this.setState(record, "offline");
+      this.stopStoredReconnect(record);
     }
   }
 
@@ -637,6 +669,10 @@ export class WindowConnectionCoordinator {
     if (!token || !this.canScheduleReconnect(record, generation, token)) {
       return;
     }
+    if (record.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+      this.stopStoredReconnect(record);
+      return;
+    }
 
     this.setState(record, "reconnecting");
     if (!token || !this.canScheduleReconnect(record, generation, token)) {
@@ -654,15 +690,10 @@ export class WindowConnectionCoordinator {
         return;
       }
       const client = record.client;
-      const intent = record.link ??
-        (record.pendingLink?.kind === "credentials"
-          ? record.pendingLink.link
-          : undefined);
+      const intent = record.link;
       try {
         if (intent) {
           client?.connect(credentialsFor(intent));
-        } else if (record.pendingLink?.kind === "code") {
-          client?.link(record.pendingLink.pin);
         }
       } catch {
         this.setState(record, "error");
@@ -790,7 +821,33 @@ export class WindowConnectionCoordinator {
   }
 
   private hasReconnectIntent(record: WindowRecord): boolean {
-    return record.link !== undefined || record.pendingLink !== undefined;
+    return record.link !== undefined;
+  }
+
+  private cancelWindowOperation(
+    record: WindowRecord,
+    generation: number,
+  ): void {
+    if (!this.isCurrent(record, generation)) {
+      return;
+    }
+    this.invalidate(record);
+    this.revokeClient(record);
+    record.link = undefined;
+    record.pendingLink = undefined;
+    record.connectionSource = undefined;
+    record.credentialsWritePending = false;
+    record.reconnectAttempts = 0;
+    this.setState(record, "notLinked");
+  }
+
+  private stopStoredReconnect(record: WindowRecord): void {
+    this.invalidate(record);
+    this.disconnectClient(record);
+    record.pendingLink = undefined;
+    record.credentialsWritePending = false;
+    record.reconnectAttempts = 0;
+    this.setState(record, "offline");
   }
 
   private isCurrent(record: WindowRecord, generation: number): boolean {
@@ -944,4 +1001,47 @@ function safeDisconnect(client: WindowConnectionClient): void {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error("Window connection operation aborted");
+  }
+}
+
+function waitForAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal | undefined,
+  onAbort: () => void,
+): Promise<T> {
+  if (!signal) {
+    return operation;
+  }
+  if (signal.aborted) {
+    onAbort();
+    return Promise.reject(new Error("Window connection operation aborted"));
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", handleAbort);
+      callback();
+    };
+    const handleAbort = (): void => {
+      finish(() => {
+        onAbort();
+        reject(new Error("Window connection operation aborted"));
+      });
+    };
+    signal.addEventListener("abort", handleAbort, { once: true });
+    void operation.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
 }

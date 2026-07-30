@@ -37,6 +37,20 @@ startBackgroundRuntime({
     browser.windows.onRemoved.addListener(listener);
     return () => browser.windows.onRemoved.removeListener(listener);
   },
+  subscribeTabDetached(listener) {
+    const wrapped = (tabId: number, info: TabDetachInfo): void => {
+      listener(tabId, info.oldWindowId);
+    };
+    browser.tabs.onDetached.addListener(wrapped);
+    return () => browser.tabs.onDetached.removeListener(wrapped);
+  },
+  subscribeTabAttached(listener) {
+    const wrapped = (tabId: number, info: TabAttachInfo): void => {
+      listener(tabId, info.newWindowId);
+    };
+    browser.tabs.onAttached.addListener(wrapped);
+    return () => browser.tabs.onAttached.removeListener(wrapped);
+  },
   onError: (error) =>
     console.error("Browser2IDE background:", sanitizeErrorMessage(error)),
 });
@@ -52,6 +66,14 @@ interface FirefoxMessageSender {
 interface FirefoxRuntimePort {
   readonly name: string;
   readonly sender?: FirefoxMessageSender;
+}
+
+interface TabDetachInfo {
+  readonly oldWindowId: number;
+}
+
+interface TabAttachInfo {
+  readonly newWindowId: number;
 }
 
 function adaptSender(sender: FirefoxMessageSender): BackgroundMessageSender {
