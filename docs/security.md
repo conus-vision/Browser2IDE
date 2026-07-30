@@ -34,9 +34,10 @@ the final two digits are that running bridge's PIN.
 
 The browser background owns the mapping. It accepts panel commands only from
 the expected extension page, resolves the sender's tab and window itself, and
-does not trust panel-supplied window or tab identity. One linked browser window
-owns one WebSocket shared by all of its DevTools panels. A different browser
-window starts unlinked and cannot reuse that mapping.
+does not trust panel-supplied window or tab identity. Each linked browser window
+owns one mapping and, while one or more panels are active, at most one active
+WebSocket shared by those panels. A different browser window starts unlinked
+and cannot reuse that mapping.
 
 `Change IDE` and `Unlink` affect only the current browser window. Closing that
 window removes its mapping, credentials, registrations, and socket while other

@@ -194,18 +194,19 @@ Open the extension background tools before closing a window:
 - Chrome: open `chrome://extensions`, find Browser2IDE, and inspect its service
   worker.
 
-In Firefox's background console, list the fixture tabs and session records:
+In Firefox's background console, list the fixture tabs and session-record keys
+only. Do not print record values because they contain the browser auth token:
 
 ```js
 await browser.tabs.query({}).then((tabs) => tabs.map(({ id, windowId, url }) => ({ id, windowId, url })))
-await browser.storage.session.get(null)
+Object.keys(await browser.storage.session.get(null))
 ```
 
 In Chrome's service-worker console, use the corresponding APIs:
 
 ```js
 await chrome.tabs.query({}).then((tabs) => tabs.map(({ id, windowId, url }) => ({ id, windowId, url })))
-await chrome.storage.session.get(null)
+Object.keys(await chrome.storage.session.get(null))
 ```
 
 Use the tab list to record Browser A's and Browser B's numeric window IDs.
@@ -215,21 +216,21 @@ Before cleanup, confirm both exact keys exist:
 
 1. Run `Browser2IDE: Open Diagnostics` in both IDE windows and confirm each has
    one connected browser client.
-2. Close Browser A's entire browser window, then query
-   `browser.storage.session` or `chrome.storage.session` again. Confirm the
-   exact old Browser A key is absent and Browser B's key remains.
+2. Close Browser A's entire browser window, then repeat the corresponding
+   key-only `Object.keys(...)` query. Confirm the exact old Browser A key is
+   absent and Browser B's key remains.
 3. Confirm IDE A now has zero connected browser clients while IDE B still has
    one, and verify Browser B continues routing selections to IDE B.
 4. Open a replacement browser window. Its Browser2IDE panel must start
    `Not linked`, and its new window ID must have no link key.
-5. Before restarting the browser, query session storage once more and record
-   every remaining `browser2ide.windowLink.*` key.
+5. Before restarting the browser, repeat the key-only query and record every
+   remaining `browser2ide.windowLink.*` key.
 6. For Firefox, close all Firefox windows, stop `web-ext`, and rerun the exact
    launch command with the unchanged `$firefoxProfile` and all three profile
    flags. For Chrome, close the complete browser process and reopen the same
    browser profile.
-7. Reopen the extension background tools and query session storage. None of
-   the previously recorded window-link keys may remain, proving credentials
+7. Reopen the extension background tools and repeat the key-only query. None
+   of the previously recorded window-link keys may remain, proving credentials
    were session-only rather than removed by replacing the profile.
 8. Reopen a Browser2IDE panel without linking. It must show `Not linked`,
    Inspect mode must remain off, and no source update may be sent.

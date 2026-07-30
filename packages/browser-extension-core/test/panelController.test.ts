@@ -83,6 +83,8 @@ describe("PanelController", () => {
 
     expect(harness.clipboardReads).toBe(1);
     expect(harness.sent).toEqual([]);
+    expect(harness.inspect.calls).toEqual([]);
+    expect(harness.inspect.enabled).toBe(false);
     expect(harness.view.current.linkInputDisabled).toBe(false);
     expect(harness.view.current.errorText).toBe(
       "Paste the seven-digit code manually",
