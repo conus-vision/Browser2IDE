@@ -47,6 +47,8 @@ const VSIX_ARCHIVE_FILES = [
 ];
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+export const MAX_ARCHIVE_ENTRY_UNCOMPRESSED_BYTES = 8 * 1024 * 1024;
+export const MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES = 32 * 1024 * 1024;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
 
@@ -84,10 +86,13 @@ export function readArchive(path, filename) {
     throw new Error(`${filename} is not a readable ZIP archive: ${error.message}`);
   }
 
+  const entries = zip.getEntries();
+  assertArchiveDeclaredSizes(entries, filename);
+
   const files = new Map();
   const seen = new Set();
   const caseFolded = new Map();
-  for (const entry of zip.getEntries()) {
+  for (const entry of entries) {
     const name = normalizeArchivePath(entry.entryName, filename, entry.isDirectory);
     if (seen.has(name)) {
       throw new Error(`${filename} contains duplicate path ${name}`);
@@ -106,6 +111,38 @@ export function readArchive(path, filename) {
     if (!entry.isDirectory) files.set(name, entry.getData());
   }
   return { files, paths: [...seen].sort(compareAscii), raw };
+}
+
+export function assertArchiveDeclaredSizes(
+  entries,
+  filename,
+  {
+    perEntryBudget = MAX_ARCHIVE_ENTRY_UNCOMPRESSED_BYTES,
+    totalBudget = MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES,
+  } = {},
+) {
+  let total = 0;
+  for (const entry of entries) {
+    const size = entry?.header?.size;
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error(
+        `${filename} entry ${String(entry?.entryName)} has invalid declared uncompressed size`,
+      );
+    }
+    if (size > perEntryBudget) {
+      throw new Error(
+        `${filename} entry ${entry.entryName} declared uncompressed size ${size} exceeds ` +
+        `${perEntryBudget}-byte per-entry limit`,
+      );
+    }
+    if (total > totalBudget - size) {
+      throw new Error(
+        `${filename} total declared uncompressed size exceeds ${totalBudget}-byte limit`,
+      );
+    }
+    total += size;
+  }
+  return total;
 }
 
 export function assertExactArchivePaths(archive, filename, expectedPaths) {

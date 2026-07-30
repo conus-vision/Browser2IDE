@@ -48,6 +48,17 @@ corepack pnpm --filter @browser2ide/browser-extension-core exec vitest run test/
 On Windows, an active VS Code installer can temporarily hold the stable-channel
 update mutex. Let the update finish before rerunning the integration suite.
 
+The packaged Chrome artifact smoke is a separate contributor check:
+
+```powershell
+corepack pnpm smoke:chrome-package
+```
+
+On Linux it requires a graphical session or Xvfb. Run it from an existing
+session with `DISPLAY` or `WAYLAND_DISPLAY` set, or use the repository command
+under `xvfb-run -a`. The smoke script refuses to spawn Chrome when neither
+display variable is available.
+
 ## Build The Development Extensions
 
 Build the workspace once:

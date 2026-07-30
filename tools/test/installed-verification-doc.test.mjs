@@ -34,6 +34,33 @@ test("VSIX verification starts in a dedicated empty VS Code profile", () => {
   assert.match(primaryPath, /Browser2IDE 0\.2\.0 Candidate/);
 });
 
+test("installed verification presents privacy and security before installation", () => {
+  const privacy = primaryPath.indexOf("## Privacy And Security Before Testing");
+  const install = primaryPath.indexOf("## Install VS Code");
+
+  assert.ok(privacy >= 0, "privacy and security section is required");
+  assert.ok(privacy < install, "privacy disclosure must precede installation");
+  assert.match(primaryPath, /loopback\s+WebSocket/);
+  assert.match(primaryPath, /read-only/);
+  assert.match(primaryPath, /`<all_urls>`/);
+  assert.match(primaryPath, /full page URL, including its route/);
+  assert.match(primaryPath, /`data-\*`, `aria-\*`, and `role`/);
+  assert.match(primaryPath, /CSS and development\s+source\s+metadata/);
+  for (const excluded of [
+    "cookies",
+    "headers",
+    "form values",
+    "DOM text",
+    "workspace source text",
+  ]) {
+    assert.match(primaryPath, new RegExp(excluded));
+  }
+  assert.match(primaryPath, /Avoid sensitive or private pages/);
+  assert.match(primaryPath, /third-party source plugins separately/);
+  assert.match(primaryPath, /\.\.\/PRIVACY\.md/);
+  assert.match(primaryPath, /\.\.\/SECURITY\.md/);
+});
+
 test("candidate record distinguishes observed and pending evidence", () => {
   assert.match(verificationRecord, /Observed artifact smoke evidence/);
   assert.match(verificationRecord, /exited with code 0/);
@@ -43,6 +70,10 @@ test("candidate record distinguishes observed and pending evidence", () => {
   assert.match(verificationRecord, /Pending external release evidence/);
   assert.match(verificationRecord, /No signed `0\.2\.0` XPI exists/);
   assert.match(verificationRecord, /no screenshot or GIF is present/i);
+  assert.match(
+    verificationRecord,
+    /Linux[\s\S]*graphical session or Xvfb[\s\S]*DISPLAY[\s\S]*WAYLAND_DISPLAY/,
+  );
 });
 
 test("README points to installed verification without missing media", () => {
@@ -53,4 +84,8 @@ test("README points to installed verification without missing media", () => {
     /^# Browser2IDE Development Host Verification\r?\n/,
   );
   assert.match(developmentGuide, /installed-verification\.md/);
+  assert.match(
+    developmentGuide,
+    /smoke:chrome-package[\s\S]*Linux[\s\S]*Xvfb/,
+  );
 });

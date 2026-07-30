@@ -7,6 +7,9 @@ import AdmZip from "adm-zip";
 import { withTemporaryDirectory } from "./test-helpers.mjs";
 import { createHeadArchiveBuffer } from "../archive-firefox-source.mjs";
 import {
+  MAX_ARCHIVE_ENTRY_UNCOMPRESSED_BYTES,
+  MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES,
+  assertArchiveDeclaredSizes,
   assertExactArchivePaths,
   readArchive,
   readHeadTree,
@@ -15,6 +18,49 @@ import {
 } from "../verify-artifacts.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+test("archive reader rejects a compressed ZIP bomb before extraction", async () => {
+  await withTemporaryDirectory("browser2ide-zip-bomb-", async (directory) => {
+    const path = resolve(directory, "bomb.zip");
+    const payload = Buffer.alloc(MAX_ARCHIVE_ENTRY_UNCOMPRESSED_BYTES + 1, 0x41);
+    const zip = new AdmZip();
+    zip.addFile("LICENSE", payload);
+    const compressed = zip.toBuffer();
+    assert.ok(compressed.length < payload.length / 100);
+    await writeFile(path, compressed);
+
+    assert.throws(
+      () => readArchive(path, "bomb.zip"),
+      /LICENSE declared uncompressed size .* exceeds/,
+    );
+  });
+});
+
+test("declared ZIP sizes must be safe and stay within the total budget", () => {
+  for (const size of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
+    assert.throws(
+      () => assertArchiveDeclaredSizes([
+        { entryName: "LICENSE", header: { size } },
+      ], "unsafe.zip"),
+      /invalid declared uncompressed size/,
+    );
+  }
+  assert.throws(
+    () => assertArchiveDeclaredSizes([
+      {
+        entryName: "first.bin",
+        header: { size: MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES / 2 + 1 },
+      },
+      {
+        entryName: "second.bin",
+        header: { size: MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES / 2 },
+      },
+    ], "total.zip", {
+      perEntryBudget: MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES,
+    }),
+    /total declared uncompressed size exceeds/,
+  );
+});
 
 test("runtime allowlists reject every additional entry", async () => {
   await withTemporaryDirectory("browser2ide-extra-", async (directory) => {

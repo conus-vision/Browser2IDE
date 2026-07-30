@@ -15,6 +15,30 @@ The similarly named Firefox ZIP is an unsigned reproducible-build input. It
 cannot be persistently installed in Firefox Stable and must not be substituted
 for the signed XPI.
 
+## Privacy And Security Before Testing
+
+Browser2IDE is a read-only bridge. Product traffic uses only a loopback
+WebSocket between the explicitly linked browser window and local VS Code; it
+does not use a remote Browser2IDE service. The browser extension requires
+`<all_urls>` so it can inject the bounded inspection content script into the
+page being debugged. Injection occurs only while that tab's Browser2IDE DevTools
+panel is open, its browser window is linked, and Inspect mode is explicitly
+enabled.
+
+The full page URL, including its route, permitted DOM IDs and classes, permitted
+`data-*`, `aria-*`, and `role` names and values, plus CSS and development source
+metadata may be sent to the linked VS Code window. These
+values are bounded but not content-redacted and may contain sensitive
+application data. Browser2IDE does not deliberately read cookies, request or
+response headers, form values, DOM text, or workspace source text.
+
+Avoid sensitive or private pages unless sending those inspection values to the
+linked local VS Code window is acceptable. Trust separately installed
+third-party source plugins separately: they receive the validated selection and
+run as independent VS Code extension code with their own data-handling behavior.
+Read the full [privacy policy](../PRIVACY.md) and
+[security policy](../SECURITY.md) before testing sensitive applications.
+
 Use local VS Code, normal non-private browser windows, and a page from a project
 whose source is open in VS Code. For SCSS verification, the page's generated CSS
 must expose an inline or external source map.
@@ -204,6 +228,11 @@ Observed artifact smoke evidence:
   Browser2IDE 0.2.0 through CDP, observed its MV3 service worker, and emitted
   `PACKAGED_CHROME_MV3_OK Chrome/150.0.7871.187 Browser2IDE 0.2.0
   icjilfeicecacnpghfoikecjojdlconl/dist/background.js`.
+
+On Linux, the packaged Chrome smoke requires a graphical session or Xvfb. The
+script validates that `DISPLAY` or `WAYLAND_DISPLAY` is set before it spawns
+Chrome. This platform requirement does not change the observed Windows result
+above.
 
 The VSIX smoke uses a tiny Extension Development Host only as the test harness;
 Browser2IDE itself is installed from the VSIX under test. The Chrome smoke is

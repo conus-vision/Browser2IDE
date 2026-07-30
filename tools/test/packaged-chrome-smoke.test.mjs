@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import {
   CHROME_ARCHIVE_FILES,
+  assertLinuxGraphicalSession,
   buildChromeArguments,
+  buildChromeSpawnOptions,
   chromeExecutableCandidates,
   findBrowser2IDEServiceWorker,
   isBrowser2IDEManifest,
   openCdp,
+  shutdownOwnedChildTree,
   validatePackagedChromeArchive,
 } from "../smoke-packaged-chrome.mjs";
 
@@ -60,6 +64,105 @@ test("Chrome candidates never become relative when environment roots are absent"
   ]);
 });
 
+test("Linux packaged smoke requires a graphical session or Xvfb", () => {
+  assert.throws(
+    () => assertLinuxGraphicalSession("linux", {}),
+    /graphical session or Xvfb/,
+  );
+  assert.doesNotThrow(() => assertLinuxGraphicalSession("linux", { DISPLAY: ":99" }));
+  assert.doesNotThrow(() =>
+    assertLinuxGraphicalSession("linux", { WAYLAND_DISPLAY: "wayland-0" }),
+  );
+  assert.doesNotThrow(() => assertLinuxGraphicalSession("win32", {}));
+});
+
+test("Chrome spawn owns a POSIX process group without detaching on Windows", () => {
+  assert.equal(buildChromeSpawnOptions("linux").detached, true);
+  assert.equal(buildChromeSpawnOptions("darwin").detached, true);
+  assert.equal(buildChromeSpawnOptions("win32").detached, false);
+});
+
+test("owned Windows child shutdown escalates to its exact PID tree", async () => {
+  const child = mockRunningChild(4321);
+  const calls = [];
+  let waits = 0;
+  const cdp = {
+    async send(method) {
+      calls.push(["cdp", method]);
+    },
+    close() {
+      calls.push(["cdp-close"]);
+    },
+  };
+
+  await shutdownOwnedChildTree({
+    child,
+    cdp,
+    platform: "win32",
+    timeoutMs: 10,
+    waitForExitFn: async () => {
+      waits += 1;
+      calls.push(["wait", waits]);
+      if (waits === 1) throw new Error("still running");
+      child.exitCode = 0;
+    },
+    spawnSyncFn(command, arguments_, options) {
+      calls.push(["force", command, arguments_, options]);
+      return { status: 0, signal: null, stderr: Buffer.alloc(0) };
+    },
+  });
+
+  assert.deepEqual(calls.slice(0, 4), [
+    ["cdp", "Browser.close"],
+    ["cdp-close"],
+    ["wait", 1],
+    ["force", "taskkill", ["/PID", "4321", "/T", "/F"], {
+      encoding: "utf8",
+      timeout: 10,
+      windowsHide: true,
+    }],
+  ]);
+  assert.deepEqual(calls.at(-1), ["wait", 2]);
+});
+
+test("owned POSIX child shutdown targets only its detached process group", async () => {
+  const child = mockRunningChild(7654);
+  const kills = [];
+  let waits = 0;
+
+  await shutdownOwnedChildTree({
+    child,
+    platform: "linux",
+    timeoutMs: 10,
+    waitForExitFn: async () => {
+      waits += 1;
+      if (waits === 1) throw new Error("still running");
+      child.signalCode = "SIGKILL";
+    },
+    killFn(pid, signal) {
+      kills.push([pid, signal]);
+    },
+  });
+
+  assert.deepEqual(kills, [[-7654, "SIGKILL"]]);
+});
+
+test("owned child shutdown reports a final cleanup failure", async () => {
+  const child = mockRunningChild(2468);
+  await assert.rejects(
+    shutdownOwnedChildTree({
+      child,
+      platform: "win32",
+      timeoutMs: 10,
+      waitForExitFn: async () => {
+        throw new Error("still running");
+      },
+      spawnSyncFn: () => ({ status: 0, signal: null, stderr: Buffer.alloc(0) }),
+    }),
+    /Chrome cleanup failed: owned child tree PID 2468 is still running/,
+  );
+});
+
 test("CDP connection and commands have bounded timeouts", async () => {
   let unopenedSocket;
   class UnopenedSocket extends EventTarget {
@@ -109,6 +212,65 @@ test("CDP connection and commands have bounded timeouts", async () => {
   });
   await assert.rejects(cdp.send("Browser.getVersion"), /timed out/);
   cdp.close();
+});
+
+test("CDP runtime errors dispose listeners and reject pending requests", async () => {
+  let socket;
+  class TrackingSocket {
+    readyState = 0;
+    closeCalls = 0;
+    listeners = new Map();
+
+    constructor() {
+      socket = this;
+      queueMicrotask(() => {
+        this.readyState = 1;
+        this.emit("open", {});
+      });
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) ?? new Set();
+      listeners.add(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    removeEventListener(type, listener) {
+      this.listeners.get(type)?.delete(listener);
+    }
+
+    emit(type, event) {
+      for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event);
+    }
+
+    send() {}
+
+    close() {
+      this.closeCalls += 1;
+      this.readyState = 3;
+      this.emit("close", {});
+    }
+
+    listenerCount(type) {
+      return this.listeners.get(type)?.size ?? 0;
+    }
+  }
+
+  const cdp = await openCdp("ws://127.0.0.1:1/devtools/browser/test", {
+    WebSocketClass: TrackingSocket,
+    timeoutMs: 50,
+  });
+  const pending = cdp.send("Browser.getVersion");
+  socket.emit("error", {});
+
+  await assert.rejects(pending, /WebSocket error/);
+  await assert.rejects(cdp.send("Target.getTargets"), /WebSocket is not open/);
+  assert.equal(socket.closeCalls, 1);
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.equal(socket.listenerCount("close"), 0);
+  assert.equal(socket.listenerCount("error"), 0);
+  cdp.close();
+  assert.equal(socket.closeCalls, 1);
 });
 
 test("finds the packaged Browser2IDE MV3 service worker", () => {
@@ -184,3 +346,11 @@ test("recognizes Browser2IDE by the manifest exposed inside its worker", () => {
     false,
   );
 });
+
+function mockRunningChild(pid) {
+  return Object.assign(new EventEmitter(), {
+    pid,
+    exitCode: null,
+    signalCode: null,
+  });
+}

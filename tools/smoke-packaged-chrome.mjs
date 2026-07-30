@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -83,6 +83,30 @@ export function buildChromeArguments(profileDirectory) {
   ];
 }
 
+export function buildChromeSpawnOptions(platform = process.platform) {
+  return {
+    stdio: ["ignore", "ignore", "pipe"],
+    windowsHide: true,
+    detached: platform !== "win32",
+  };
+}
+
+export function assertLinuxGraphicalSession(
+  platform = process.platform,
+  environment = process.env,
+) {
+  if (
+    platform === "linux" &&
+    !environment.DISPLAY?.trim() &&
+    !environment.WAYLAND_DISPLAY?.trim()
+  ) {
+    throw new Error(
+      "Packaged Chrome smoke on Linux requires a graphical session or Xvfb " +
+      "with DISPLAY or WAYLAND_DISPLAY set",
+    );
+  }
+}
+
 export function chromeExecutableCandidates(platform, environment) {
   const override = environment.CHROME_EXECUTABLE_PATH?.trim();
   if (override) {
@@ -121,6 +145,7 @@ export async function smokePackagedChrome(artifactArgument) {
   await access(artifactPath);
   const archive = readArchive(artifactPath, "packaged Chrome smoke artifact");
   const manifest = validatePackagedChromeArchive(archive);
+  assertLinuxGraphicalSession();
 
   let smokeRoot;
   let chrome;
@@ -141,7 +166,7 @@ export async function smokePackagedChrome(artifactArgument) {
     chrome = spawn(
       executable,
       buildChromeArguments(profileDirectory),
-      { stdio: ["ignore", "ignore", "pipe"], windowsHide: true },
+      buildChromeSpawnOptions(),
     );
     chrome.once("error", (error) => {
       spawnError = error;
@@ -194,30 +219,97 @@ export async function smokePackagedChrome(artifactArgument) {
     }
     throw error;
   } finally {
-    if (cdp) {
-      try {
-        await cdp.send("Browser.close");
-      } catch {
-        // Chrome may close the socket before acknowledging Browser.close.
+    let cleanupError;
+    try {
+      await shutdownOwnedChildTree({ child: chrome, cdp });
+    } catch (error) {
+      cleanupError = error;
+    }
+    try {
+      if (smokeRoot) {
+        await rm(smokeRoot, {
+          recursive: true,
+          force: true,
+          maxRetries: 8,
+          retryDelay: 100,
+        });
       }
+    } catch (error) {
+      if (!cleanupError) cleanupError = error;
+    }
+    if (cleanupError) throw cleanupError;
+  }
+}
+
+export async function shutdownOwnedChildTree({
+  child,
+  cdp,
+  platform = process.platform,
+  timeoutMs = STOP_TIMEOUT_MS,
+  waitForExitFn = waitForExit,
+  spawnSyncFn = spawnSync,
+  killFn = process.kill,
+}) {
+  if (cdp) {
+    try {
+      await withTimeout(
+        Promise.resolve().then(() => cdp.send("Browser.close")),
+        timeoutMs,
+        "Browser.close timed out",
+      );
+    } catch {
+      // A closed CDP socket is expected when Chrome accepts Browser.close.
+    } finally {
       cdp.close();
     }
-    if (chrome && isChildRunning(chrome)) {
-      try {
-        await waitForExit(chrome, STOP_TIMEOUT_MS);
-      } catch {
-        chrome.kill();
-        await waitForExit(chrome, STOP_TIMEOUT_MS).catch(() => undefined);
+  }
+  if (!child || !isChildRunning(child)) return;
+
+  try {
+    await waitForExitFn(child, timeoutMs);
+    if (!isChildRunning(child)) return;
+  } catch {
+    if (!isChildRunning(child)) return;
+  }
+
+  const pid = child.pid;
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error("Chrome cleanup failed: owned child has an invalid PID");
+  }
+
+  let forceError;
+  try {
+    if (platform === "win32") {
+      const result = spawnSyncFn(
+        "taskkill",
+        ["/PID", String(pid), "/T", "/F"],
+        { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
+      );
+      if (result.error) throw result.error;
+      if (result.status !== 0) {
+        throw new Error(
+          `taskkill exited with ${String(result.status)}: ${String(result.stderr).trim()}`,
+        );
       }
+    } else {
+      killFn(-pid, "SIGKILL");
     }
-    if (smokeRoot) {
-      await rm(smokeRoot, {
-        recursive: true,
-        force: true,
-        maxRetries: 8,
-        retryDelay: 100,
-      });
-    }
+  } catch (error) {
+    forceError = error;
+  }
+
+  try {
+    await waitForExitFn(child, timeoutMs);
+  } catch {
+    // The running-state check below decides whether cleanup actually failed.
+  }
+  if (isChildRunning(child)) {
+    const forceDetails = forceError instanceof Error
+      ? `; force-stop error: ${forceError.message}`
+      : "";
+    throw new Error(
+      `Chrome cleanup failed: owned child tree PID ${pid} is still running${forceDetails}`,
+    );
   }
 }
 
@@ -294,10 +386,13 @@ export async function openCdp(
       callback();
     };
     const onOpen = () => finish(resolve_);
-    const onError = () => finish(() => reject(new Error("CDP WebSocket failed to open")));
+    const onError = () => finish(() => {
+      closeSocketSafely(socket);
+      reject(new Error("CDP WebSocket failed to open"));
+    });
     timer = setTimeout(() => {
       finish(() => {
-        socket.close();
+        closeSocketSafely(socket);
         reject(new Error("Timed out opening the CDP WebSocket"));
       });
     }, timeoutMs);
@@ -305,7 +400,7 @@ export async function openCdp(
     socket.addEventListener("error", onError);
   });
   let nextId = 0;
-  let closed = false;
+  let disposed = false;
   const pending = new Map();
   const rejectPending = (message) => {
     for (const { method, reject, timer } of pending.values()) {
@@ -314,13 +409,24 @@ export async function openCdp(
     }
     pending.clear();
   };
-  socket.addEventListener("message", (event) => {
+  const removeRuntimeListeners = () => {
+    socket.removeEventListener("message", onMessage);
+    socket.removeEventListener("close", onClose);
+    socket.removeEventListener("error", onRuntimeError);
+  };
+  const dispose = (reason, closeSocket = true) => {
+    if (disposed) return;
+    disposed = true;
+    removeRuntimeListeners();
+    rejectPending(reason);
+    if (closeSocket) closeSocketSafely(socket);
+  };
+  const onMessage = (event) => {
     let message;
     try {
       message = JSON.parse(String(event.data));
     } catch {
-      rejectPending("received invalid JSON");
-      socket.close();
+      dispose("received invalid JSON");
       return;
     }
     const request = pending.get(message.id);
@@ -332,20 +438,16 @@ export async function openCdp(
     } else {
       request.resolve(message.result ?? {});
     }
-  });
-  socket.addEventListener("close", () => {
-    closed = true;
-    rejectPending("WebSocket closed");
-  });
-  socket.addEventListener("error", () => rejectPending("WebSocket error"));
+  };
+  const onClose = () => dispose("WebSocket closed", false);
+  const onRuntimeError = () => dispose("WebSocket error");
+  socket.addEventListener("message", onMessage);
+  socket.addEventListener("close", onClose);
+  socket.addEventListener("error", onRuntimeError);
   return {
-    close: () => {
-      closed = true;
-      rejectPending("client closed");
-      if (socket.readyState < 2) socket.close();
-    },
+    close: () => dispose("client closed"),
     send(method, params = {}, sessionId) {
-      if (closed || socket.readyState !== 1) {
+      if (disposed || socket.readyState !== 1) {
         return Promise.reject(new Error(`CDP ${method}: WebSocket is not open`));
       }
       const id = ++nextId;
@@ -367,6 +469,25 @@ export async function openCdp(
       });
     },
   };
+}
+
+function closeSocketSafely(socket) {
+  if (socket.readyState >= 2) return;
+  try {
+    socket.close();
+  } catch {
+    // Cleanup must remain idempotent even when the socket implementation throws.
+  }
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function waitForExit(process_, timeout) {
