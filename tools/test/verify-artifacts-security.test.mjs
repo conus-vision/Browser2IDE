@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import AdmZip from "adm-zip";
 import { withTemporaryDirectory } from "./test-helpers.mjs";
+import { createHeadArchiveBuffer } from "../archive-firefox-source.mjs";
 import {
   assertExactArchivePaths,
   readArchive,
   readHeadTree,
+  verifySourceArchiveIdentity,
   verifySourceAgainstHead,
 } from "../verify-artifacts.mjs";
 
@@ -166,20 +167,47 @@ test("source verification rejects symlink submodule and unsupported HEAD modes",
 test("source verification matches a real git archive of the linked worktree HEAD", async () => {
   await withTemporaryDirectory("browser2ide-head-", async (directory) => {
     const archivePath = resolve(directory, "head.zip");
-    runGit([
-      "archive",
-      "--format=zip",
-      `--output=${portablePath(archivePath)}`,
-      "HEAD",
-    ]);
+    await writeFile(archivePath, createHeadArchiveBuffer(repositoryRoot));
 
     const head = readHeadTree(repositoryRoot);
+    const archive = readArchive(archivePath, "head.zip");
     await verifySourceAgainstHead(
-      readArchive(archivePath, "head.zip"),
+      archive,
       "head.zip",
       head,
     );
+    verifySourceArchiveIdentity(archive, "head.zip", repositoryRoot);
     assert.ok(head.size > 100);
+  });
+});
+
+test("source identity rejects an executable-mode-only ZIP metadata change", async () => {
+  await withTemporaryDirectory("browser2ide-mode-", async (directory) => {
+    const originalPath = resolve(directory, "original.zip");
+    const changedPath = resolve(directory, "changed.zip");
+    const original = createHeadArchiveBuffer(repositoryRoot);
+    const changed = changeCentralDirectoryMode(original, "README.md", 0o100755);
+    await writeFile(originalPath, original);
+    await writeFile(changedPath, changed);
+
+    const originalArchive = readArchive(originalPath, "original.zip");
+    const changedArchive = readArchive(changedPath, "changed.zip");
+    const head = readHeadTree(repositoryRoot);
+    assert.equal(head.get("README.md")?.mode, "100644");
+    assert.deepEqual(changedArchive.paths, originalArchive.paths);
+    for (const [path, content] of originalArchive.files) {
+      assert.ok(changedArchive.files.get(path).equals(content), path);
+    }
+    await verifySourceAgainstHead(
+      changedArchive,
+      "changed.zip",
+      head,
+      (_object, path) => originalArchive.files.get(path),
+    );
+    assert.throws(
+      () => verifySourceArchiveIdentity(changedArchive, "changed.zip", repositoryRoot),
+      /not byte-for-byte identical to git archive HEAD/,
+    );
   });
 });
 
@@ -207,23 +235,24 @@ function replaceZipEntryName(buffer, source, replacement) {
   return result;
 }
 
-function runGit(arguments_) {
-  const result = spawnSync(
-    "git",
-    [
-      "-c",
-      `safe.directory=${portablePath(repositoryRoot)}`,
-      "-c",
-      "core.autocrlf=false",
-      "-C",
-      portablePath(repositoryRoot),
-      ...arguments_,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(result.status, 0, result.stderr);
-}
-
-function portablePath(path) {
-  return resolve(path).replaceAll("\\", "/");
+function changeCentralDirectoryMode(buffer, targetPath, mode) {
+  const result = Buffer.from(buffer);
+  const signature = 0x02014b50;
+  for (let offset = 0; offset <= result.length - 46;) {
+    if (result.readUInt32LE(offset) !== signature) {
+      offset += 1;
+      continue;
+    }
+    const filenameLength = result.readUInt16LE(offset + 28);
+    const extraLength = result.readUInt16LE(offset + 30);
+    const commentLength = result.readUInt16LE(offset + 32);
+    const filename = result.subarray(offset + 46, offset + 46 + filenameLength).toString("utf8");
+    if (filename === targetPath) {
+      result.writeUInt16LE((3 << 8) | 20, offset + 4);
+      result.writeUInt32LE((mode << 16) >>> 0, offset + 38);
+      return result;
+    }
+    offset += 46 + filenameLength + extraLength + commentLength;
+  }
+  throw new Error(`Central directory entry not found: ${targetPath}`);
 }

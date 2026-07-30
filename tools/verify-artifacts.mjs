@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
 import { builtinModules, createRequire } from "node:module";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
+import { createHeadArchiveBuffer } from "./archive-firefox-source.mjs";
 import {
   assertTextEqual,
   assertVersion,
@@ -44,6 +46,7 @@ const VSIX_ARCHIVE_FILES = [
   "extension/resources/browser2ide.svg",
 ];
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
 
@@ -66,9 +69,17 @@ export async function verifyArtifacts(arguments_) {
 }
 
 export function readArchive(path, filename) {
+  let raw;
   let zip;
   try {
-    zip = new AdmZip(path);
+    const size = statSync(path).size;
+    if (size > MAX_ARCHIVE_BYTES) {
+      throw new Error(
+        `${filename} exceeds the ${MAX_ARCHIVE_BYTES}-byte verification limit`,
+      );
+    }
+    raw = readFileSync(path);
+    zip = new AdmZip(raw);
   } catch (error) {
     throw new Error(`${filename} is not a readable ZIP archive: ${error.message}`);
   }
@@ -94,7 +105,7 @@ export function readArchive(path, filename) {
     caseFolded.set(folded, name);
     if (!entry.isDirectory) files.set(name, entry.getData());
   }
-  return { files, paths: [...seen].sort(compareAscii) };
+  return { files, paths: [...seen].sort(compareAscii), raw };
 }
 
 export function assertExactArchivePaths(archive, filename, expectedPaths) {
@@ -168,6 +179,19 @@ export async function verifySourceAgainstHead(
     if (!actual?.equals(expected)) {
       throw new Error(`${filename} differs from HEAD blob ${path}`);
     }
+  }
+}
+
+export function verifySourceArchiveIdentity(
+  archive,
+  filename,
+  root = repositoryRoot,
+) {
+  const expected = createHeadArchiveBuffer(root);
+  if (!archive.raw.equals(expected)) {
+    throw new Error(
+      `${filename} is not byte-for-byte identical to git archive HEAD`,
+    );
   }
 }
 
@@ -319,6 +343,7 @@ async function verifyVsix(archive, filename) {
 
 async function verifySource(archive, filename) {
   await verifySourceAgainstHead(archive, filename, readHeadTree(repositoryRoot));
+  verifySourceArchiveIdentity(archive, filename, repositoryRoot);
   assertProjectLicense(archive, filename, "LICENSE");
 
   const rootManifest = parseJsonFile(archive, filename, "package.json");

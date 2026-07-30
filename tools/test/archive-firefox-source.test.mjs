@@ -6,7 +6,6 @@ test("source archive scopes Git safe.directory to the current repository", () =>
   assert.deepEqual(
     archiveArguments(
       "F:\\repo\\browser2ide",
-      "F:\\repo\\browser2ide\\artifacts\\source.zip",
     ),
     [
       "-c",
@@ -15,7 +14,6 @@ test("source archive scopes Git safe.directory to the current repository", () =>
       "core.autocrlf=false",
       "archive",
       "--format=zip",
-      "--output=F:/repo/browser2ide/artifacts/source.zip",
       "HEAD",
     ],
   );
