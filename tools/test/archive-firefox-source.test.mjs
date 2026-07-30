@@ -11,6 +11,8 @@ test("source archive scopes Git safe.directory to the current repository", () =>
     [
       "-c",
       "safe.directory=F:/repo/browser2ide",
+      "-c",
+      "core.autocrlf=false",
       "archive",
       "--format=zip",
       "--output=F:/repo/browser2ide/artifacts/source.zip",

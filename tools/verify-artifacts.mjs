@@ -1,11 +1,12 @@
+import { spawnSync } from "node:child_process";
 import { builtinModules, createRequire } from "node:module";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
 import {
-  assertVersion,
   assertTextEqual,
+  assertVersion,
   compareAscii,
   normalizeArchivePath,
   rejectSensitivePath,
@@ -18,7 +19,7 @@ const EXPECTED_ARTIFACTS = new Map([
   [`browser2ide-firefox-${VERSION}.zip`, "firefox"],
   [`browser2ide-firefox-source-${VERSION}.zip`, "firefox-source"],
 ]);
-const REQUIRED_BROWSER_FILES = [
+const BROWSER_ARCHIVE_FILES = [
   "LICENSE",
   "THIRD_PARTY_NOTICES",
   "manifest.json",
@@ -31,7 +32,7 @@ const REQUIRED_BROWSER_FILES = [
   "dist/panel.html",
   "dist/panel.js",
 ];
-const REQUIRED_VSIX_FILES = [
+const VSIX_ARCHIVE_FILES = [
   "[Content_Types].xml",
   "extension.vsixmanifest",
   "extension/LICENSE.txt",
@@ -42,53 +43,12 @@ const REQUIRED_VSIX_FILES = [
   "extension/readme.md",
   "extension/resources/browser2ide.svg",
 ];
-const REQUIRED_SOURCE_FILES = [
-  "LICENSE",
-  "package.json",
-  "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
-  "tsconfig.base.json",
-  "docs/firefox-source-submission.md",
-  "extensions/firefox/esbuild.mjs",
-  "extensions/firefox/manifest.json",
-  "extensions/firefox/package.json",
-  "extensions/firefox/tsconfig.json",
-  "extensions/firefox/src/background.ts",
-  "extensions/firefox/src/contentScript.ts",
-  "extensions/firefox/src/devtools.html",
-  "extensions/firefox/src/devtools.ts",
-  "extensions/firefox/src/panel.ts",
-  "packages/browser-extension-core/assets/browser2ide.svg",
-  "packages/browser-extension-core/assets/panel.css",
-  "packages/browser-extension-core/assets/panel.html",
-  "packages/browser-extension-core/package.json",
-  "packages/browser-extension-core/tsconfig.json",
-  "packages/browser-extension-core/src/index.ts",
-  "packages/browser-extension-core/src/backgroundRuntime.ts",
-  "packages/browser-extension-core/src/contentScriptRuntime.ts",
-  "packages/browser-extension-core/src/devtoolsRuntime.ts",
-  "packages/browser-extension-core/src/panelRuntime.ts",
-  "packages/protocol/package.json",
-  "packages/protocol/tsconfig.json",
-  "packages/protocol/src/capabilities.ts",
-  "packages/protocol/src/index.ts",
-  "packages/protocol/src/json.ts",
-  "packages/protocol/src/limits.ts",
-  "packages/protocol/src/messages.ts",
-  "packages/protocol/src/references.ts",
-  "packages/protocol/src/schema.ts",
-  "tools/archive-firefox-source.mjs",
-  "tools/browser-bundle-notices.mjs",
-  "tools/normalize-browser-archive.mjs",
-  "tools/release-policy.mjs",
-  "tools/verify-artifacts.mjs",
-  "tools/write-checksums.mjs",
-];
+const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const projectLicense = await readFile(resolve(repositoryRoot, "LICENSE"));
 
-try {
-  const artifacts = await collectArtifacts(process.argv.slice(2));
+export async function verifyArtifacts(arguments_) {
+  const artifacts = await collectArtifacts(arguments_);
   const missing = [...EXPECTED_ARTIFACTS.keys()].filter(
     (filename) => !artifacts.has(filename),
   );
@@ -103,9 +63,112 @@ try {
     else await verifyBrowser(archive, filename, kind);
     console.log(`Verified ${filename} (${archive.files.size} files)`);
   }
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+}
+
+export function readArchive(path, filename) {
+  let zip;
+  try {
+    zip = new AdmZip(path);
+  } catch (error) {
+    throw new Error(`${filename} is not a readable ZIP archive: ${error.message}`);
+  }
+
+  const files = new Map();
+  const seen = new Set();
+  const caseFolded = new Map();
+  for (const entry of zip.getEntries()) {
+    const name = normalizeArchivePath(entry.entryName, filename, entry.isDirectory);
+    if (seen.has(name)) {
+      throw new Error(`${filename} contains duplicate path ${name}`);
+    }
+    const folded = name.toLowerCase();
+    const existing = caseFolded.get(folded);
+    if (existing !== undefined && existing !== name) {
+      throw new Error(
+        `${filename} contains case-insensitive path collision: ${existing} and ${name}`,
+      );
+    }
+    rejectZipSymlink(entry, name, filename);
+    rejectSensitivePath(name, filename);
+    seen.add(name);
+    caseFolded.set(folded, name);
+    if (!entry.isDirectory) files.set(name, entry.getData());
+  }
+  return { files, paths: [...seen].sort(compareAscii) };
+}
+
+export function assertExactArchivePaths(archive, filename, expectedPaths) {
+  const expected = new Set(expectedPaths);
+  for (const path of [...expected].sort(compareAscii)) {
+    if (!archive.paths.includes(path)) {
+      throw new Error(`${filename} is missing archive path ${path}`);
+    }
+  }
+  for (const path of archive.paths) {
+    if (!expected.has(path)) {
+      throw new Error(`${filename} contains unexpected archive path ${path}`);
+    }
+  }
+  if (archive.paths.length !== expected.size) {
+    throw new Error(`${filename} archive path set is not exact`);
+  }
+}
+
+export function readHeadTree(root = repositoryRoot) {
+  const output = runGit(root, ["ls-tree", "-rz", "--full-tree", "HEAD"]);
+  const tree = new Map();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  for (const record of splitNullTerminated(output)) {
+    const tab = record.indexOf(0x09);
+    if (tab < 0) throw new Error("git ls-tree returned a malformed record");
+    const metadata = record.subarray(0, tab).toString("ascii");
+    const match = /^(\d{6}) ([a-z]+) ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(metadata);
+    if (!match) throw new Error(`git ls-tree returned malformed metadata: ${metadata}`);
+    let path;
+    try {
+      path = decoder.decode(record.subarray(tab + 1));
+    } catch {
+      throw new Error("HEAD contains a path that is not valid UTF-8");
+    }
+    if (tree.has(path)) throw new Error(`HEAD contains duplicate path ${path}`);
+    tree.set(path, { mode: match[1], type: match[2], object: match[3] });
+  }
+  return tree;
+}
+
+export async function verifySourceAgainstHead(
+  archive,
+  filename,
+  head,
+  blobReader,
+) {
+  const folded = new Map();
+  for (const [path, entry] of head) {
+    if (!REGULAR_GIT_MODES.has(entry.mode) || entry.type !== "blob") {
+      throw new Error(
+        `${filename} has unsupported HEAD entry mode ${entry.mode} (${entry.type}) at ${path}`,
+      );
+    }
+    const key = path.toLowerCase();
+    const existing = folded.get(key);
+    if (existing !== undefined && existing !== path) {
+      throw new Error(`HEAD contains case-insensitive path collision: ${existing} and ${path}`);
+    }
+    folded.set(key, path);
+  }
+
+  assertExactArchivePaths(archive, filename, expectedGitArchivePaths(head.keys()));
+  const readBlob = blobReader ?? ((object) => readHeadBlob(repositoryRoot, object));
+  for (const [path, entry] of head) {
+    const expected = await readBlob(entry.object, path);
+    const actual = archive.files.get(path);
+    if (!Buffer.isBuffer(expected)) {
+      throw new Error(`HEAD blob reader did not return a Buffer for ${path}`);
+    }
+    if (!actual?.equals(expected)) {
+      throw new Error(`${filename} differs from HEAD blob ${path}`);
+    }
+  }
 }
 
 async function collectArtifacts(arguments_) {
@@ -159,56 +222,30 @@ function filenameFromPath(path) {
   return normalized.slice(normalized.lastIndexOf("/") + 1);
 }
 
-function readArchive(path, filename) {
-  let zip;
-  try {
-    zip = new AdmZip(path);
-  } catch (error) {
-    throw new Error(`${filename} is not a readable ZIP archive: ${error.message}`);
-  }
-
-  const files = new Map();
-  const seen = new Set();
-  for (const entry of zip.getEntries()) {
-    const name = normalizeArchivePath(entry.entryName, filename, entry.isDirectory);
-    if (seen.has(name)) {
-      throw new Error(`${filename} contains duplicate path ${name}`);
-    }
-    seen.add(name);
-    rejectSensitivePath(name, filename);
-    if (entry.isDirectory) continue;
-    files.set(name, entry.getData());
-  }
-  return { files, paths: [...seen].sort(compareAscii) };
-}
-
 async function verifyBrowser(archive, filename, browser) {
-  requireFiles(archive, filename, REQUIRED_BROWSER_FILES);
-  for (const path of archive.paths) {
-    if (
-      /(?:^|\/)(?:src|test)(?:\/|$)/.test(path) ||
-      /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|tsconfig\.json|esbuild\.mjs)$/.test(path) ||
-      /\.map$/i.test(path)
-    ) {
-      throw new Error(`${filename} contains forbidden runtime path ${path}`);
-    }
-  }
-
+  assertExactArchivePaths(archive, filename, BROWSER_ARCHIVE_FILES);
   assertProjectLicense(archive, filename, "LICENSE");
   const noticePath = resolve(repositoryRoot, "extensions", browser, "THIRD_PARTY_NOTICES");
-  const expectedNotices = await readFile(noticePath);
-  assertEqualFile(archive, filename, "THIRD_PARTY_NOTICES", expectedNotices);
+  assertEqualFile(
+    archive,
+    filename,
+    "THIRD_PARTY_NOTICES",
+    await readFile(noticePath),
+  );
 
-  const manifest = parseJsonFile(archive, filename, "manifest.json");
-  verifyBrowserManifest(manifest, filename, browser);
+  verifyBrowserManifest(
+    parseJsonFile(archive, filename, "manifest.json"),
+    filename,
+    browser,
+  );
 }
 
 function verifyBrowserManifest(manifest, filename, browser) {
   if (manifest.manifest_version !== 3) {
     throw new Error(`${filename} has unexpected manifest_version`);
   }
-  if (manifest.name !== "Browser2IDE" || manifest.version !== VERSION) {
-    throw new Error(`${filename} has unexpected manifest name or version`);
+  if (manifest.name !== "Browser2IDE") {
+    throw new Error(`${filename} has unexpected manifest name`);
   }
   assertVersion(manifest.version, `${filename} manifest`, VERSION);
   if (!Array.isArray(manifest.host_permissions) || !manifest.host_permissions.includes("<all_urls>")) {
@@ -232,12 +269,7 @@ function verifyBrowserManifest(manifest, filename, browser) {
 }
 
 async function verifyVsix(archive, filename) {
-  requireFiles(archive, filename, REQUIRED_VSIX_FILES);
-  for (const path of archive.paths) {
-    if (/(?:^|\/)(?:src|test)(?:\/|$)|\.vscode-test|\.map$/i.test(path)) {
-      throw new Error(`${filename} contains forbidden VSIX path ${path}`);
-    }
-  }
+  assertExactArchivePaths(archive, filename, VSIX_ARCHIVE_FILES);
   assertProjectLicense(archive, filename, "extension/LICENSE.txt");
 
   const manifest = parseJsonFile(archive, filename, "extension/package.json");
@@ -286,22 +318,7 @@ async function verifyVsix(archive, filename) {
 }
 
 async function verifySource(archive, filename) {
-  requireFiles(
-    archive,
-    filename,
-    await collectRepositoryTreeFiles([
-      "extensions/firefox/src",
-      "packages/browser-extension-core/assets",
-      "packages/browser-extension-core/src",
-      "packages/protocol/src",
-    ]),
-  );
-  requireFiles(archive, filename, REQUIRED_SOURCE_FILES);
-  for (const path of archive.paths) {
-    if (/^(?:artifacts|node_modules)(?:\/|$)/i.test(path)) {
-      throw new Error(`${filename} contains forbidden source path ${path}`);
-    }
-  }
+  await verifySourceAgainstHead(archive, filename, readHeadTree(repositoryRoot));
   assertProjectLicense(archive, filename, "LICENSE");
 
   const rootManifest = parseJsonFile(archive, filename, "package.json");
@@ -313,15 +330,14 @@ async function verifySource(archive, filename) {
   ) {
     throw new Error(`${filename} has unexpected root packaging dependencies`);
   }
-  const requiredScripts = [
+  for (const script of [
     "package:vscode",
     "package:chrome",
     "package:firefox",
     "package:firefox-source",
     "artifacts:verify",
     "artifacts:checksums",
-  ];
-  for (const script of requiredScripts) {
+  ]) {
     if (typeof rootManifest.scripts?.[script] !== "string") {
       throw new Error(`${filename} is missing root script ${script}`);
     }
@@ -342,34 +358,63 @@ async function verifySource(archive, filename) {
   );
 }
 
-async function collectRepositoryTreeFiles(relativeDirectories) {
-  const files = [];
-  for (const relativeDirectory of relativeDirectories) {
-    await walk(resolve(repositoryRoot, relativeDirectory), relativeDirectory);
-  }
-  return files.sort(compareAscii);
-
-  async function walk(absoluteDirectory, relativeDirectory) {
-    const entries = await readdir(absoluteDirectory, { withFileTypes: true });
-    for (const entry of entries) {
-      const relativePath = `${relativeDirectory}/${entry.name}`.replaceAll("\\", "/");
-      if (entry.isDirectory()) {
-        await walk(resolve(absoluteDirectory, entry.name), relativePath);
-      } else if (entry.isFile()) {
-        files.push(relativePath);
-      } else {
-        throw new Error(`Source input must be a regular file: ${relativePath}`);
-      }
-    }
+function rejectZipSymlink(entry, path, filename) {
+  const unixMode = ((entry.attr >>> 0) >>> 16) & 0xffff;
+  if ((unixMode & 0o170000) === 0o120000) {
+    throw new Error(`${filename} contains symbolic link entry ${path}`);
   }
 }
 
-function requireFiles(archive, filename, required) {
-  for (const path of required) {
-    if (!archive.files.has(path)) {
-      throw new Error(`${filename} is missing ${path}`);
+function expectedGitArchivePaths(paths) {
+  const expected = new Set();
+  for (const path of paths) {
+    expected.add(path);
+    const parts = path.split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      expected.add(parts.slice(0, index).join("/"));
     }
   }
+  return expected;
+}
+
+function splitNullTerminated(buffer) {
+  const records = [];
+  let start = 0;
+  for (let index = 0; index < buffer.length; index += 1) {
+    if (buffer[index] !== 0) continue;
+    if (index > start) records.push(buffer.subarray(start, index));
+    start = index + 1;
+  }
+  if (start !== buffer.length) {
+    throw new Error("git ls-tree output was not NUL terminated");
+  }
+  return records;
+}
+
+function readHeadBlob(root, object) {
+  return runGit(root, ["cat-file", "blob", object]);
+}
+
+function runGit(root, arguments_) {
+  const portableRoot = resolve(root).replaceAll("\\", "/");
+  const result = spawnSync(
+    "git",
+    [
+      "-c",
+      `safe.directory=${portableRoot}`,
+      "-C",
+      portableRoot,
+      ...arguments_,
+    ],
+    { encoding: null, maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `git ${arguments_[0]} failed: ${result.stderr.toString("utf8").trim()}`,
+    );
+  }
+  return result.stdout;
 }
 
 function parseJsonFile(archive, filename, path) {
@@ -394,5 +439,14 @@ function assertProjectLicense(archive, filename, path) {
 function assertEqualFile(archive, filename, path, expected) {
   if (!archive.files.get(path).equals(expected)) {
     throw new Error(`${filename} contains unexpected content in ${path}`);
+  }
+}
+
+if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
+  try {
+    await verifyArtifacts(process.argv.slice(2));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
   }
 }

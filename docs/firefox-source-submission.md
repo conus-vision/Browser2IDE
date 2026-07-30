@@ -33,4 +33,6 @@ The unsigned extension is written to `artifacts/browser2ide-firefox-0.2.0.zip`. 
 
 The build does not download generated code. After the frozen install, it reads only files in this source tree and dependencies fixed by `pnpm-lock.yaml`. TypeScript is type-checked, and esbuild bundles and minifies the four TypeScript entry points using the target `firefox142`. The package contents receive a fixed ZIP-safe timestamp before `web-ext` creates the archive.
 
+The release source ZIP is produced by `git archive HEAD` with a command-local `core.autocrlf=false`. This keeps every archived regular file byte-identical to its Git blob on Windows and Linux without changing the user's Git configuration. The release verifier requires the ZIP path set to match the complete `HEAD` tree, rejects unsupported Git modes, and compares every archived file with its `HEAD` blob.
+
 Source maps are intentionally not generated or shipped because the complete TypeScript sources for the Firefox adapter, shared browser core, and protocol are present in the source ZIP. `tools/browser-bundle-notices.mjs` reads esbuild's actual bundle-input metadata and the installed packages' manifests and license files to regenerate `extensions/firefox/THIRD_PARTY_NOTICES`; no hand-maintained dependency list is used. The exact Browser2IDE MIT license is included as `extensions/firefox/LICENSE`.

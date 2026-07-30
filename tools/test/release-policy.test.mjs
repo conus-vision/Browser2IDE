@@ -35,6 +35,29 @@ test("release archives reject sensitive path segments", () => {
     ".vscode-test/vscode.exe",
     "private/secret.json",
     "private/credentials.yml",
+    ".npmrc",
+    "home/.netrc",
+    "home/.pypirc",
+    "home/.git-credentials",
+    "ssh/id_rsa",
+    "ssh/id_dsa",
+    "ssh/id_ecdsa",
+    "ssh/id_ed25519",
+    "tls/server.key",
+    "tls/private.pem",
+    "tls/client.p12",
+    "tls/client.pfx",
+    "tls/client.pkcs12",
+    "tls/store.jks",
+    "tls/app.keystore",
+    "tls/private.der",
+    "ssh/user.ppk",
+    "kerberos/user.keytab",
+    "vpn/profile.ovpn",
+    "oauth/client_secret.json",
+    "cloud/service-account-prod.json",
+    "home/.docker/config.json",
+    "home/.kube/config",
   ]) {
     assert.throws(
       () => rejectSensitivePath(path, "fixture.zip"),
@@ -42,6 +65,9 @@ test("release archives reject sensitive path segments", () => {
     );
   }
   assert.doesNotThrow(() => rejectSensitivePath("src/secretary.ts", "fixture.zip"));
+  assert.doesNotThrow(() => rejectSensitivePath("LICENSE", "fixture.zip"));
+  assert.doesNotThrow(() => rejectSensitivePath("ssh/id_ed25519.pub", "fixture.zip"));
+  assert.doesNotThrow(() => rejectSensitivePath("docs/public.crt", "fixture.zip"));
 });
 
 test("release versions must match the expected product version", () => {

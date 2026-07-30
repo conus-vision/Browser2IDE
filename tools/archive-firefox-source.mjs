@@ -13,6 +13,8 @@ export function archiveArguments(root, output) {
   return [
     "-c",
     `safe.directory=${portableRoot}`,
+    "-c",
+    "core.autocrlf=false",
     "archive",
     "--format=zip",
     `--output=${portablePath(output)}`,
